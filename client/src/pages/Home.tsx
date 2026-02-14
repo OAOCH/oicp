@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, AlertTriangle, FileText, Users } from 'lucide-react';
+import { Search, FileText, Users, Trophy } from 'lucide-react';
 import { api } from '../lib/api';
 import { StatCard, RiskBadge, Loading, ScoreGauge } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
