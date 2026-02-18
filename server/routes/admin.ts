@@ -41,58 +41,27 @@ function checkAuth(req: any, res: any): boolean {
   return true;
 }
 
-// ── DIAGNOSTIC ENDPOINT ─────────────────────────────────────
+// ── DIAGNOSTIC ──────────────────────────────────────────────
 router.get('/test', async (req, res) => {
   if (!checkAuth(req, res)) return;
-  
   const results: any[] = [];
-  
-  // Test 1: Search API
   try {
     const url = `${SEARCH_API}?year=2024&search=agua&page=1`;
-    results.push({ test: 'Search API', url });
-    
     const response = await fetch(url);
-    results.push({ 
-      status: response.status, 
-      statusText: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
+    const data = await response.json();
+    results.push({
+      test: 'Search API', status: response.status,
+      total: data.total, pages: data.pages, dataCount: data.data?.length,
+      sampleFields: data.data?.[0] ? Object.keys(data.data[0]) : [],
+      sample: data.data?.[0],
     });
-    
-    const text = await response.text();
-    results.push({ bodyLength: text.length, bodyPreview: text.substring(0, 2000) });
-    
-    try {
-      const json = JSON.parse(text);
-      results.push({ parsed: true, total: json.total, pages: json.pages, dataCount: json.data?.length });
-    } catch {
-      results.push({ parsed: false, note: 'Response is not valid JSON' });
-    }
-  } catch (err: any) {
-    results.push({ error: err.message, stack: err.stack?.substring(0, 500) });
-  }
-  
-  // Test 2: Record API (using known OCID from SERCOP example)
+  } catch (err: any) { results.push({ test: 'Search API', error: err.message }); }
+
   try {
     const url = `${RECORD_API}?ocid=ocds-5wno2w-001-LICO-GPLR-2020-2805`;
-    results.push({ test: 'Record API', url });
-    
     const response = await fetch(url);
-    results.push({ status: response.status, statusText: response.statusText });
-    
-    const text = await response.text();
-    results.push({ bodyLength: text.length, bodyPreview: text.substring(0, 1000) });
-  } catch (err: any) {
-    results.push({ error: err.message });
-  }
-
-  // Test 3: Simple connectivity test
-  try {
-    const response = await fetch('https://datosabiertos.compraspublicas.gob.ec/');
-    results.push({ test: 'Base URL connectivity', status: response.status });
-  } catch (err: any) {
-    results.push({ test: 'Base URL connectivity', error: err.message });
-  }
+    results.push({ test: 'Record API', status: response.status, ok: response.ok });
+  } catch (err: any) { results.push({ test: 'Record API', error: err.message }); }
 
   res.json(results);
 });
@@ -151,46 +120,32 @@ router.post('/load', async (req, res) => {
         while (page <= totalPages && page <= 50 && currentJob.running) {
           try {
             const url = `${SEARCH_API}?year=${year}&search=${encodeURIComponent(searchTerm)}&page=${page}`;
-            
-            let response: Response;
-            let retries = 0;
-            while (retries < 3) {
+
+            let response: Response | undefined;
+            for (let retry = 0; retry < 3; retry++) {
               response = await fetch(url);
-              currentJob.lastApiResponse = `${url} → HTTP ${response.status}`;
-              
+              currentJob.lastApiResponse = `HTTP ${response.status} — ${url.substring(0, 100)}`;
               if (response.status === 429) {
-                retries++;
-                currentJob.errors.push(`429 rate limit. Esperando ${DELAY_AFTER_429/1000}s (intento ${retries}/3)...`);
+                currentJob.errors.push(`429 — esperando ${DELAY_AFTER_429 / 1000}s`);
                 await sleep(DELAY_AFTER_429);
                 continue;
               }
               break;
             }
 
-            if (!response!.ok) {
-              currentJob.errors.push(`HTTP ${response!.status} en búsqueda "${searchTerm}" p${page}`);
+            if (!response || !response.ok) {
+              currentJob.errors.push(`HTTP ${response?.status} en "${searchTerm}" p${page}`);
               break;
             }
 
-            let searchData: any;
-            try {
-              const text = await response!.text();
-              searchData = JSON.parse(text);
-            } catch (parseErr: any) {
-              currentJob.errors.push(`JSON inválido en "${searchTerm}" p${page}`);
-              break;
-            }
-
-            if (!searchData || !searchData.data) {
-              currentJob.errors.push(`Sin campo 'data' en "${searchTerm}" p${page}`);
-              break;
-            }
+            const searchData = await response.json();
+            if (!searchData?.data) break;
 
             totalPages = searchData.pages || 1;
             const results = searchData.data || [];
             if (results.length === 0) break;
 
-            currentJob.progress = `[${t + 1}/${terms.length}] "${searchTerm}" pág ${page}/${totalPages} (${currentJob.count} total)`;
+            currentJob.progress = `[${t + 1}/${terms.length}] "${searchTerm}" pág ${page}/${totalPages} (${currentJob.count} descargados)`;
 
             for (const result of results) {
               if (!currentJob.running) break;
@@ -199,46 +154,39 @@ router.post('/load', async (req, res) => {
               if (existingOcids.has(ocid)) { currentJob.skippedDuplicates++; continue; }
               existingOcids.add(ocid);
 
-              await sleep(DELAY_MS);
+              // First save basic info from search result (guaranteed to have data)
+              const basicProc = searchResultToProc(result, year);
 
+              // Then try to get full OCDS record for richer data
+              await sleep(DELAY_MS);
               try {
-                let recResponse: Response;
-                let recRetries = 0;
-                while (recRetries < 3) {
-                  recResponse = await fetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
-                  if (recResponse.status === 429) {
-                    recRetries++;
-                    await sleep(DELAY_AFTER_429);
-                    continue;
-                  }
+                let recResp: Response | undefined;
+                for (let retry = 0; retry < 3; retry++) {
+                  recResp = await fetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
+                  if (recResp.status === 429) { await sleep(DELAY_AFTER_429); continue; }
                   break;
                 }
 
-                if (recResponse!.ok) {
-                  const recText = await recResponse!.text();
-                  const record = JSON.parse(recText);
-                  
+                if (recResp && recResp.ok) {
+                  const record = await recResp.json();
                   if (record?.records?.[0]?.releases?.length) {
                     const releases = record.records[0].releases;
                     const release = releases[releases.length - 1];
-                    const proc = parseRelease(release, result, year);
-                    const { flags, score, riskLevel } = evaluateAllFlags(proc);
-                    upsertProcedure({ ...proc, flags, score, risk_level: riskLevel });
+                    const fullProc = ocdsReleaseToProc(release, result, year);
+                    const { flags, score, riskLevel } = evaluateAllFlags(fullProc);
+                    upsertProcedure({ ...fullProc, flags, score, risk_level: riskLevel });
                     currentJob.count++;
-                  } else {
-                    saveFallback(result, year);
-                    currentJob.count++;
+                    continue;
                   }
-                } else {
-                  saveFallback(result, year);
-                  currentJob.count++;
                 }
               } catch (e: any) {
-                // Still save basic info from search
-                saveFallback(result, year);
-                currentJob.count++;
                 if (e.message?.includes('429')) await sleep(DELAY_AFTER_429);
               }
+
+              // Fallback: save from search result
+              const { flags, score, riskLevel } = evaluateAllFlags(basicProc);
+              upsertProcedure({ ...basicProc, flags, score, risk_level: riskLevel });
+              currentJob.count++;
             }
             page++;
             await sleep(DELAY_MS);
@@ -252,7 +200,7 @@ router.post('/load', async (req, res) => {
 
       if (currentJob.running) {
         rebuildConcentrationIndex(year);
-        currentJob.progress = `Completado: ${currentJob.count} procesos para ${year} (${currentJob.skippedDuplicates} duplicados omitidos)`;
+        currentJob.progress = `✅ Completado: ${currentJob.count} procesos para ${year} (${currentJob.skippedDuplicates} duplicados omitidos)`;
       }
     } catch (e: any) {
       currentJob.progress = `Error: ${e.message}`;
@@ -262,40 +210,105 @@ router.post('/load', async (req, res) => {
   })();
 });
 
-function saveFallback(result: any, year: number) {
-  const proc = {
-    id: result.ocid, ocid: result.ocid, title: result.title || '', description: result.description || '',
-    status: 'unknown', procurement_method: '', procurement_method_details: result.internal_type || '',
-    buyer_id: result.buyerId || null, buyer_name: result.buyerName || null,
-    budget_amount: null, budget_currency: 'USD', award_amount: null, contract_amount: null, final_amount: null,
-    published_date: result.date || null, submission_deadline: null, award_date: null, contract_date: null,
-    suppliers: result.single_provider ? [{ id: '', name: result.single_provider }] : [],
-    number_of_tenderers: null, items_classification: null,
-    has_amendments: false, amendment_count: 0,
-    source_year: year, regime: getRegime(result.date),
+// ══════════════════════════════════════════════════════════════
+// CORRECT FIELD MAPPINGS for SERCOP API
+// ══════════════════════════════════════════════════════════════
+//
+// SERCOP search_ocds returns:
+// {
+//   id, ocid, year, month, method, internal_type,
+//   locality, region, suppliers, buyer, amount, date,
+//   title, description, budget
+// }
+//
+// NOTE: "buyer" is the NAME (string), not an object
+//       "amount" and "budget" are strings like "12586.830000" or null
+//       "suppliers" is a string name or null
+//       "method" is "open"|"direct"|"selective"|null
+//       "internal_type" is "Subasta Inversa Electrónica"|"Ínfima Cuantía"|etc
+
+function searchResultToProc(r: any, year: number) {
+  const amount = r.amount ? parseFloat(r.amount) : null;
+  const budget = r.budget ? parseFloat(r.budget) : null;
+
+  // Build buyer_id from buyer name if no explicit ID
+  const buyerName = r.buyer || r.buyerName || null;
+  const buyerId = r.buyerId || (buyerName ? 'EC-' + buyerName.substring(0, 30).replace(/[^A-Za-z0-9]/g, '-') : null);
+
+  // Suppliers
+  const suppliers: any[] = [];
+  if (r.suppliers) {
+    // Can be a string (single supplier name) or might be structured
+    if (typeof r.suppliers === 'string') {
+      suppliers.push({ id: '', name: r.suppliers });
+    }
+  }
+  // Also check single_provider (old API format)
+  if (suppliers.length === 0 && r.single_provider) {
+    suppliers.push({ id: '', name: r.single_provider });
+  }
+
+  return {
+    id: r.ocid,
+    ocid: r.ocid,
+    title: r.title || r.description || '',
+    description: r.description || r.title || '',
+    status: 'unknown',
+    procurement_method: r.method || '',
+    procurement_method_details: r.internal_type || '',
+    buyer_id: buyerId,
+    buyer_name: buyerName,
+    budget_amount: budget,
+    budget_currency: 'USD',
+    award_amount: amount,
+    contract_amount: null,
+    final_amount: null,
+    published_date: r.date || null,
+    submission_deadline: null,
+    award_date: null,
+    contract_date: null,
+    suppliers,
+    number_of_tenderers: null,
+    items_classification: null,
+    has_amendments: false,
+    amendment_count: 0,
+    source_year: year,
+    regime: getRegime(r.date),
   };
-  const { flags, score, riskLevel } = evaluateAllFlags(proc);
-  upsertProcedure({ ...proc, flags, score, risk_level: riskLevel });
 }
 
-function parseRelease(release: any, searchResult: any, year: number): any {
+function ocdsReleaseToProc(release: any, searchResult: any, year: number) {
   const tender = release.tender || {};
   const awards = release.awards || [];
   const contracts = release.contracts || [];
   const buyer = release.buyer || tender.procuringEntity || {};
   const firstAward = awards[0] || {};
   const firstContract = contracts[0] || {};
+
+  // Extract suppliers from awards
   const suppliers: any[] = [];
   for (const award of awards) {
     for (const sup of (award.suppliers || [])) {
       const id = sup.id || sup.identifier?.id || '';
       const name = sup.name || '';
-      if ((id || name) && !suppliers.find((s: any) => s.id === id && s.name === name)) suppliers.push({ id, name });
+      if ((id || name) && !suppliers.find((s: any) => s.id === id && s.name === name)) {
+        suppliers.push({ id, name });
+      }
     }
   }
-  if (suppliers.length === 0 && searchResult?.single_provider) suppliers.push({ id: '', name: searchResult.single_provider });
+  // Fallback to search result suppliers
+  if (suppliers.length === 0 && searchResult?.suppliers) {
+    if (typeof searchResult.suppliers === 'string') {
+      suppliers.push({ id: '', name: searchResult.suppliers });
+    }
+  }
+  if (suppliers.length === 0 && searchResult?.single_provider) {
+    suppliers.push({ id: '', name: searchResult.single_provider });
+  }
+
+  // Method
   const methodDetails = tender.procurementMethodDetails || searchResult?.internal_type || '';
-  let method = tender.procurementMethod || '';
+  let method = tender.procurementMethod || searchResult?.method || '';
   if (!method) {
     const d = methodDetails.toLowerCase();
     if (d.includes('ínfima') || d.includes('infima')) method = 'limited';
@@ -303,25 +316,53 @@ function parseRelease(release: any, searchResult: any, year: number): any {
     else if (d.includes('catálogo')) method = 'direct';
     else method = 'open';
   }
-  const dateForRegime = tender.tenderPeriod?.startDate || release.date || `${year}-06-15`;
+
+  // Buyer
+  const buyerName = buyer.name || searchResult?.buyer || searchResult?.buyerName || null;
+  const buyerId = buyer.id || searchResult?.buyerId ||
+    (buyerName ? 'EC-' + buyerName.substring(0, 30).replace(/[^A-Za-z0-9]/g, '-') : null);
+
+  // Dates
+  const dateForRegime = tender.tenderPeriod?.startDate || release.date || searchResult?.date || `${year}-06-15`;
+
+  // Amendments
   let amendmentCount = 0;
   for (const c of contracts) amendmentCount += (c.amendments || []).length;
+
+  // Amounts — from OCDS release, or fallback to search result
+  const budgetAmount = tender.value?.amount || release.planning?.budget?.amount?.amount ||
+    (searchResult?.budget ? parseFloat(searchResult.budget) : null);
+  const awardAmount = firstAward.value?.amount ||
+    (searchResult?.amount ? parseFloat(searchResult.amount) : null);
+
   return {
-    id: release.ocid || searchResult?.ocid, ocid: release.ocid || searchResult?.ocid,
-    title: tender.title || searchResult?.title || '', description: tender.description || searchResult?.description || '',
-    status: release.tag?.includes('contract') ? 'contract' : release.tag?.includes('award') ? 'award' : 'tender',
-    procurement_method: method, procurement_method_details: methodDetails,
-    buyer_id: buyer.id || searchResult?.buyerId || null, buyer_name: buyer.name || searchResult?.buyerName || null,
-    budget_amount: tender.value?.amount || release.planning?.budget?.amount?.amount || null, budget_currency: 'USD',
-    award_amount: firstAward.value?.amount || null, contract_amount: firstContract.value?.amount || null,
+    id: release.ocid || searchResult?.ocid,
+    ocid: release.ocid || searchResult?.ocid,
+    title: tender.title || tender.description || searchResult?.title || searchResult?.description || '',
+    description: tender.description || searchResult?.description || '',
+    status: release.tag?.includes('contract') ? 'contract' :
+      release.tag?.includes('award') ? 'award' :
+      release.tag?.includes('tender') ? 'tender' : 'planning',
+    procurement_method: method,
+    procurement_method_details: methodDetails,
+    buyer_id: buyerId,
+    buyer_name: buyerName,
+    budget_amount: budgetAmount,
+    budget_currency: 'USD',
+    award_amount: awardAmount,
+    contract_amount: firstContract.value?.amount || null,
     final_amount: firstContract.implementation?.finalValue?.amount || null,
-    published_date: tender.tenderPeriod?.startDate || release.date || null,
+    published_date: tender.tenderPeriod?.startDate || release.date || searchResult?.date || null,
     submission_deadline: tender.tenderPeriod?.endDate || null,
-    award_date: firstAward.date || null, contract_date: firstContract.dateSigned || null,
-    suppliers, number_of_tenderers: tender.numberOfTenderers || (release.bids?.details?.length) || null,
+    award_date: firstAward.date || null,
+    contract_date: firstContract.dateSigned || null,
+    suppliers,
+    number_of_tenderers: tender.numberOfTenderers || release.bids?.details?.length || null,
     items_classification: tender.items?.[0]?.classification?.id || null,
-    has_amendments: amendmentCount > 0, amendment_count: amendmentCount,
-    source_year: year, regime: getRegime(dateForRegime),
+    has_amendments: amendmentCount > 0,
+    amendment_count: amendmentCount,
+    source_year: year,
+    regime: getRegime(dateForRegime),
   };
 }
 
@@ -352,9 +393,8 @@ button:hover{background:#1d4ed8}
 <h1>OICP Admin</h1>
 
 <div class="card">
-<h2>Diagnóstico (ejecutar primero)</h2>
-<p style="font-size:13px;color:#6b7280">Verifica si la API de SERCOP responde desde este servidor.</p>
-<button class="diag" onclick="diag()">Ejecutar diagnóstico</button>
+<h2>Diagnóstico</h2>
+<button class="diag" onclick="diag()">Probar conexión a SERCOP</button>
 <div id="diag" class="st idle" style="display:none"></div>
 </div>
 
@@ -383,25 +423,23 @@ button:hover{background:#1d4ed8}
 <div id="p" style="display:none"><div class="bar"><div id="pf" class="fill" style="width:0%"></div></div><small id="pt"></small></div>
 <br>
 <button onclick="ck()">Actualizar</button>
-<button class="stop" id="bs" style="display:none" onclick="st()">Detener</button>
+<button class="stop" id="bs" style="display:none" onclick="stp()">Detener</button>
 </div>
 
 <div class="card"><a href="/" target="_blank">Ver plataforma OICP</a></div>
 
 <script>
 const K='${key}',B='/api/admin';
-async function diag(){
-  const el=document.getElementById('diag');el.style.display='block';el.className='st run';el.textContent='Ejecutando diagnóstico...';
-  try{const r=await fetch(B+'/test?key='+K);const d=await r.json();el.className='st ok';el.textContent=JSON.stringify(d,null,2)}
-  catch(e){el.className='st idle';el.textContent='Error: '+e.message}
-}
-async function l(y){if(!confirm('Cargar '+y+'?'))return;const r=await fetch(B+'/load?key='+K+'&year='+y,{method:'POST'});alert((await r.json()).message);ck()}
+async function diag(){const el=document.getElementById('diag');el.style.display='block';el.className='st run';el.textContent='Probando...';
+try{const r=await fetch(B+'/test?key='+K);const d=await r.json();el.className='st ok';el.textContent=JSON.stringify(d,null,2)}catch(e){el.textContent='Error: '+e.message}}
+async function l(y){if(!confirm('Cargar '+y+'? (2-4 horas)'))return;const r=await fetch(B+'/load?key='+K+'&year='+y,{method:'POST'});alert((await r.json()).message);ck()}
 async function lt(y,t){const r=await fetch(B+'/load?key='+K+'&year='+y+'&term='+encodeURIComponent(t),{method:'POST'});alert((await r.json()).message);ck()}
-async function st(){if(!confirm('Detener?'))return;await fetch(B+'/stop?key='+K,{method:'POST'});ck()}
+async function stp(){if(!confirm('Detener?'))return;await fetch(B+'/stop?key='+K,{method:'POST'});ck()}
 async function ck(){try{const r=await fetch(B+'/status?key='+K),d=await r.json(),e=document.getElementById('s'),p=document.getElementById('p'),pf=document.getElementById('pf'),pt=document.getElementById('pt'),bs=document.getElementById('bs');
-if(d.running){e.className='st run';e.textContent='EN CURSO — Año: '+d.year+'\\n'+d.progress+'\\nDescargados: '+d.count+'\\nDuplicados: '+d.skippedDuplicates+'\\nÚltima respuesta API: '+d.lastApiResponse;const pc=d.totalTerms>0?Math.round(d.termsCompleted/d.totalTerms*100):0;p.style.display='block';pf.style.width=pc+'%';pt.textContent=d.termsCompleted+'/'+d.totalTerms+' ('+pc+'%)';bs.style.display='inline-block'}
-else{bs.style.display='none';p.style.display='none';if(d.count>0){e.className='st ok';e.textContent=d.progress}else{e.className='st idle';e.textContent='Sin descargas activas.'+(d.lastApiResponse?'\\nÚltima respuesta: '+d.lastApiResponse:'')}}
-if(d.errors?.length)e.textContent+='\\n\\nErrores:\\n'+d.errors.slice(-5).join('\\n')}catch(e){}}
+if(d.running){e.className='st run';e.textContent='EN CURSO — Año: '+d.year+'\\n'+d.progress+'\\nDescargados: '+d.count+'\\nDuplicados: '+d.skippedDuplicates+'\\nAPI: '+d.lastApiResponse;
+const pc=d.totalTerms>0?Math.round(d.termsCompleted/d.totalTerms*100):0;p.style.display='block';pf.style.width=pc+'%';pt.textContent=d.termsCompleted+'/'+d.totalTerms+' ('+pc+'%)';bs.style.display='inline-block'}
+else{bs.style.display='none';p.style.display='none';if(d.count>0){e.className='st ok';e.textContent=d.progress}else{e.className='st idle';e.textContent='Sin descargas activas.'}}
+if(d.errors?.length)e.textContent+='\\n\\nErrores:\\n'+d.errors.slice(-3).join('\\n')}catch(e){}}
 setInterval(ck,8000);ck()
 </script></body></html>`);
 });
