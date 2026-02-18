@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Search as SearchIcon, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search as SearchIcon, Filter, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 import { api } from '../lib/api';
 import { RiskBadge, FlagBadge, Loading, EmptyState } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
@@ -164,6 +164,13 @@ export default function Search() {
                     {p.score}
                   </div>
                   <div className="text-xs text-gray-400">score</div>
+                  <a href={`https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/informacionProcesoContratacion2.cpe?idSolesercop=${(p.ocid || p.id || '').split('-').pop()}`}
+                    target="_blank" rel="noopener"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 mt-1"
+                    title="Ver en SERCOP">
+                    SERCOP <ExternalLink size={10} />
+                  </a>
                 </div>
               </div>
             </Link>
