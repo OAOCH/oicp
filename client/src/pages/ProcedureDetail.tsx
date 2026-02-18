@@ -171,15 +171,34 @@ export default function ProcedureDetail() {
             </p>
           </div>
 
-          {/* Source */}
+          {/* Source & Verification Links */}
           <div className="bg-white rounded-xl border p-5 shadow-sm">
-            <h3 className="font-semibold mb-3">Fuente</h3>
-            <a href={`https://datosabiertos.compraspublicas.gob.ec`} target="_blank" rel="noopener"
-              className="inline-flex items-center gap-1 text-sm text-brand-600 hover:underline">
-              Ver en SERCOP <ExternalLink size={14} />
-            </a>
-            <p className="text-xs text-gray-400 mt-2">
-              Datos obtenidos del estándar OCDS publicado por SERCOP. Pueden existir diferencias con el portal oficial.
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <ExternalLink size={18} className="text-brand-600" /> Verificar en Fuente Oficial
+            </h3>
+            <div className="space-y-3">
+              <a href={`https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/informacionProcesoContratacion2.cpe?idSolesercop=${(proc.ocid || proc.id || '').split('-').pop()}`}
+                target="_blank" rel="noopener"
+                className="flex items-center gap-2 text-sm text-brand-600 hover:underline bg-blue-50 p-3 rounded-lg">
+                <ExternalLink size={14} />
+                <div>
+                  <div className="font-medium">Ver en Portal SERCOP</div>
+                  <div className="text-xs text-gray-500">Portal oficial de compras públicas</div>
+                </div>
+              </a>
+              <a href={`https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/record?ocid=${encodeURIComponent(proc.ocid || proc.id || '')}`}
+                target="_blank" rel="noopener"
+                className="flex items-center gap-2 text-sm text-brand-600 hover:underline bg-blue-50 p-3 rounded-lg">
+                <ExternalLink size={14} />
+                <div>
+                  <div className="font-medium">Ver datos OCDS completos</div>
+                  <div className="text-xs text-gray-500">Registro oficial en formato abierto</div>
+                </div>
+              </a>
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              ⚠️ Los datos de esta plataforma provienen del estándar OCDS publicado por SERCOP.
+              Siempre verifique la información en el portal oficial antes de tomar decisiones.
             </p>
           </div>
         </div>
