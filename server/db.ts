@@ -196,8 +196,8 @@ export function searchProcedures(params: {
 
   const countRow = db.prepare(`SELECT COUNT(*) as total FROM procedures ${where}`).get(...values) as any;
   const rows = db.prepare(`
-    SELECT id, title, buyer_name, buyer_id, procurement_method_details,
-           award_amount, score, risk_level, flags, published_date, source_year, number_of_tenderers
+    SELECT id, ocid, title, buyer_name, buyer_id, procurement_method_details,
+           award_amount, score, risk_level, flags, published_date, source_year, number_of_tenderers, suppliers
     FROM procedures ${where}
     ORDER BY ${sort} ${order}
     LIMIT ? OFFSET ?
