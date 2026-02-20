@@ -1,9 +1,79 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Building2, User } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Building2, User, AlertTriangle, Info } from 'lucide-react';
 import { api } from '../lib/api';
 import { ScoreGauge, RiskBadge, FlagCard, Loading } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
+
+// Generate a human-readable summary of why this procedure was flagged
+function generateRiskSummary(proc: any, activeFlags: any[]): string {
+  if (activeFlags.length === 0) {
+    return 'Este procedimiento no presenta indicadores de riesgo según los criterios evaluados. Esto no garantiza la ausencia de irregularidades — solo indica que los datos disponibles no activaron ninguna de las 15 banderas del sistema.';
+  }
+
+  const parts: string[] = [];
+  const severityOrder = [...activeFlags].sort((a, b) => b.severity - a.severity);
+
+  for (const flag of severityOrder) {
+    switch (flag.code) {
+      case 'IC-01':
+        parts.push('Se presentó un solo oferente en un proceso competitivo, lo cual reduce la presión de mercado y puede indicar restricciones indebidas en las condiciones de participación.');
+        break;
+      case 'IC-02':
+        parts.push(`El monto adjudicado (${formatCurrency(proc.award_amount)}) supera el umbral de ínfima cuantía, pero se utilizó un método de contratación directa sin competencia abierta.`);
+        break;
+      case 'IT-01':
+        parts.push('El plazo de publicación fue inferior al mínimo legal establecido, lo que pudo limitar la participación de potenciales oferentes.');
+        break;
+      case 'IT-02':
+        parts.push('La adjudicación se realizó en menos de 3 días hábiles desde la publicación, un tiempo inusualmente corto para evaluar ofertas.');
+        break;
+      case 'IP-01':
+        parts.push('El monto se encuentra entre el 85% y 100% del umbral de contratación directa, lo que podría indicar un ajuste deliberado para evitar un proceso competitivo.');
+        break;
+      case 'IP-02':
+        parts.push('Existe una diferencia significativa (mayor al 15%) entre el presupuesto referencial y el monto adjudicado.');
+        break;
+      case 'IP-03':
+        parts.push('El contrato tiene enmiendas que incrementan su valor en más del 15%, lo cual puede indicar una subestimación inicial deliberada.');
+        break;
+      case 'CC-01':
+        parts.push('El proveedor adjudicado ha recibido 5 o más contratos de ínfima cuantía del mismo comprador en el mismo año, un patrón que sugiere posible direccionamiento.');
+        break;
+      case 'CC-02':
+        parts.push('Un solo proveedor concentra más del 30% del valor total de contratos de esta entidad compradora.');
+        break;
+      case 'CC-03':
+        parts.push('El proveedor ha mantenido contratos con la misma entidad durante 5 o más años consecutivos.');
+        break;
+      case 'CC-04':
+        parts.push('Un miembro de consorcio aparece en 8 o más procesos, lo que puede indicar uso de figuras asociativas para evadir controles.');
+        break;
+      case 'CC-05':
+        parts.push('Se detectaron 3 o más contratos del mismo comprador con objetos similares (mismo código CPC) en un período de 90 días, cuya suma supera el umbral de ínfima cuantía. Esto puede constituir fraccionamiento contractual prohibido por el Art. 50 de la LOSNCP.');
+        break;
+      case 'TR-01':
+        parts.push(`Faltan campos críticos en el registro (${flag.detail || 'datos del proveedor, montos u otros'}), lo que dificulta la verificación y el control.`);
+        break;
+      case 'TR-02':
+        parts.push('La descripción del proceso es demasiado genérica (menos de 30 caracteres), lo que limita la trazabilidad del objeto de contratación.');
+        break;
+      case 'TR-03':
+        parts.push('Se utilizó régimen especial sin justificación documentada en los datos públicos.');
+        break;
+      default:
+        parts.push(flag.detail || flag.name || 'Indicador de riesgo detectado.');
+    }
+  }
+
+  const riskWord = proc.risk_level === 'critical' ? 'crítico' :
+    proc.risk_level === 'high' ? 'alto' :
+    proc.risk_level === 'moderate' ? 'moderado' : 'bajo';
+
+  const intro = `Este procedimiento tiene un nivel de riesgo ${riskWord} (score ${proc.score}/100) basado en ${activeFlags.length} indicador${activeFlags.length > 1 ? 'es' : ''} detectado${activeFlags.length > 1 ? 's' : ''}:`;
+
+  return intro + '\n\n• ' + parts.join('\n\n• ');
+}
 
 export default function ProcedureDetail() {
   const { id } = useParams<{ id: string }>();
@@ -20,12 +90,25 @@ export default function ProcedureDetail() {
 
   const activeFlags = (proc.flags || []).filter((f: any) => f.active);
   const suppliers = proc.suppliers || [];
+  const riskSummary = generateRiskSummary(proc, activeFlags);
 
   return (
     <div className="space-y-6">
       <Link to="/buscar" className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-brand-600">
         <ArrowLeft size={16} /> Volver a búsqueda
       </Link>
+
+      {/* Disclaimer */}
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+        <div className="flex gap-2">
+          <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+          <div>
+            <strong>Aviso importante:</strong> Los indicadores presentados son señales analíticas generadas automáticamente a partir de datos públicos OCDS. 
+            No constituyen evidencia ni prueba de irregularidad. Los datos pueden contener errores, estar incompletos o desactualizados. 
+            Siempre consulte las fuentes oficiales de SERCOP antes de tomar cualquier decisión o emitir cualquier juicio.
+          </div>
+        </div>
+      </div>
 
       {/* Header */}
       <div className="bg-white rounded-xl border p-6 shadow-sm">
@@ -43,6 +126,22 @@ export default function ProcedureDetail() {
             <p className="text-xs font-mono text-gray-400 mt-2">OCID: {proc.ocid || proc.id}</p>
           </div>
           <ScoreGauge score={proc.score} size="lg" />
+        </div>
+      </div>
+
+      {/* Risk Summary */}
+      <div className={`rounded-xl border p-5 shadow-sm ${
+        proc.risk_level === 'critical' ? 'bg-red-50 border-red-200' :
+        proc.risk_level === 'high' ? 'bg-orange-50 border-orange-200' :
+        proc.risk_level === 'moderate' ? 'bg-yellow-50 border-yellow-200' :
+        'bg-green-50 border-green-200'
+      }`}>
+        <h2 className="font-semibold mb-3 flex items-center gap-2">
+          <Info size={18} />
+          Resumen del Análisis
+        </h2>
+        <div className="text-sm leading-relaxed whitespace-pre-line">
+          {riskSummary}
         </div>
       </div>
 
@@ -104,11 +203,11 @@ export default function ProcedureDetail() {
             </div>
           </div>
 
-          {/* Flags */}
+          {/* Flags Detail */}
           {activeFlags.length > 0 && (
             <div className="bg-white rounded-xl border p-5 shadow-sm">
               <h2 className="font-semibold mb-4">
-                Banderas de Riesgo ({activeFlags.length})
+                Detalle de Banderas de Riesgo ({activeFlags.length})
               </h2>
               <div className="space-y-3">
                 {activeFlags.map((f: any) => <FlagCard key={f.code} flag={f} />)}
@@ -117,7 +216,7 @@ export default function ProcedureDetail() {
           )}
         </div>
 
-        {/* Right: Actors */}
+        {/* Right sidebar */}
         <div className="space-y-6">
           {/* Buyer */}
           <div className="bg-white rounded-xl border p-5 shadow-sm">
@@ -151,55 +250,69 @@ export default function ProcedureDetail() {
           {/* Score Breakdown */}
           <div className="bg-white rounded-xl border p-5 shadow-sm">
             <h3 className="font-semibold mb-3">Composición del Score</h3>
-            <div className="text-sm space-y-1">
-              {activeFlags.map((f: any) => {
-                const weights: Record<number, number> = { 0: 3, 1: 8, 2: 18, 3: 30 };
-                return (
-                  <div key={f.code} className="flex justify-between">
-                    <span className="font-mono text-gray-600">{f.code}</span>
-                    <span className="font-medium">+{weights[f.severity]}</span>
-                  </div>
-                );
-              })}
-              <div className="border-t pt-1 mt-2 flex justify-between font-bold">
-                <span>Total</span>
-                <span>{proc.score}/100</span>
+            {activeFlags.length > 0 ? (
+              <div className="text-sm space-y-1">
+                {activeFlags.map((f: any) => {
+                  const weights: Record<number, number> = { 0: 3, 1: 8, 2: 18, 3: 30 };
+                  return (
+                    <div key={f.code} className="flex justify-between">
+                      <span className="font-mono text-gray-600">{f.code}</span>
+                      <span className="font-medium">+{weights[f.severity]}</span>
+                    </div>
+                  );
+                })}
+                <div className="border-t pt-1 mt-2 flex justify-between font-bold">
+                  <span>Total</span>
+                  <span>{proc.score}/100</span>
+                </div>
               </div>
-            </div>
+            ) : (
+              <p className="text-sm text-gray-500">Sin banderas activas — score 0/100</p>
+            )}
             <p className="text-xs text-gray-400 mt-2">
-              Score = suma de pesos por severidad (máx 100). Flags correlacionados se ponderan al 50%.
+              Score = suma de pesos por severidad (máx 100). Flags correlacionados ponderados al 50%.
             </p>
           </div>
 
-          {/* Source & Verification Links */}
+          {/* Verification Links */}
           <div className="bg-white rounded-xl border p-5 shadow-sm">
             <h3 className="font-semibold mb-3 flex items-center gap-2">
               <ExternalLink size={18} className="text-brand-600" /> Verificar en Fuente Oficial
             </h3>
             <div className="space-y-3">
-              <a href={`https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/informacionProcesoContratacion2.cpe?idSolesercop=${(proc.ocid || proc.id || '').split('-').pop()}`}
-                target="_blank" rel="noopener"
-                className="flex items-center gap-2 text-sm text-brand-600 hover:underline bg-blue-50 p-3 rounded-lg">
-                <ExternalLink size={14} />
-                <div>
-                  <div className="font-medium">Ver en Portal SERCOP</div>
-                  <div className="text-xs text-gray-500">Portal oficial de compras públicas</div>
-                </div>
-              </a>
               <a href={`https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/record?ocid=${encodeURIComponent(proc.ocid || proc.id || '')}`}
                 target="_blank" rel="noopener"
                 className="flex items-center gap-2 text-sm text-brand-600 hover:underline bg-blue-50 p-3 rounded-lg">
                 <ExternalLink size={14} />
                 <div>
-                  <div className="font-medium">Ver datos OCDS completos</div>
-                  <div className="text-xs text-gray-500">Registro oficial en formato abierto</div>
+                  <div className="font-medium">Ver registro OCDS oficial</div>
+                  <div className="text-xs text-gray-500">Datos completos publicados por SERCOP</div>
+                </div>
+              </a>
+              <a href="https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/buscarProceso.cpe"
+                target="_blank" rel="noopener"
+                className="flex items-center gap-2 text-sm text-brand-600 hover:underline bg-blue-50 p-3 rounded-lg">
+                <ExternalLink size={14} />
+                <div>
+                  <div className="font-medium">Buscar en Portal SERCOP</div>
+                  <div className="text-xs text-gray-500">Requiere registro — busque por código del proceso</div>
                 </div>
               </a>
             </div>
-            <p className="text-xs text-gray-400 mt-3">
-              ⚠️ Los datos de esta plataforma provienen del estándar OCDS publicado por SERCOP.
-              Siempre verifique la información en el portal oficial antes de tomar decisiones.
-            </p>
+            <div className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
+              <strong>Código para buscar en SERCOP:</strong>
+              <p className="font-mono mt-1 select-all text-gray-700">{proc.title || proc.ocid || proc.id}</p>
+            </div>
+          </div>
+
+          {/* Bottom Disclaimer */}
+          <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 text-xs text-gray-500 leading-relaxed">
+            <strong>Sobre esta plataforma:</strong> OICP es una herramienta de análisis independiente 
+            que procesa datos públicos del estándar OCDS de SERCOP. Los indicadores de riesgo son 
+            calculados algorítmicamente y tienen fines informativos y de investigación. No representan 
+            acusaciones ni conclusiones legales. Los datos pueden estar incompletos o contener errores 
+            de la fuente original. Para información oficial, consulte siempre{' '}
+            <a href="https://www.compraspublicas.gob.ec" target="_blank" rel="noopener" className="text-brand-600 hover:underline">compraspublicas.gob.ec</a>.
           </div>
         </div>
       </div>
