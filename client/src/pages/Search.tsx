@@ -164,12 +164,12 @@ export default function Search() {
                     {p.score}
                   </div>
                   <div className="text-xs text-gray-400">score</div>
-                  <a href={`https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/informacionProcesoContratacion2.cpe?idSolesercop=${(p.ocid || p.id || '').split('-').pop()}`}
+                  <a href={`https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/record?ocid=${encodeURIComponent(p.ocid || p.id || '')}`}
                     target="_blank" rel="noopener"
                     onClick={(e) => e.stopPropagation()}
                     className="inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 mt-1"
-                    title="Ver en SERCOP">
-                    SERCOP <ExternalLink size={10} />
+                    title="Ver registro OCDS oficial">
+                    OCDS <ExternalLink size={10} />
                   </a>
                 </div>
               </div>
