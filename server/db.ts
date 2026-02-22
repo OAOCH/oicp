@@ -5,9 +5,18 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'oicp.db');
 
-const db = new Database(DB_PATH);
+let db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+
+export function replaceDatabase(newPath?: string) {
+  try { db.close(); } catch {}
+  const p = newPath || DB_PATH;
+  db = new Database(p);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  migrate();
+}
 
 // ── Schema ──────────────────────────────────────────────────
 export function migrate() {
