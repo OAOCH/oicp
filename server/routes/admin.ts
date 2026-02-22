@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import express from 'express';
 import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase } from '../db.js';
 import { evaluateAllFlags, getRegime } from '../flag-engine.js';
 import { writeFileSync, readFileSync } from 'fs';
@@ -72,31 +73,34 @@ async function safeFetch(url: string): Promise<Response | null> {
 }
 
 // ── UPLOAD DATABASE ─────────────────────────────────────────
-router.post('/upload-db', async (req, res) => {
+router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (req, res) => {
   if (!checkAuth(req, res)) return;
 
   try {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-    }
-    const buffer = Buffer.concat(chunks);
+    req.setTimeout(600000);
+    res.setTimeout(600000);
 
-    if (buffer.length < 100) {
-      return res.status(400).json({ error: 'Archivo demasiado pequeño. ¿Seleccionaste el archivo correcto?' });
+    let buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+
+    if (buffer.length < 50) {
+      return res.status(400).json({ error: `Archivo demasiado pequeño (${buffer.length} bytes). ¿Seleccionaste el archivo correcto?` });
+    }
+
+    // Decompress gzip if needed (browser sends gzipped)
+    if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
+      const zlib = await import('zlib');
+      buffer = zlib.gunzipSync(buffer);
     }
 
     // Check SQLite magic bytes
     const header = buffer.toString('ascii', 0, 15);
     if (!header.startsWith('SQLite format')) {
-      return res.status(400).json({ error: 'No es un archivo SQLite válido.' });
+      return res.status(400).json({ error: `No es un archivo SQLite válido. Header: "${header.substring(0,10)}", size: ${buffer.length}` });
     }
 
     // Save and replace
     const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
     writeFileSync(dbPath, buffer);
-
-    // Reload database connection
     replaceDatabase(dbPath);
 
     const sizeMB = (buffer.length / 1048576).toFixed(1);
@@ -358,13 +362,20 @@ async function uploadDB(){
   if(!f){alert('Selecciona el archivo oicp.db primero');return}
   if(!f.name.endsWith('.db')&&!f.name.endsWith('.sqlite')&&!f.name.endsWith('.sqlite3')){alert('Debe ser un archivo .db');return}
   const el=document.getElementById('upload-status');
-  el.style.display='block';el.className='st run';el.textContent='Subiendo '+f.name+' ('+Math.round(f.size/1048576)+' MB)...';
+  el.style.display='block';el.className='st run';
+  const origMB=Math.round(f.size/1048576);
+  el.textContent='Comprimiendo '+f.name+' ('+origMB+' MB)...';
   try{
-    const r=await fetch(B+'/upload-db?key='+K,{method:'POST',body:f,headers:{'Content-Type':'application/octet-stream'}});
+    const cs=new CompressionStream('gzip');
+    const compressed=f.stream().pipeThrough(cs);
+    const blob=await new Response(compressed).blob();
+    const compMB=(blob.size/1048576).toFixed(1);
+    el.textContent='Subiendo '+compMB+' MB (comprimido de '+origMB+' MB)... Esto puede tomar unos minutos.';
+    const r=await fetch(B+'/upload-db?key='+K,{method:'POST',body:blob,headers:{'Content-Type':'application/octet-stream'}});
     const d=await r.json();
     if(d.success){el.className='st ok';el.textContent='✅ '+d.message}
     else{el.className='st err';el.textContent='❌ '+d.error}
-  }catch(e){el.className='st err';el.textContent='Error: '+e.message}
+  }catch(e){el.className='st err';el.textContent='Error: '+e.message+'. Si el archivo es muy grande, usa el script subir.mjs desde CMD.'}
 }
 
 async function diag(){const el=document.getElementById('diag');el.style.display='block';el.className='st run';el.textContent='Probando...';
