@@ -114,6 +114,95 @@ router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (r
   }
 });
 
+// ── BATCH UPLOAD (chunked, for large databases) ─────────────
+router.post('/batch-clear', express.json({ limit: '1mb' }), async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+    db.exec('DELETE FROM procedures');
+    db.exec('DELETE FROM concentration_index');
+    db.exec('VACUUM');
+    res.json({ success: true, message: 'Base de datos limpiada.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/batch-upload', express.json({ limit: '50mb' }), async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+    const records = req.body.records;
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: 'No hay registros' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO procedures (
+        id, ocid, title, description, status,
+        procurement_method, procurement_method_details,
+        buyer_id, buyer_name,
+        budget_amount, budget_currency, award_amount, contract_amount, final_amount,
+        published_date, submission_deadline, award_date, contract_date,
+        suppliers, number_of_tenderers, items_classification,
+        has_amendments, amendment_count, source_year, regime,
+        flags, score, risk_level, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
+      )
+    `);
+
+    const tx = db.transaction((rows: any[]) => {
+      for (const r of rows) {
+        stmt.run(
+          r.id, r.ocid, r.title, r.description, r.status,
+          r.procurement_method, r.procurement_method_details,
+          r.buyer_id, r.buyer_name,
+          r.budget_amount, r.budget_currency || 'USD', r.award_amount, r.contract_amount, r.final_amount,
+          r.published_date, r.submission_deadline, r.award_date, r.contract_date,
+          r.suppliers, r.number_of_tenderers, r.items_classification,
+          r.has_amendments, r.amendment_count, r.source_year, r.regime,
+          r.flags, r.score, r.risk_level
+        );
+      }
+    });
+
+    tx(records);
+    res.json({ success: true, inserted: records.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/batch-concentration', express.json({ limit: '50mb' }), async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+    const records = req.body.records;
+    if (!Array.isArray(records)) return res.status(400).json({ error: 'No hay registros' });
+
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO concentration_index
+      (supplier_id, supplier_name, buyer_id, buyer_name, year, contract_count, total_value, share_of_buyer, infima_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = db.transaction((rows: any[]) => {
+      for (const r of rows) {
+        stmt.run(r.supplier_id, r.supplier_name, r.buyer_id, r.buyer_name, r.year, r.contract_count, r.total_value, r.share_of_buyer, r.infima_count);
+      }
+    });
+
+    tx(records);
+    res.json({ success: true, inserted: records.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── DIAGNOSTIC ──────────────────────────────────────────────
 router.get('/test', async (req, res) => {
   if (!checkAuth(req, res)) return;
