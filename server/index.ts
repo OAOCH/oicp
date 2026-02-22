@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(compression());
 app.use(morgan('tiny'));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 // Initialize DB
 migrate();
@@ -98,27 +98,9 @@ app.get('/api/filters', (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// Methodology (flag catalog)
-app.get('/api/methodology', (req, res) => {
-  import('./flag-engine.js').then(({ FLAG_CATALOG }) => {
-    res.json({ flags: Object.values(FLAG_CATALOG) });
-  });
-});
-
 // ── Serve static in production ──────────────────────────────
 if (process.env.NODE_ENV === 'production') {
-  const fs = await import('fs');
-  const possibleDirs = [
-    path.join(__dirname, '..', 'dist', 'public'),
-    path.join(process.cwd(), 'dist', 'public'),
-  ];
-  
-  let publicDir = possibleDirs[0];
-  for (const dir of possibleDirs) {
-    if (fs.existsSync(dir)) { publicDir = dir; break; }
-  }
-  
-  console.log(`  📂 Serving static from: ${publicDir}`);
+  const publicDir = path.join(__dirname, '..', 'dist', 'public');
   app.use(express.static(publicDir));
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api')) {
