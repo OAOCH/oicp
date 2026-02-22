@@ -18,6 +18,8 @@ export function replaceDatabase(newPath?: string) {
   migrate();
 }
 
+export function getDb() { return db; }
+
 // ── Schema ──────────────────────────────────────────────────
 export function migrate() {
   db.exec(`
