@@ -203,6 +203,65 @@ router.post('/batch-concentration', express.json({ limit: '50mb' }), async (req,
   }
 });
 
+// ── NORMALIZE DATA (fix procurement_method + re-evaluate flags) ──
+router.post('/normalize', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { normalizeProcurementMethods, getDb } = await import('../db.js');
+    const { evaluateAllFlags } = await import('../flag-engine.js');
+    
+    // Step 1: Normalize procurement methods and statuses
+    const methodCounts = normalizeProcurementMethods();
+    
+    // Step 2: Re-evaluate flags for all procedures
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, procurement_method, procurement_method_details, buyer_id,
+             budget_amount, award_amount, contract_amount, final_amount,
+             published_date, submission_deadline, award_date,
+             number_of_tenderers, title, description, items_classification,
+             has_amendments, amendment_count, suppliers
+      FROM procedures
+    `).all() as any[];
+
+    const updateStmt = db.prepare(`
+      UPDATE procedures SET flags = ?, score = ?, risk_level = ? WHERE id = ?
+    `);
+
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const proc = {
+          ...row,
+          suppliers: JSON.parse(row.suppliers || '[]'),
+          has_amendments: !!row.has_amendments,
+        };
+        const { flags, score, riskLevel } = evaluateAllFlags(proc);
+        updateStmt.run(JSON.stringify(flags), score, riskLevel, row.id);
+      }
+    });
+
+    tx();
+
+    // Step 3: Rebuild concentration index
+    const { rebuildConcentrationIndex } = await import('../db.js');
+    rebuildConcentrationIndex();
+
+    // Get updated stats
+    const riskCounts = db.prepare(`
+      SELECT risk_level, COUNT(*) as count FROM procedures GROUP BY risk_level ORDER BY count DESC
+    `).all();
+
+    res.json({
+      success: true,
+      message: `Normalizado y re-evaluado ${rows.length} procedimientos.`,
+      methodCounts,
+      riskCounts,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── DIAGNOSTIC ──────────────────────────────────────────────
 router.get('/test', async (req, res) => {
   if (!checkAuth(req, res)) return;
