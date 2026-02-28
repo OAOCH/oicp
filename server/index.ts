@@ -48,6 +48,7 @@ app.get('/api/procedures', (req, res) => {
       maxScore: req.query.maxScore ? Number(req.query.maxScore) : undefined,
       buyerId: req.query.buyerId as string,
       supplierId: req.query.supplierId as string,
+      status: req.query.status as string,
       sortBy: (req.query.sortBy as string) || 'score',
       sortOrder: (req.query.sortOrder as string) || 'DESC',
     };
