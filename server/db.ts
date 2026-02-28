@@ -110,6 +110,7 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_proc_year ON procedures(source_year);
     CREATE INDEX IF NOT EXISTS idx_proc_method ON procedures(procurement_method_details);
     CREATE INDEX IF NOT EXISTS idx_proc_risk ON procedures(risk_level);
+    CREATE INDEX IF NOT EXISTS idx_proc_status ON procedures(status);
     CREATE INDEX IF NOT EXISTS idx_proc_date ON procedures(published_date DESC);
     CREATE INDEX IF NOT EXISTS idx_conc_buyer ON concentration_index(buyer_id, year);
     CREATE INDEX IF NOT EXISTS idx_conc_supplier ON concentration_index(supplier_id, year);
@@ -140,10 +141,11 @@ export function getStatistics() {
   `).all();
   const topFlags = db.prepare(`
     SELECT 
-      j.value->>'$.code' as code,
+      json_extract(j.value, '$.code') as code,
       COUNT(*) as count
     FROM procedures, json_each(procedures.flags) as j
-    WHERE j.value->>'$.active' = 'true' OR j.value->>'$.active' = '1'
+    WHERE json_extract(j.value, '$.active') IN (1, 'true')
+       OR json_extract(j.value, '$.active') = 1
     GROUP BY code ORDER BY count DESC LIMIT 15
   `).all();
   const recentProcedures = db.prepare(`
@@ -170,19 +172,20 @@ export function searchProcedures(params: {
   riskLevel?: string; method?: string; flag?: string;
   year?: number; minScore?: number; maxScore?: number;
   buyerId?: string; supplierId?: string;
+  status?: string;
   sortBy?: string; sortOrder?: string;
 }) {
   const { query, page = 1, pageSize = 20, riskLevel, method, flag,
-    year, minScore, maxScore, buyerId, supplierId,
+    year, minScore, maxScore, buyerId, supplierId, status,
     sortBy = 'score', sortOrder = 'DESC' } = params;
 
   const conditions: string[] = [];
   const values: any[] = [];
 
   if (query) {
-    conditions.push(`(title LIKE ? OR description LIKE ? OR buyer_name LIKE ? OR id LIKE ?)`);
+    conditions.push(`(title LIKE ? OR description LIKE ? OR buyer_name LIKE ? OR id LIKE ? OR EXISTS (SELECT 1 FROM json_each(suppliers) s WHERE json_extract(s.value, '$.name') LIKE ?))`);
     const q = `%${query}%`;
-    values.push(q, q, q, q);
+    values.push(q, q, q, q, q);
   }
   if (riskLevel) { conditions.push('risk_level = ?'); values.push(riskLevel); }
   if (method) { conditions.push('procurement_method_details = ?'); values.push(method); }
@@ -190,12 +193,13 @@ export function searchProcedures(params: {
   if (minScore !== undefined) { conditions.push('score >= ?'); values.push(minScore); }
   if (maxScore !== undefined) { conditions.push('score <= ?'); values.push(maxScore); }
   if (buyerId) { conditions.push('buyer_id = ?'); values.push(buyerId); }
+  if (status) { conditions.push('status = ?'); values.push(status); }
   if (flag) {
-    conditions.push(`EXISTS (SELECT 1 FROM json_each(flags) j WHERE j.value->>'$.code' = ? AND (j.value->>'$.active' = 'true' OR j.value->>'$.active' = '1'))`);
+    conditions.push(`EXISTS (SELECT 1 FROM json_each(flags) j WHERE json_extract(j.value, '$.code') = ? AND json_extract(j.value, '$.active') IN (1, 'true'))`);
     values.push(flag);
   }
   if (supplierId) {
-    conditions.push(`EXISTS (SELECT 1 FROM json_each(suppliers) s WHERE s.value->>'$.id' = ?)`);
+    conditions.push(`EXISTS (SELECT 1 FROM json_each(suppliers) s WHERE json_extract(s.value, '$.id') = ?)`);
     values.push(supplierId);
   }
 
@@ -207,8 +211,8 @@ export function searchProcedures(params: {
 
   const countRow = db.prepare(`SELECT COUNT(*) as total FROM procedures ${where}`).get(...values) as any;
   const rows = db.prepare(`
-    SELECT id, ocid, title, buyer_name, buyer_id, procurement_method_details,
-           award_amount, score, risk_level, flags, published_date, source_year, number_of_tenderers, suppliers
+    SELECT id, ocid, title, buyer_name, buyer_id, procurement_method, procurement_method_details,
+           award_amount, score, risk_level, flags, published_date, source_year, number_of_tenderers, suppliers, status
     FROM procedures ${where}
     ORDER BY ${sort} ${order}
     LIMIT ? OFFSET ?
@@ -255,9 +259,9 @@ export function getBuyerProfile(buyerId: string) {
   `).all(buyerId);
 
   const flagDistribution = db.prepare(`
-    SELECT j.value->>'$.code' as code, COUNT(*) as count
+    SELECT json_extract(j.value, '$.code') as code, COUNT(*) as count
     FROM procedures, json_each(procedures.flags) j
-    WHERE buyer_id = ? AND (j.value->>'$.active' = 'true' OR j.value->>'$.active' = '1')
+    WHERE buyer_id = ? AND json_extract(j.value, '$.active') IN (1, 'true')
     GROUP BY code ORDER BY count DESC
   `).all(buyerId);
 
@@ -273,14 +277,14 @@ export function getSupplierProfile(supplierIdOrName: string) {
   // Search by ID in JSON suppliers array, or by name
   const rows = db.prepare(`
     SELECT id, title, buyer_id, buyer_name, award_amount, score, risk_level,
-           flags, published_date, procurement_method_details, suppliers, source_year
+           flags, published_date, procurement_method_details, suppliers, source_year, status
     FROM procedures
     WHERE EXISTS (
       SELECT 1 FROM json_each(suppliers) s 
-      WHERE s.value->>'$.id' LIKE ? OR s.value->>'$.name' LIKE ?
+      WHERE json_extract(s.value, '$.id') LIKE ? OR json_extract(s.value, '$.name') LIKE ?
     )
     ORDER BY published_date DESC
-    LIMIT 200
+    LIMIT 500
   `).all(`%${supplierIdOrName}%`, `%${supplierIdOrName}%`) as any[];
 
   if (!rows.length) return null;
@@ -299,6 +303,26 @@ export function getSupplierProfile(supplierIdOrName: string) {
   const avgScore = rows.reduce((sum: number, r: any) => sum + r.score, 0) / rows.length;
   const buyers = [...new Set(rows.map((r: any) => r.buyer_id))];
 
+  // Status breakdown
+  const statusCounts: Record<string, number> = {};
+  for (const row of rows) {
+    const s = row.status || 'unknown';
+    statusCounts[s] = (statusCounts[s] || 0) + 1;
+  }
+  const byStatus = Object.entries(statusCounts).map(([status, count]) => ({ status, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // Year breakdown
+  const yearCounts: Record<number, { count: number; value: number }> = {};
+  for (const row of rows) {
+    const y = row.source_year || 0;
+    if (!yearCounts[y]) yearCounts[y] = { count: 0, value: 0 };
+    yearCounts[y].count++;
+    yearCounts[y].value += row.award_amount || 0;
+  }
+  const byYear = Object.entries(yearCounts).map(([year, data]) => ({ year: Number(year), ...data }))
+    .sort((a, b) => b.year - a.year);
+
   const concentration = db.prepare(`
     SELECT buyer_id, supplier_name, year, contract_count, total_value, share_of_buyer, infima_count
     FROM concentration_index WHERE supplier_id LIKE ? OR supplier_name LIKE ?
@@ -311,6 +335,8 @@ export function getSupplierProfile(supplierIdOrName: string) {
     totalValue,
     averageScore: Math.round(avgScore),
     distinctBuyers: buyers.length,
+    byStatus,
+    byYear,
     procedures: rows.map((r: any) => ({ ...r, flags: JSON.parse(r.flags || '[]'), suppliers: JSON.parse(r.suppliers || '[]') })),
     concentration,
   };
@@ -363,12 +389,20 @@ export function getRankings(type: string = 'buyers', year?: number) {
 export function getFilterOptions() {
   const methods = db.prepare(`
     SELECT DISTINCT procurement_method_details as value 
-    FROM procedures WHERE procurement_method_details IS NOT NULL ORDER BY value
+    FROM procedures WHERE procurement_method_details IS NOT NULL AND procurement_method_details != '' ORDER BY value
   `).all();
   const years = db.prepare(`
     SELECT DISTINCT source_year as value FROM procedures ORDER BY value DESC
   `).all();
-  return { methods: methods.map((m: any) => m.value), years: years.map((y: any) => y.value) };
+  const statuses = db.prepare(`
+    SELECT DISTINCT status as value, COUNT(*) as count FROM procedures 
+    WHERE status IS NOT NULL AND status != '' GROUP BY status ORDER BY count DESC
+  `).all();
+  return { 
+    methods: methods.map((m: any) => m.value), 
+    years: years.map((y: any) => y.value),
+    statuses: statuses.map((s: any) => ({ value: s.value, count: s.count })),
+  };
 }
 
 // Upsert procedure
@@ -449,6 +483,89 @@ export function rebuildConcentrationIndex(year?: number) {
   `).run();
 
   console.log('✓ Concentration index rebuilt');
+}
+
+// Normalize procurement_method from raw text to OCDS categories
+export function normalizeProcurementMethods() {
+  // First: if procurement_method has long text, it's actually the details field
+  // Move it to procurement_method_details if that's empty, then normalize
+  db.prepare(`
+    UPDATE procedures SET 
+      procurement_method_details = procurement_method,
+      procurement_method = ''
+    WHERE LENGTH(procurement_method) > 20 AND (procurement_method_details IS NULL OR procurement_method_details = '')
+  `).run();
+
+  // Now normalize based on procurement_method_details content
+  const rules: [string, string][] = [
+    ['%ínfima%', 'limited'],
+    ['%infima%', 'limited'],
+    ['%subasta%', 'open'],
+    ['%licitaci%', 'open'],
+    ['%cotizaci%', 'open'],
+    ['%concurso%', 'open'],
+    ['%menor cuantía%', 'limited'],
+    ['%catálogo%', 'direct'],
+    ['%catalogo%', 'direct'],
+    ['%régimen especial%', 'selective'],
+    ['%regimen especial%', 'selective'],
+    ['%emergent%', 'selective'],
+    ['%contratación directa%', 'direct'],
+    ['%publicación%', 'open'],
+    ['%compra directa%', 'direct'],
+    ['%feria inclusiva%', 'open'],
+    ['%lista corta%', 'limited'],
+    ['%consultor%', 'limited'],
+    ['%repuestos%', 'direct'],
+    ['%seguros%', 'direct'],
+    ['%arrendamiento%', 'direct'],
+    ['%comunicación social%', 'direct'],
+    ['%obra artística%', 'direct'],
+    ['%asesoría%', 'direct'],
+    ['%terminación unilateral%', 'selective'],
+    ['%giro específico%', 'direct'],
+    ['%bien inmueble%', 'direct'],
+  ];
+
+  for (const [pattern, method] of rules) {
+    db.prepare(`
+      UPDATE procedures SET procurement_method = ?
+      WHERE (procurement_method IS NULL OR procurement_method = '' OR LENGTH(procurement_method) > 20)
+        AND LOWER(COALESCE(procurement_method_details, '') || ' ' || COALESCE(title, '')) LIKE ?
+    `).run(method, pattern);
+  }
+
+  // Default remaining to 'open'
+  db.prepare(`
+    UPDATE procedures SET procurement_method = 'open'
+    WHERE procurement_method IS NULL OR procurement_method = '' OR LENGTH(procurement_method) > 20
+  `).run();
+
+  // Also normalize status from raw SERCOP values
+  const statusRules: [string, string][] = [
+    ['%adjud%', 'award'],
+    ['%cancel%', 'cancelled'],
+    ['%desiert%', 'unsuccessful'],
+    ['%finaliz%', 'complete'],
+    ['%contrat%', 'contract'],
+    ['%ejecuci%', 'contract'],
+    ['%publicad%', 'tender'],
+    ['%recepci%', 'complete'],
+    ['%resoluc%', 'award'],
+    ['%borrador%', 'planning'],
+  ];
+
+  for (const [pattern, status] of statusRules) {
+    db.prepare(`
+      UPDATE procedures SET status = ?
+      WHERE LOWER(status) LIKE ? AND status NOT IN ('planning','tender','award','contract','complete','cancelled','unsuccessful')
+    `).run(status, pattern);
+  }
+
+  console.log('✓ Procurement methods and statuses normalized');
+  return db.prepare(`
+    SELECT procurement_method, COUNT(*) as count FROM procedures GROUP BY procurement_method ORDER BY count DESC
+  `).all();
 }
 
 export default db;
