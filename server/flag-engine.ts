@@ -117,13 +117,13 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'CC-04': {
     code: 'CC-04', category: 'concentracion', name: 'Recurring Consortium Member',
     name_es: 'Miembro Recurrente de Consorcio',
-    description_es: 'Una persona/empresa aparece en 8+ consorcios diferentes en 3 años.',
+    description_es: 'Una persona/empresa aparece como miembro de 5+ consorcios (procesos con varios proveedores) del mismo comprador.',
     severity: 2, ocp_ref: 'R070',
   },
   'CC-05': {
     code: 'CC-05', category: 'concentracion', name: 'Possible Splitting',
     name_es: 'Posible Fraccionamiento',
-    description_es: '3+ contratos con CPC similar del mismo comprador en 90 días cuya suma supera el umbral.',
+    description_es: 'Un mismo comprador adjudica varias ínfimas cuantías al mismo proveedor en el año cuya suma supera el umbral anual (Art. 270 Reglamento LOSNCP).',
     severity: 3, ocp_ref: 'R011',
   },
   'TR-01': {
@@ -186,6 +186,7 @@ export function getRiskLevel(score: number): string {
 
 interface ProcedureData {
   id: string;
+  ocid?: string;
   procurement_method?: string;
   procurement_method_details?: string;
   buyer_id?: string;
@@ -233,7 +234,7 @@ function isCompetitive(method?: string): boolean {
 
 export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
   const flags: Flag[] = [];
-  const date = proc.published_date || proc.award_date;
+  const date = proc.published_date || proc.award_date || null;
   const threshold = getInfimaThreshold(date);
   const value = proc.award_amount || proc.budget_amount || 0;
 
@@ -343,14 +344,22 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     });
   }
 
-  // TR-03: Special regime without justification
-  if (proc.procurement_method_details?.toLowerCase().includes('especial') ||
-      proc.procurement_method_details?.toLowerCase().includes('emergent')) {
-    // In OCDS, rationale would be in tender.procurementMethodRationale
-    // If not present, flag it
+  // TR-03: Régimen especial sin justificación
+  // En los datos de SERCOP el régimen especial aparece como "Contratación directa"
+  // o por el prefijo "RE-" en el OCID. Se marca cuando es contratación directa
+  // de monto relevante (posible régimen especial sin justificación documentada).
+  const methodLower = (proc.procurement_method_details || '').toLowerCase();
+  const isRegimenEspecial =
+    methodLower.includes('especial') ||
+    methodLower.includes('emergent') ||
+    methodLower.includes('contratación directa') ||
+    methodLower.includes('contratacion directa') ||
+    (proc.id || '').toUpperCase().startsWith('OCDS-5WNO2W-RE-') ||
+    (proc.ocid || '').toUpperCase().includes('-RE-');
+  if (isRegimenEspecial && value > threshold) {
     flags.push({
       ...FLAG_CATALOG['TR-03'], active: true,
-      detail: `Régimen especial (${proc.procurement_method_details}) sin justificación en datos OCDS`,
+      detail: `Posible régimen especial (${proc.procurement_method_details || 'contratación directa'}) de $${value.toLocaleString()} sin justificación en datos OCDS`,
     });
   }
 
@@ -364,13 +373,24 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
 }
 
 // ── Concentration Flags (require historical context) ────────
-// These are evaluated after building the concentration index
+// Evaluated using the concentration_index SQL table.
+// The context is a per-procedure lookup object, built by the caller
+// from the concentration_index table. This scales to millions of rows
+// without loading everything into memory.
+
+export interface SupplierConcentration {
+  supplier_id: string;
+  supplier_name: string;
+  infima_count: number;        // ínfimas de este proveedor con este comprador, en el año del proceso
+  infima_total_value: number;  // suma de montos de esas ínfimas
+  share_of_buyer: number;      // % del gasto del comprador que va a este proveedor, en el año
+  years_active: number;        // en cuántos años distintos (de los 7) este proveedor ganó a este comprador
+  consortium_count: number;    // en cuántos procesos-consorcio (2+ proveedores) participó con este comprador
+}
 
 export interface ConcentrationContext {
-  buyerSupplierInfimas: Map<string, number>;  // "buyer|supplier" → count in year
-  buyerSupplierShare: Map<string, number>;    // "buyer|supplier" → % share
-  supplierYears: Map<string, Set<number>>;    // "buyer|supplier" → set of years
-  buyerCpcContracts: Map<string, { date: string; value: number; supplier_id: string }[]>;
+  // "buyer_id|supplier_id" -> datos de concentración de ese par
+  bySupplier: Map<string, SupplierConcentration>;
 }
 
 export function evaluateConcentrationFlags(
@@ -378,62 +398,55 @@ export function evaluateConcentrationFlags(
   ctx: ConcentrationContext
 ): Flag[] {
   const flags: Flag[] = [];
-  const date = proc.published_date || proc.award_date;
+  const date = proc.published_date || proc.award_date || null;
   const threshold = getInfimaThreshold(date);
+  const isInf = isInfima(proc.procurement_method_details);
+  const isConsortium = (proc.suppliers || []).length >= 2;
 
   for (const supplier of (proc.suppliers || [])) {
+    if (!supplier.id) continue;
     const key = `${proc.buyer_id}|${supplier.id}`;
+    const c = ctx.bySupplier.get(key);
+    if (!c) continue;
 
-    // CC-01: Recurring supplier in ínfima cuantía
-    const infCount = ctx.buyerSupplierInfimas.get(key) || 0;
-    if (infCount >= 5 && isInfima(proc.procurement_method_details)) {
+    // CC-01: Proveedor recurrente en ínfima cuantía (5+ ínfimas mismo comprador en el año)
+    if (isInf && c.infima_count >= 5) {
       flags.push({
         ...FLAG_CATALOG['CC-01'], active: true,
-        detail: `${supplier.name} tiene ${infCount} ínfimas con este comprador este año`,
+        detail: `${supplier.name} tiene ${c.infima_count} ínfimas con este comprador en el año`,
       });
     }
 
-    // CC-02: Dominant supplier (>30% share)
-    const share = ctx.buyerSupplierShare.get(key) || 0;
-    if (share > 30) {
+    // CC-02: Proveedor dominante (>30% del gasto del comprador en el año)
+    if (c.share_of_buyer > 30) {
       flags.push({
         ...FLAG_CATALOG['CC-02'], active: true,
-        detail: `${supplier.name} representa ${share.toFixed(1)}% del gasto de este comprador`,
+        detail: `${supplier.name} representa ${c.share_of_buyer.toFixed(1)}% del gasto de este comprador`,
       });
     }
 
-    // CC-03: Historically permanent supplier
-    const years = ctx.supplierYears.get(key);
-    if (years && years.size >= 5) {
+    // CC-03: Proveedor histórico permanente (ganó al mismo comprador en 5+ de los 7 años)
+    if (c.years_active >= 5) {
       flags.push({
         ...FLAG_CATALOG['CC-03'], active: true,
-        detail: `${supplier.name} presente en ${years.size} de los últimos 7 años`,
+        detail: `${supplier.name} presente en ${c.years_active} de los últimos 7 años con este comprador`,
       });
     }
-  }
 
-  // CC-05: Possible splitting (3+ similar CPC in 90 days, sum > threshold)
-  if (proc.buyer_id && proc.items_classification) {
-    const cpcPrefix = proc.items_classification.substring(0, 2);
-    const key = `${proc.buyer_id}|${cpcPrefix}`;
-    const group = ctx.buyerCpcContracts.get(key) || [];
-
-    if (date) {
-      const procDate = new Date(date).getTime();
-      const window90 = group.filter(c => {
-        const cDate = new Date(c.date).getTime();
-        return Math.abs(procDate - cDate) <= 90 * 24 * 60 * 60 * 1000;
+    // CC-04: Miembro recurrente de consorcio (en 5+ procesos-consorcio del mismo comprador)
+    if (isConsortium && c.consortium_count >= 5) {
+      flags.push({
+        ...FLAG_CATALOG['CC-04'], active: true,
+        detail: `${supplier.name} aparece en ${c.consortium_count} consorcios con este comprador`,
       });
+    }
 
-      if (window90.length >= 3) {
-        const totalValue = window90.reduce((sum, c) => sum + c.value, 0);
-        if (totalValue > threshold) {
-          flags.push({
-            ...FLAG_CATALOG['CC-05'], active: true,
-            detail: `${window90.length} contratos CPC ${cpcPrefix} en 90 días = $${totalValue.toLocaleString()} (umbral: $${threshold.toLocaleString()})`,
-          });
-        }
-      }
+    // CC-05: Posible fraccionamiento (suma de ínfimas mismo proveedor+comprador > umbral anual)
+    if (c.infima_count >= 2 && c.infima_total_value > threshold) {
+      flags.push({
+        ...FLAG_CATALOG['CC-05'], active: true,
+        detail: `${c.infima_count} ínfimas a ${supplier.name} suman $${c.infima_total_value.toLocaleString()} (umbral anual: $${threshold.toLocaleString()})`,
+      });
     }
   }
 
