@@ -203,20 +203,128 @@ router.post('/batch-concentration', express.json({ limit: '50mb' }), async (req,
   }
 });
 
+// ── FIX BUDGET (repara budget_amount corrupto = 'USD') ──────
+router.post('/fix-budget', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { getDb } = await import('../db.js');
+    const db = getDb();
+
+    // Cuantos registros estan corruptos
+    const before = db.prepare(
+      `SELECT COUNT(*) c FROM procedures WHERE budget_amount = 'USD'`
+    ).get() as any;
+
+    // El monto real quedo en budget_currency. Lo movemos de vuelta.
+    const tx = db.transaction(() => {
+      db.prepare(`
+        UPDATE procedures
+        SET budget_amount = CAST(budget_currency AS REAL),
+            budget_currency = 'USD'
+        WHERE budget_amount = 'USD'
+          AND budget_currency IS NOT NULL
+          AND budget_currency != 'USD'
+      `).run();
+    });
+    tx();
+
+    const after = db.prepare(
+      `SELECT COUNT(*) c FROM procedures WHERE budget_amount = 'USD'`
+    ).get() as any;
+
+    res.json({
+      success: true,
+      message: 'Campo budget_amount reparado.',
+      corruptos_antes: before.c,
+      corruptos_despues: after.c,
+      reparados: before.c - after.c,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── NORMALIZE DATA (fix procurement_method + re-evaluate flags) ──
 router.post('/normalize', async (req, res) => {
   if (!checkAuth(req, res)) return;
   try {
-    const { normalizeProcurementMethods, getDb } = await import('../db.js');
+    const { normalizeProcurementMethods, getDb, rebuildConcentrationIndex } = await import('../db.js');
     const { evaluateAllFlags } = await import('../flag-engine.js');
-    
-    // Step 1: Normalize procurement methods and statuses
-    const methodCounts = normalizeProcurementMethods();
-    
-    // Step 2: Re-evaluate flags for all procedures
+
     const db = getDb();
+
+    // PASO 1: Normalizar metodos de contratacion y estados
+    const methodCounts = normalizeProcurementMethods();
+
+    // PASO 2: Reconstruir el indice de concentracion (ANTES de evaluar banderas)
+    rebuildConcentrationIndex();
+
+    // PASO 3: Construir el contexto de concentracion desde la tabla SQL.
+    // Para cada par comprador|proveedor calculamos: ínfimas del año, share,
+    // años activos (de los 7), y participación en consorcios.
+    // Se agrega por par tomando el MAXIMO across años para infima_count/share,
+    // y el CONTEO de años distintos para years_active.
+    const concRows = db.prepare(`
+      SELECT buyer_id, supplier_id, supplier_name,
+             year, contract_count, total_value,
+             COALESCE(infima_count, 0) as infima_count,
+             COALESCE(infima_total_value, 0) as infima_total_value,
+             COALESCE(share_of_buyer, 0) as share_of_buyer
+      FROM concentration_index
+      WHERE supplier_id IS NOT NULL
+    `).all() as any[];
+
+    // Mapa: "buyer|supplier" -> agregados
+    const bySupplier = new Map<string, any>();
+    const yearsByPair = new Map<string, Set<number>>();
+
+    for (const r of concRows) {
+      const key = `${r.buyer_id}|${r.supplier_id}`;
+      if (!bySupplier.has(key)) {
+        bySupplier.set(key, {
+          supplier_id: r.supplier_id,
+          supplier_name: r.supplier_name,
+          infima_count: 0,
+          infima_total_value: 0,
+          share_of_buyer: 0,
+          years_active: 0,
+          consortium_count: 0,
+        });
+        yearsByPair.set(key, new Set());
+      }
+      const agg = bySupplier.get(key);
+      // infima y share: tomamos el pico anual (el año mas concentrado)
+      agg.infima_count = Math.max(agg.infima_count, r.infima_count);
+      agg.infima_total_value = Math.max(agg.infima_total_value, r.infima_total_value);
+      agg.share_of_buyer = Math.max(agg.share_of_buyer, r.share_of_buyer);
+      yearsByPair.get(key)!.add(r.year);
+    }
+    for (const [key, years] of yearsByPair) {
+      bySupplier.get(key).years_active = years.size;
+    }
+
+    // PASO 3b: contar consorcios por par comprador|proveedor.
+    // Un consorcio = proceso con 2+ proveedores.
+    const consortiumRows = db.prepare(`
+      SELECT buyer_id, suppliers FROM procedures
+      WHERE json_array_length(suppliers) >= 2
+    `).all() as any[];
+    for (const row of consortiumRows) {
+      let sups: any[] = [];
+      try { sups = JSON.parse(row.suppliers || '[]'); } catch { continue; }
+      for (const s of sups) {
+        if (!s.id) continue;
+        const key = `${row.buyer_id}|${s.id}`;
+        const agg = bySupplier.get(key);
+        if (agg) agg.consortium_count++;
+      }
+    }
+
+    const ctx = { bySupplier };
+
+    // PASO 4: Re-evaluar las 15 banderas para todos los procedimientos
     const rows = db.prepare(`
-      SELECT id, procurement_method, procurement_method_details, buyer_id,
+      SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
              budget_amount, award_amount, contract_amount, final_amount,
              published_date, submission_deadline, award_date,
              number_of_tenderers, title, description, items_classification,
@@ -232,33 +340,38 @@ router.post('/normalize', async (req, res) => {
       for (const row of rows) {
         const proc = {
           ...row,
+          // budget_amount puede venir como texto si quedo sin reparar; lo forzamos a numero
+          budget_amount: Number(row.budget_amount) || 0,
           suppliers: JSON.parse(row.suppliers || '[]'),
           has_amendments: !!row.has_amendments,
         };
-        const { flags, score, riskLevel } = evaluateAllFlags(proc);
+        const { flags, score, riskLevel } = evaluateAllFlags(proc, ctx);
         updateStmt.run(JSON.stringify(flags), score, riskLevel, row.id);
       }
     });
-
     tx();
 
-    // Step 3: Rebuild concentration index
-    const { rebuildConcentrationIndex } = await import('../db.js');
-    rebuildConcentrationIndex();
-
-    // Get updated stats
+    // Estadisticas finales
     const riskCounts = db.prepare(`
       SELECT risk_level, COUNT(*) as count FROM procedures GROUP BY risk_level ORDER BY count DESC
+    `).all();
+    const flagCounts = db.prepare(`
+      SELECT json_extract(j.value, '$.code') as code, COUNT(*) as count
+      FROM procedures, json_each(procedures.flags) j
+      WHERE json_extract(j.value, '$.active') IN (1, 'true')
+      GROUP BY code ORDER BY count DESC
     `).all();
 
     res.json({
       success: true,
-      message: `Normalizado y re-evaluado ${rows.length} procedimientos.`,
+      message: `Normalizado y re-evaluado ${rows.length} procedimientos con las 15 banderas.`,
+      pares_concentracion: bySupplier.size,
       methodCounts,
       riskCounts,
+      flagCounts,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
 
