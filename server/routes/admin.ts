@@ -244,6 +244,53 @@ router.post('/fix-budget', async (req, res) => {
   }
 });
 
+// ── FIX SHARE (reconstruye concentration_index con calculo correcto) ──
+// Util cuando solo quieres reconstruir el indice y ver los nuevos numeros
+// sin re-evaluar las 1.46M de banderas (que toma 10-12 minutos).
+router.post('/fix-share', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const { rebuildConcentrationIndex, getDb } = await import('../db.js');
+    const db = getDb();
+
+    // Antes: cuantos pares hay con share absurdo (>100)
+    const before = db.prepare(
+      `SELECT COUNT(*) c FROM concentration_index WHERE share_of_buyer > 100`
+    ).get() as any;
+
+    // Reconstruye con la query corregida
+    rebuildConcentrationIndex();
+
+    // Despues: deberia ser 0
+    const after = db.prepare(
+      `SELECT COUNT(*) c FROM concentration_index WHERE share_of_buyer > 100`
+    ).get() as any;
+
+    // Estadisticas de validacion
+    const stats = db.prepare(`
+      SELECT
+        COUNT(*) as pares_total,
+        MIN(share_of_buyer) as share_min,
+        MAX(share_of_buyer) as share_max,
+        AVG(share_of_buyer) as share_avg,
+        SUM(CASE WHEN share_of_buyer > 30 THEN 1 ELSE 0 END) as pares_share_mayor_30,
+        SUM(infima_count) as total_infimas,
+        MAX(infima_count) as max_infimas_por_par
+      FROM concentration_index
+    `).get();
+
+    res.json({
+      success: true,
+      message: 'Indice de concentracion reconstruido con calculo corregido.',
+      pares_con_share_absurdo_antes: before.c,
+      pares_con_share_absurdo_despues: after.c,
+      estadisticas: stats,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 // ── NORMALIZE DATA (fix procurement_method + re-evaluate flags) ──
 router.post('/normalize', async (req, res) => {
   if (!checkAuth(req, res)) return;
