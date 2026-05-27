@@ -117,7 +117,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'CC-04': {
     code: 'CC-04', category: 'concentracion', name: 'Recurring Consortium Member',
     name_es: 'Miembro Recurrente de Consorcio',
-    description_es: 'Una persona/empresa aparece como miembro de 5+ consorcios (procesos con varios proveedores) del mismo comprador.',
+    description_es: 'Una persona/empresa aparece como miembro de 2+ consorcios (procesos con varios proveedores) del mismo comprador.',
     severity: 2, ocp_ref: 'R070',
   },
   'CC-05': {
@@ -433,8 +433,9 @@ export function evaluateConcentrationFlags(
       });
     }
 
-    // CC-04: Miembro recurrente de consorcio (en 5+ procesos-consorcio del mismo comprador)
-    if (isConsortium && c.consortium_count >= 5) {
+    // CC-04: Miembro recurrente de consorcio (en 2+ procesos-consorcio del mismo comprador)
+    // Umbral bajado a 2+ porque en estos datos solo hay 41 procesos-consorcio en total.
+    if (isConsortium && c.consortium_count >= 2) {
       flags.push({
         ...FLAG_CATALOG['CC-04'], active: true,
         detail: `${supplier.name} aparece en ${c.consortium_count} consorcios con este comprador`,

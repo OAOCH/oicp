@@ -456,33 +456,81 @@ export function rebuildConcentrationIndex(year?: number) {
     db.prepare('DELETE FROM concentration_index').run();
   }
 
+  // Identificacion de INFIMA CUANTIA en los datos de SERCOP:
+  //   El metodo no contiene la palabra "infima". La infima aparece como:
+  //   (a) titulos con prefijo "ORDEN DE COMPRA CE" (catalogo electronico, casi siempre infimas)
+  //   (b) procesos con monto adjudicado por debajo del umbral legal del ano
+  //   (c) o ambos. Aceptamos cualquiera de los dos para no perder casos.
+  // Umbrales por ano (LOSNCP coeficientes hasta oct-2025, USD 10,000 desde reforma)
   db.prepare(`
     INSERT INTO concentration_index (buyer_id, supplier_id, supplier_name, year, contract_count, total_value, infima_count, infima_total_value)
-    SELECT 
+    SELECT
       p.buyer_id,
-      s.value->>'$.id' as supplier_id,
-      s.value->>'$.name' as supplier_name,
+      json_extract(s.value, '$.id') as supplier_id,
+      json_extract(s.value, '$.name') as supplier_name,
       p.source_year as year,
       COUNT(*) as contract_count,
-      SUM(p.award_amount) as total_value,
-      SUM(CASE WHEN p.procurement_method_details LIKE '%nfima%' THEN 1 ELSE 0 END) as infima_count,
-      SUM(CASE WHEN p.procurement_method_details LIKE '%nfima%' THEN COALESCE(p.award_amount, 0) ELSE 0 END) as infima_total_value
+      SUM(COALESCE(p.award_amount, 0)) as total_value,
+      SUM(CASE
+        WHEN (UPPER(COALESCE(p.title,'')) LIKE 'ORDEN DE COMPRA CE%'
+              OR UPPER(COALESCE(p.title,'')) LIKE 'OC-CE%')
+          OR (COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
+              CASE
+                WHEN p.published_date >= '2025-10-07' THEN 10000.0
+                WHEN p.source_year = 2024 THEN 6658.78
+                WHEN p.source_year = 2023 THEN 6300.57
+                WHEN p.source_year = 2022 THEN 6779.95
+                WHEN p.source_year = 2021 THEN 6416.07
+                WHEN p.source_year = 2020 THEN 7099.68
+                WHEN p.source_year = 2019 THEN 7105.88
+                ELSE 10000.0
+              END)
+        THEN 1 ELSE 0 END) as infima_count,
+      SUM(CASE
+        WHEN (UPPER(COALESCE(p.title,'')) LIKE 'ORDEN DE COMPRA CE%'
+              OR UPPER(COALESCE(p.title,'')) LIKE 'OC-CE%')
+          OR (COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
+              CASE
+                WHEN p.published_date >= '2025-10-07' THEN 10000.0
+                WHEN p.source_year = 2024 THEN 6658.78
+                WHEN p.source_year = 2023 THEN 6300.57
+                WHEN p.source_year = 2022 THEN 6779.95
+                WHEN p.source_year = 2021 THEN 6416.07
+                WHEN p.source_year = 2020 THEN 7099.68
+                WHEN p.source_year = 2019 THEN 7105.88
+                ELSE 10000.0
+              END)
+        THEN COALESCE(p.award_amount, 0) ELSE 0 END) as infima_total_value
     FROM procedures p, json_each(p.suppliers) s
     ${yearFilter}
     GROUP BY p.buyer_id, supplier_id, p.source_year
   `).run(...yearVal);
 
-  // Calculate share_of_buyer
+  // Calculate share_of_buyer correctly:
+  // share = (valor del par buyer+supplier+year) / (gasto total del buyer en ese MISMO year) * 100
+  // El bug anterior: la subconsulta no correlacionaba buyer+year, asi que el divisor
+  // se inflaba sumando varios anios y el share salia en millones.
+  // Fix: usar una CTE con totales por buyer+year y JOIN directo.
   db.prepare(`
-    UPDATE concentration_index SET share_of_buyer = (
-      SELECT CASE WHEN buyer_total > 0 THEN (ci_inner.total_value / buyer_total) * 100 ELSE 0 END
-      FROM (SELECT buyer_id, SUM(total_value) as buyer_total FROM concentration_index GROUP BY buyer_id, year) bt
-      JOIN concentration_index ci_inner ON ci_inner.buyer_id = bt.buyer_id AND ci_inner.year = concentration_index.year
-      WHERE ci_inner.rowid = concentration_index.rowid
+    WITH totals AS (
+      SELECT buyer_id, year, SUM(total_value) as buyer_year_total
+      FROM concentration_index
+      GROUP BY buyer_id, year
+    )
+    UPDATE concentration_index
+    SET share_of_buyer = (
+      SELECT CASE
+        WHEN t.buyer_year_total > 0
+        THEN (concentration_index.total_value * 100.0 / t.buyer_year_total)
+        ELSE 0
+      END
+      FROM totals t
+      WHERE t.buyer_id = concentration_index.buyer_id
+        AND t.year = concentration_index.year
     )
   `).run();
 
-  console.log('✓ Concentration index rebuilt');
+  console.log('✓ Concentration index rebuilt (with corrected share and infima detection)');
 }
 
 // Normalize procurement_method from raw text to OCDS categories
