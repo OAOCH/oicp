@@ -336,6 +336,8 @@ router.post('/normalize', async (req, res) => {
           share_of_buyer: 0,
           years_active: 0,
           consortium_count: 0,
+          total_value: 0,
+          buyer_total_procs: 0,
         });
         yearsByPair.set(key, new Set());
       }
@@ -344,10 +346,21 @@ router.post('/normalize', async (req, res) => {
       agg.infima_count = Math.max(agg.infima_count, r.infima_count);
       agg.infima_total_value = Math.max(agg.infima_total_value, r.infima_total_value);
       agg.share_of_buyer = Math.max(agg.share_of_buyer, r.share_of_buyer);
+      agg.total_value += (r.total_value || 0);
       yearsByPair.get(key)!.add(r.year);
     }
     for (const [key, years] of yearsByPair) {
       bySupplier.get(key).years_active = years.size;
+    }
+
+    // Volumen total de procesos por comprador (para el piso de CC-02).
+    const buyerProcs = new Map<string, number>();
+    for (const r of concRows) {
+      buyerProcs.set(r.buyer_id, (buyerProcs.get(r.buyer_id) || 0) + (r.contract_count || 0));
+    }
+    for (const [key, agg] of bySupplier) {
+      const buyerId = key.split('|')[0];
+      agg.buyer_total_procs = buyerProcs.get(buyerId) || 0;
     }
 
     // PASO 3b: contar consorcios por par comprador|proveedor.
