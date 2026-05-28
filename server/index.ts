@@ -21,10 +21,13 @@ app.use(express.json({ limit: '50mb' }));
 // Initialize DB
 migrate();
 
+// Health check (lightweight, no DB queries - used by Railway healthcheck)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // Admin routes (data loading from browser)
 app.use('/api/admin', adminRouter);
-
-// ── API Routes ──────────────────────────────────────────────
 
 // Statistics
 app.get('/api/statistics', (req, res) => {
@@ -99,7 +102,7 @@ app.get('/api/filters', (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Serve static in production ──────────────────────────────
+// Serve static in production
 if (process.env.NODE_ENV === 'production') {
   const publicDir = path.join(__dirname, '..', 'dist', 'public');
   app.use(express.static(publicDir));
@@ -111,7 +114,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.listen(PORT, () => {
-  console.log(`\n  🔍 OICP — Observatorio de Integridad de Contratación Pública`);
-  console.log(`  📡 API: http://localhost:${PORT}/api`);
-  console.log(`  🌐 App: http://localhost:5173 (dev) | http://localhost:${PORT} (prod)\n`);
+  console.log(`\n OICP - Observatorio de Integridad de Contratacion Publica`);
+  console.log(` API: http://localhost:${PORT}/api`);
+  console.log(` App: http://localhost:5173 (dev) | http://localhost:${PORT} (prod)\n`);
 });
