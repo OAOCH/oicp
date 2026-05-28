@@ -386,6 +386,8 @@ export interface SupplierConcentration {
   share_of_buyer: number;      // % del gasto del comprador que va a este proveedor, en el año
   years_active: number;        // en cuántos años distintos (de los 7) este proveedor ganó a este comprador
   consortium_count: number;    // en cuántos procesos-consorcio (2+ proveedores) participó con este comprador
+  total_value: number;         // monto total adjudicado al par comprador-proveedor (todos los años)
+  buyer_total_procs: number;   // total de procesos del comprador (volumen, para el piso de CC-02)
 }
 
 export interface ConcentrationContext {
@@ -393,11 +395,25 @@ export interface ConcentrationContext {
   bySupplier: Map<string, SupplierConcentration>;
 }
 
+function isCatalogoElectronico(proc: any): boolean {
+  const m = (proc.procurement_method_details || '').toLowerCase();
+  const t = (proc.title || '').toUpperCase();
+  return m.includes('cat\u00e1logo electr\u00f3nico') || m.includes('catalogo electronico') || t.startsWith('ORDEN DE COMPRA CE');
+}
+
 export function evaluateConcentrationFlags(
   proc: ProcedureData,
   ctx: ConcentrationContext
 ): Flag[] {
   const flags: Flag[] = [];
+
+  // CALIBRACION: el catalogo electronico es compra centralizada (SERCOP precalifica
+  // proveedores y fija precios). La concentracion comprador-proveedor en catalogo NO
+  // indica direccionamiento del comprador, asi que las banderas de concentracion no
+  // aplican. Solo se evaluan en contratacion tradicional (licitacion, cotizacion,
+  // menor cuantia, regimen especial, contratacion directa).
+  if (isCatalogoElectronico(proc)) return [];
+
   const date = proc.published_date || proc.award_date || null;
   const threshold = getInfimaThreshold(date);
   const isInf = isInfima(proc.procurement_method_details);
@@ -417,16 +433,18 @@ export function evaluateConcentrationFlags(
       });
     }
 
-    // CC-02: Proveedor dominante (>30% del gasto del comprador en el año)
-    if (c.share_of_buyer > 30) {
+    // CC-02: Proveedor dominante (>40% del gasto del comprador, solo si el comprador
+    // tiene volumen suficiente: >=10 procesos. Un 100% en un comprador con 1-2 procesos no discrimina).
+    if (c.share_of_buyer > 40 && c.buyer_total_procs >= 10) {
       flags.push({
         ...FLAG_CATALOG['CC-02'], active: true,
         detail: `${supplier.name} representa ${c.share_of_buyer.toFixed(1)}% del gasto de este comprador`,
       });
     }
 
-    // CC-03: Proveedor histórico permanente (ganó al mismo comprador en 5+ de los 7 años)
-    if (c.years_active >= 5) {
+    // CC-03: Proveedor histórico permanente (5+ años con el mismo comprador) y con monto
+    // total significativo (>50k), para descartar recurrencia de compras menores.
+    if (c.years_active >= 5 && c.total_value > 50000) {
       flags.push({
         ...FLAG_CATALOG['CC-03'], active: true,
         detail: `${supplier.name} presente en ${c.years_active} de los últimos 7 años con este comprador`,

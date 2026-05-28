@@ -472,9 +472,10 @@ export function rebuildConcentrationIndex(year?: number) {
       COUNT(*) as contract_count,
       SUM(COALESCE(p.award_amount, 0)) as total_value,
       SUM(CASE
-        WHEN (UPPER(COALESCE(p.title,'')) LIKE 'ORDEN DE COMPRA CE%'
-              OR UPPER(COALESCE(p.title,'')) LIKE 'OC-CE%')
-          OR (COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
+        WHEN (UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
+           AND UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
+           AND UPPER(COALESCE(p.title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'
+           AND COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
               CASE
                 WHEN p.published_date >= '2025-10-07' THEN 10000.0
                 WHEN p.source_year = 2024 THEN 6658.78
@@ -487,9 +488,10 @@ export function rebuildConcentrationIndex(year?: number) {
               END)
         THEN 1 ELSE 0 END) as infima_count,
       SUM(CASE
-        WHEN (UPPER(COALESCE(p.title,'')) LIKE 'ORDEN DE COMPRA CE%'
-              OR UPPER(COALESCE(p.title,'')) LIKE 'OC-CE%')
-          OR (COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
+        WHEN (UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
+           AND UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
+           AND UPPER(COALESCE(p.title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'
+           AND COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
               CASE
                 WHEN p.published_date >= '2025-10-07' THEN 10000.0
                 WHEN p.source_year = 2024 THEN 6658.78
