@@ -18,6 +18,7 @@ function codes(flags: any[]): string[] { return flags.map((f) => f.code); }
 test('getInfimaThreshold: reforma rige desde 2025-10-07', () => {
   assert.equal(getInfimaThreshold('2024-06-15'), 6658.78);
   assert.equal(getInfimaThreshold('2023-06-15'), 6300.57); // mid-year evita el desfase de zona horaria
+  assert.equal(getInfimaThreshold('2025-03-15'), 7212.60); // 2025 pre-reforma: coeficiente
   assert.equal(getInfimaThreshold('2025-10-07'), 10000); // dia de la reforma
   assert.equal(getInfimaThreshold('2025-12-01'), 10000); // post reforma
   assert.equal(getInfimaThreshold(null), 10000);         // sin fecha -> reformada
@@ -112,12 +113,16 @@ test('CC-05: posible fraccionamiento (2+ infimas que suman sobre el umbral)', ()
   assert.ok(codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-05'));
 });
 
-// ── Banderas que hoy NO pueden dispararse (documentado, verificado en produccion) ──
-test('CC-01 esta muerta: requiere isInfima por TEXTO del metodo, que nunca ocurre en los datos', () => {
-  // El metodo de SERCOP nunca contiene la palabra "infima"; isInfima() siempre da false.
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 1000, share_of_buyer: 5, years_active: 1, consortium_count: 0, total_value: 1000, buyer_total_procs: 12 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
-  // Aunque infima_count=9 (>=5), CC-01 no aparece porque el proceso no es "infima" por texto.
+// ── CC-01 revivida: detecta ínfima por MONTO (no por texto inexistente) ──
+test('CC-01 (revivida): dispara con proceso ínfima por monto + par con >=5 ínfimas', () => {
+  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, years_active: 1, consortium_count: 0, total_value: 30000, buyer_total_procs: 12 }]]) };
+  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', award_amount: 5000, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
+  assert.ok(codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-01'));
+});
+
+test('CC-01: NO dispara en catálogo electrónico aunque el par tenga muchas ínfimas', () => {
+  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, years_active: 1, consortium_count: 0, total_value: 30000, buyer_total_procs: 12 }]]) };
+  const proc = { id: 'x', buyer_id: 'b', title: 'ORDEN DE COMPRA CE-9', procurement_method_details: 'Catálogo electrónico', award_amount: 500, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
   assert.ok(!codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-01'));
 });
 

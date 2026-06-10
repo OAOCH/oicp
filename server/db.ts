@@ -484,6 +484,7 @@ export function rebuildConcentrationIndex(year?: number) {
                 WHEN p.source_year = 2021 THEN 6416.07
                 WHEN p.source_year = 2020 THEN 7099.68
                 WHEN p.source_year = 2019 THEN 7105.88
+                WHEN p.source_year = 2025 THEN 7212.60
                 ELSE 10000.0
               END)
         THEN 1 ELSE 0 END) as infima_count,
@@ -500,6 +501,7 @@ export function rebuildConcentrationIndex(year?: number) {
                 WHEN p.source_year = 2021 THEN 6416.07
                 WHEN p.source_year = 2020 THEN 7099.68
                 WHEN p.source_year = 2019 THEN 7105.88
+                WHEN p.source_year = 2025 THEN 7212.60
                 ELSE 10000.0
               END)
         THEN COALESCE(p.award_amount, 0) ELSE 0 END) as infima_total_value

@@ -30,8 +30,13 @@ export function getThreshold(year: number): YearThresholds {
 export function getInfimaThreshold(dateStr: string | null): number {
   if (!dateStr) return 10_000;
   const d = new Date(dateStr);
+  // Reforma LOSNCP (RO 4S No. 140, 7-oct-2025): ínfima cuantía fija en USD 10.000.
   if (d >= new Date('2025-10-07')) return 10_000;
   const year = d.getFullYear();
+  // 2025 ANTES de la reforma usa el coeficiente (0.0000002 x PGE 2025 = 7.212,60),
+  // no el 10.000 post-reforma. Los procedimientos previos al 7-oct-2025 se rigen
+  // por la normativa anterior (disposición transitoria).
+  if (year === 2025) return 7_212.60;
   return UMBRALES[year]?.infima_cuantia || 10_000;
 }
 
@@ -401,6 +406,18 @@ function isCatalogoElectronico(proc: any): boolean {
   return m.includes('cat\u00e1logo electr\u00f3nico') || m.includes('catalogo electronico') || t.startsWith('ORDEN DE COMPRA CE');
 }
 
+// \u00cdnfima por MONTO (mismo criterio que el \u00edndice de concentraci\u00f3n en db.ts):
+// no-cat\u00e1logo y monto adjudicado positivo bajo el umbral anual. En los datos de
+// SERCOP el m\u00e9todo nunca contiene la palabra "\u00ednfima", as\u00ed que detectarla por
+// texto deja CC-01 muerta; las banderas de concentraci\u00f3n usan este criterio.
+function isInfimaByAmount(proc: ProcedureData): boolean {
+  if (isCatalogoElectronico(proc)) return false;
+  const value = proc.award_amount || 0;
+  if (value <= 0) return false;
+  const date = proc.published_date || proc.award_date || null;
+  return value <= getInfimaThreshold(date);
+}
+
 export function evaluateConcentrationFlags(
   proc: ProcedureData,
   ctx: ConcentrationContext
@@ -416,7 +433,9 @@ export function evaluateConcentrationFlags(
 
   const date = proc.published_date || proc.award_date || null;
   const threshold = getInfimaThreshold(date);
-  const isInf = isInfima(proc.procurement_method_details);
+  // CC-01 usa ínfima por MONTO (no por el texto del método, que nunca dice "ínfima"
+  // en los datos de SERCOP). Antes daba 0 disparos por esa incompatibilidad.
+  const isInf = isInfimaByAmount(proc);
   const isConsortium = (proc.suppliers || []).length >= 2;
 
   for (const supplier of (proc.suppliers || [])) {
