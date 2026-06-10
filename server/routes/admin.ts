@@ -2,8 +2,12 @@ import { Router } from 'express';
 import express from 'express';
 import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase } from '../db.js';
 import { evaluateAllFlags, getRegime } from '../flag-engine.js';
-import { writeFileSync, readFileSync } from 'fs';
+import { writeFileSync, readFileSync, createReadStream } from 'fs';
+import { createGzip } from 'zlib';
 import { resolve } from 'path';
+import crypto from 'crypto';
+import { authEnabled, sessionFromRequest } from '../auth.js';
+import { invalidateStatsCache } from '../cache.js';
 
 const router = Router();
 
@@ -36,13 +40,20 @@ const SEARCH_TERMS_FULL = [
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 function checkAuth(req: any, res: any): boolean {
-  const key = process.env.ADMIN_KEY || 'oicp-admin-2026';
-  const provided = req.query.key || req.headers['x-admin-key'];
-  if (provided !== key) {
-    res.status(403).json({ error: 'Clave admin incorrecta' });
-    return false;
+  // Acepta ADMIN_KEY válida (scripts internos) o sesión de cookie con rol superadmin.
+  // Sin ADMIN_KEY configurada NO hay clave por defecto (se cerró el default débil).
+  const key = process.env.ADMIN_KEY;
+  const provided = (req.query.key || req.headers['x-admin-key']) as string;
+  if (key && provided && provided.length === key.length &&
+      crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(key))) {
+    return true;
   }
-  return true;
+  if (authEnabled()) {
+    const sess = sessionFromRequest(req);
+    if (sess && sess.role === 'superadmin') return true;
+  }
+  res.status(403).json({ error: 'Requiere ADMIN_KEY o sesión de superadmin' });
+  return false;
 }
 
 async function safeFetch(url: string): Promise<Response | null> {
@@ -104,6 +115,7 @@ router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (r
     replaceDatabase(dbPath);
 
     const sizeMB = (buffer.length / 1048576).toFixed(1);
+    invalidateStatsCache();
     res.json({
       success: true,
       message: `Base de datos reemplazada exitosamente (${sizeMB} MB). La plataforma ya muestra los nuevos datos.`,
@@ -232,6 +244,7 @@ router.post('/fix-budget', async (req, res) => {
       `SELECT COUNT(*) c FROM procedures WHERE budget_amount = 'USD'`
     ).get() as any;
 
+    invalidateStatsCache();
     res.json({
       success: true,
       message: 'Campo budget_amount reparado.',
@@ -279,6 +292,7 @@ router.post('/fix-share', async (req, res) => {
       FROM concentration_index
     `).get();
 
+    invalidateStatsCache();
     res.json({
       success: true,
       message: 'Indice de concentracion reconstruido con calculo corregido.',
@@ -287,7 +301,7 @@ router.post('/fix-share', async (req, res) => {
       estadisticas: stats,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message, stack: err.stack });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -422,6 +436,7 @@ router.post('/normalize', async (req, res) => {
       GROUP BY code ORDER BY count DESC
     `).all();
 
+    invalidateStatsCache();
     res.json({
       success: true,
       message: `Normalizado y re-evaluado ${rows.length} procedimientos con las 15 banderas.`,
@@ -431,7 +446,7 @@ router.post('/normalize', async (req, res) => {
       flagCounts,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message, stack: err.stack });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -714,6 +729,22 @@ else{bs.style.display='none';p.style.display='none';if(d.count>0){e.className='s
 if(d.errors?.length)e.textContent+='\\n\\nErrores:\\n'+d.errors.slice(-3).join('\\n')}catch(e){}}
 setInterval(ck,10000);ck()
 </script></body></html>`);
+});
+
+// ── BACKUP (descarga el .db comprimido en streaming; superadmin/ADMIN_KEY) ──
+// Backup en caliente del archivo SQLite. Para un backup 100% consistente bajo
+// escritura intensa, correrlo cuando no haya un normalize en curso.
+router.get('/backup', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    const date = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="oicp-${date}.db.gz"`);
+    createReadStream(dbPath).pipe(createGzip()).pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ error: `Error al generar backup: ${err.message}` });
+  }
 });
 
 export default router;

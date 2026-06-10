@@ -1,7 +1,12 @@
 const BASE = '/api';
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(`${BASE}${url}`);
+  const res = await fetch(`${BASE}${url}`, { credentials: 'include' });
+  if (res.status === 401) {
+    // Sesión expirada o ausente con auth activada: al login.
+    if (window.location.pathname !== '/login') window.location.href = '/login';
+    throw new Error('No autenticado');
+  }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -23,5 +28,4 @@ export const api = {
     return fetchJson<any>(`/rankings${qs}`);
   },
   getFilters: () => fetchJson<any>('/filters'),
-  getMethodology: () => fetchJson<any>('/methodology'),
 };

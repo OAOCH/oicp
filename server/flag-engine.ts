@@ -190,10 +190,10 @@ interface ProcedureData {
   procurement_method?: string;
   procurement_method_details?: string;
   buyer_id?: string;
-  budget_amount?: number;
-  award_amount?: number;
-  contract_amount?: number;
-  final_amount?: number;
+  budget_amount?: number | null;
+  award_amount?: number | null;
+  contract_amount?: number | null;
+  final_amount?: number | null;
   published_date?: string;
   submission_deadline?: string;
   award_date?: string;

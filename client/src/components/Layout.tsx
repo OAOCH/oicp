@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Search, BarChart3, BookOpen, Trophy, Home } from 'lucide-react';
+import { Search, BookOpen, Trophy, Home, Shield, LogOut } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useAuth } from '../lib/auth';
 
 const NAV = [
   { to: '/', label: 'Inicio', icon: Home },
@@ -11,6 +12,7 @@ const NAV = [
 
 export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
+  const { user, authEnabled, logout } = useAuth();
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -22,15 +24,15 @@ export default function Layout({ children }: { children: ReactNode }) {
 
       {/* Header */}
       <header className="bg-white border-b shadow-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 font-bold text-brand-700">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
+          <Link to="/" className="flex items-center gap-2 font-bold text-brand-700 shrink-0">
             <span className="text-xl">🔍</span>
             <span className="hidden sm:inline">OICP</span>
-            <span className="hidden md:inline text-sm font-normal text-gray-500">
+            <span className="hidden lg:inline text-sm font-normal text-gray-500">
               Observatorio de Integridad de Contratación Pública
             </span>
           </Link>
-          <nav className="flex gap-1">
+          <nav className="flex gap-1 items-center">
             {NAV.map(({ to, label, icon: Icon }) => (
               <Link
                 key={to}
@@ -42,6 +44,24 @@ export default function Layout({ children }: { children: ReactNode }) {
                 <span className="hidden sm:inline">{label}</span>
               </Link>
             ))}
+            {user?.role === 'superadmin' && (
+              <Link
+                to="/admin/usuarios"
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors
+                  ${pathname.startsWith('/admin') ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                <Shield size={16} />
+                <span className="hidden sm:inline">Admin</span>
+              </Link>
+            )}
+            {authEnabled && user && (
+              <div className="flex items-center gap-2 pl-2 ml-1 border-l">
+                <span className="hidden md:inline text-xs text-gray-500 max-w-[160px] truncate" title={user.email}>{user.email}</span>
+                <button onClick={logout} title="Cerrar sesión" className="flex items-center gap-1 text-gray-500 hover:text-gray-800 text-sm">
+                  <LogOut size={16} />
+                </button>
+              </div>
+            )}
           </nav>
         </div>
       </header>

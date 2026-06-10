@@ -1,0 +1,31 @@
+name: Monitor producción
+
+# Pinguea /api/health cada 5 minutos. Si falla, el workflow falla y GitHub
+# notifica por correo al owner (revisa Settings > Notifications > Actions).
+# No requiere cuentas externas. Para alertas más ricas, conecta UptimeRobot
+# apuntando al mismo endpoint.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health
+        run: |
+          URL="${{ vars.APP_URL || 'https://oicp-production.up.railway.app' }}/api/health"
+          echo "Comprobando $URL"
+          code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 25 "$URL" || echo "000")
+          echo "HTTP $code"
+          cat /tmp/body || true
+          if [ "$code" != "200" ]; then
+            echo "::error::Healthcheck falló con HTTP $code"
+            exit 1
+          fi
+          if ! grep -q '"status":"ok"' /tmp/body; then
+            echo "::error::Healthcheck respondió 200 pero sin status ok"
+            exit 1
+          fi
+          echo "OK"
