@@ -77,6 +77,9 @@ export default function Layout({ children }: { children: ReactNode }) {
           <p>
             OICP — Observatorio de Integridad de Contratación Pública del Ecuador
           </p>
+          <p className="text-gray-400">
+            1.460.511 procesos · Datos actualizados al 14 de mayo de 2026
+          </p>
           <p>
             Datos fuente: <a href="https://datosabiertos.compraspublicas.gob.ec" target="_blank" rel="noopener" className="underline">SERCOP Datos Abiertos</a> |
             Estándar: <a href="https://standard.open-contracting.org" target="_blank" rel="noopener" className="underline">OCDS</a> |

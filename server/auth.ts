@@ -15,6 +15,7 @@
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Database } from 'better-sqlite3';
+import { getDb } from './db.js';
 
 // ── Configuracion (leida de forma perezosa para no fijar valores al importar) ──
 const SUPERADMIN_EMAIL = (process.env.SUPERADMIN_EMAIL || 'oscar.obandoch@gmail.com').toLowerCase().trim();
@@ -184,7 +185,11 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
   if (!authEnabled()) return next();
   const sess = sessionFromRequest(req);
   if (!sess) return res.status(401).json({ error: 'No autenticado', code: 'UNAUTHENTICATED' });
-  req.user = sess;
+  // Revocacion INMEDIATA: re-chequear la whitelist en cada request. Si el superadmin
+  // quito el correo, la sesion deja de valer al instante (aunque su cookie siga firmada).
+  const row = isAllowed(getDb(), sess.email);
+  if (!row) { clearSessionCookie(res); return res.status(401).json({ error: 'Acceso revocado', code: 'REVOKED' }); }
+  req.user = { email: sess.email, role: row.role };  // rol FRESCO desde la BD, no el de la cookie
   next();
 }
 
@@ -209,8 +214,11 @@ export function requireSuperadmin(req: AuthedRequest, res: Response, next: NextF
   if (authEnabled()) {
     const sess = sessionFromRequest(req);
     if (!sess) return res.status(401).json({ error: 'No autenticado', code: 'UNAUTHENTICATED' });
-    if (sess.role !== 'superadmin') return res.status(403).json({ error: 'Requiere rol superadmin', code: 'FORBIDDEN' });
-    req.user = sess;
+    // Rol y pertenencia FRESCOS desde la BD: revocar o degradar surte efecto de inmediato.
+    const row = isAllowed(getDb(), sess.email);
+    if (!row) { clearSessionCookie(res); return res.status(401).json({ error: 'Acceso revocado', code: 'REVOKED' }); }
+    if (row.role !== 'superadmin') return res.status(403).json({ error: 'Requiere rol superadmin', code: 'FORBIDDEN' });
+    req.user = { email: sess.email, role: row.role };
     return next();
   }
   return res.status(403).json({ error: 'Requiere ADMIN_KEY o sesión de superadmin', code: 'FORBIDDEN' });
