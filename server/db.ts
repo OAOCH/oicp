@@ -28,9 +28,40 @@ function bootRecovery(dbPath: string) {
 }
 bootRecovery(DB_PATH);
 
-let db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Apertura a prueba de corrupción: si el archivo está dañado (p.ej. checkpoint
+// interrumpido por disco lleno), se APARTA (rename, no se borra) y se arranca con
+// una base vacía para que la plataforma vuelva a estar arriba; los datos se
+// restauran luego vía /api/admin/restore-from-url o upload-db.
+function openWithFailover(dbPath: string): Database.Database {
+  let d: Database.Database | null = null;
+  try {
+    d = new Database(dbPath);
+    d.pragma('journal_mode = WAL');
+    d.pragma('foreign_keys = ON');
+    // fuerza una lectura real del esquema para detectar corrupción al abrir
+    d.prepare(`SELECT name FROM sqlite_master LIMIT 1`).get();
+    return d;
+  } catch (e: any) {
+    console.error(`[boot] base dañada (${e.code || e.message}): se aparta y se arranca vacía`);
+    // cerrar la conexión a medio abrir ANTES de renombrar (si no, EBUSY en Windows)
+    try { d?.close(); } catch { /* ya cerrada */ }
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      if (fs.existsSync(dbPath)) fs.renameSync(dbPath, `${dbPath}.corrupt-${stamp}`);
+      for (const suf of ['-wal', '-shm']) {
+        try { fs.unlinkSync(dbPath + suf); } catch { /* puede no existir */ }
+      }
+    } catch (e2: any) {
+      console.error(`[boot] no se pudo apartar la base dañada: ${e2.message}`);
+    }
+    const fresh = new Database(dbPath);
+    fresh.pragma('journal_mode = WAL');
+    fresh.pragma('foreign_keys = ON');
+    return fresh;
+  }
+}
+
+let db = openWithFailover(DB_PATH);
 
 // Si quedó un build de agregados a medias, se descarta para liberar páginas.
 try {

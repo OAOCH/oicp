@@ -748,6 +748,48 @@ router.get('/backup', (req, res) => {
   }
 });
 
+// ── RESTORE FROM URL (el servidor descarga el .db/.db.gz por streaming) ──
+// Para bases grandes que exceden el límite del upload directo. La URL debe ser
+// un enlace de descarga directa; si es .gz se descomprime en streaming.
+router.post('/restore-from-url', express.json({ limit: '1mb' }), async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const url = String(req.body?.url || '');
+  if (!/^https:\/\//.test(url)) return res.status(400).json({ error: 'URL https requerida en body.url' });
+  try {
+    req.setTimeout(1800000); res.setTimeout(1800000);
+    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    const tmpPath = dbPath + '.incoming';
+    const r = await fetch(url, { redirect: 'follow' });
+    if (!r.ok || !r.body) return res.status(502).json({ error: `Descarga falló: HTTP ${r.status}` });
+
+    const { createWriteStream } = await import('fs');
+    const { createGunzip } = await import('zlib');
+    const { Readable } = await import('stream');
+    const { pipeline } = await import('stream/promises');
+
+    const isGz = /\.gz($|\?)/.test(url) || (r.headers.get('content-type') || '').includes('gzip');
+    const source = Readable.fromWeb(r.body as any);
+    if (isGz) await pipeline(source, createGunzip(), createWriteStream(tmpPath));
+    else await pipeline(source, createWriteStream(tmpPath));
+
+    const { statSync, openSync, readSync, closeSync, renameSync } = await import('fs');
+    const size = statSync(tmpPath).size;
+    const fd = openSync(tmpPath, 'r');
+    const head = Buffer.alloc(15);
+    readSync(fd, head, 0, 15, 0);
+    closeSync(fd);
+    if (!head.toString('ascii').startsWith('SQLite format')) {
+      return res.status(400).json({ error: `El archivo descargado no es SQLite (${size} bytes)` });
+    }
+    renameSync(tmpPath, dbPath);
+    replaceDatabase(dbPath);
+    invalidateStatsCache();
+    res.json({ success: true, message: `Base restaurada (${(size / 1048576).toFixed(0)} MB) desde URL.`, size });
+  } catch (err: any) {
+    res.status(500).json({ error: `Error al restaurar: ${err.message}` });
+  }
+});
+
 // ── MCP: construir agregados a_* (una vez, o tras actualizar datos) ──
 router.post('/build-analytics', (req, res) => {
   if (!checkAuth(req, res)) return;
