@@ -110,7 +110,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'CC-02': {
     code: 'CC-02', category: 'concentracion', name: 'Dominant Supplier',
     name_es: 'Proveedor Dominante',
-    description_es: 'Un proveedor recibe más del 30% del gasto total de un comprador en un año.',
+    description_es: 'Un proveedor recibe más del 40% del gasto total de un comprador en un año (en compradores con 10 o más procesos).',
     severity: 3, ocp_ref: 'R051',
   },
   'CC-03': {
@@ -162,19 +162,19 @@ const CORRELATED_FLAGS: [string, string, number][] = [
 
 export function calculateScore(flags: Flag[]): number {
   const activeFlags = flags.filter(f => f.active);
-  const sorted = [...activeFlags].sort((a, b) => SEVERITY_WEIGHTS[b.severity] - SEVERITY_WEIGHTS[a.severity]);
-  const usedCodes = new Set<string>();
+  // El descuento por correlación es independiente del orden de evaluación:
+  // la bandera "b" del par se pondera al 50% (una sola vez, aunque tenga
+  // varios pares) si su par "a" también está activa. Con el sort anterior
+  // los pares IC-01→IC-02 e IP-01→CC-05 nunca descontaban.
+  const activeCodes = new Set(activeFlags.map(f => f.code));
   let score = 0;
 
-  for (const flag of sorted) {
+  for (const flag of activeFlags) {
     let weight = SEVERITY_WEIGHTS[flag.severity];
-    for (const [a, b, factor] of CORRELATED_FLAGS) {
-      if (flag.code === b && usedCodes.has(a)) {
-        weight = Math.round(weight * factor);
-      }
+    if (CORRELATED_FLAGS.some(([a, b]) => flag.code === b && activeCodes.has(a))) {
+      weight = Math.round(weight * 0.5);
     }
     score += weight;
-    usedCodes.add(flag.code);
   }
 
   return Math.min(100, score);

@@ -41,10 +41,10 @@ function generateRiskSummary(proc: any, activeFlags: any[]): string {
         parts.push('El proveedor adjudicado ha recibido 5 o más contratos de ínfima cuantía del mismo comprador en el mismo año, un patrón que sugiere posible direccionamiento.');
         break;
       case 'CC-02':
-        parts.push('Un solo proveedor concentra más del 30% del valor total de contratos de esta entidad compradora.');
+        parts.push('Un solo proveedor concentra más del 40% del gasto anual de esta entidad compradora (en entidades con 10 o más procesos).');
         break;
       case 'CC-03':
-        parts.push('El proveedor ha mantenido contratos con la misma entidad durante 5 o más años consecutivos.');
+        parts.push('El proveedor ha ganado contratos de la misma entidad en 5 o más de los últimos 7 años, por un monto acumulado superior a $50.000.');
         break;
       case 'CC-04':
         parts.push('Un miembro de consorcio aparece en 8 o más procesos, lo que puede indicar uso de figuras asociativas para evadir controles.');

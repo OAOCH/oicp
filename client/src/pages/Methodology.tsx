@@ -86,7 +86,7 @@ export default function Methodology() {
         <h2 className="font-semibold mb-4">Sistema de Puntuación</h2>
         <p className="text-sm text-gray-600 mb-4">
           Cada bandera activa suma puntos según su severidad. El score total va de 0 a 100.
-          Banderas correlacionadas (ej. IC-01 + IC-02) se ponderan al 50% para evitar doble conteo.
+          En banderas correlacionadas (IC-01 + IC-02, CC-01 + CC-05, IP-01 + CC-05) la segunda pondera al 50% para evitar doble conteo.
         </p>
         <div className="grid grid-cols-4 gap-4 mb-4">
           {[0, 1, 2, 3].map(sev => {

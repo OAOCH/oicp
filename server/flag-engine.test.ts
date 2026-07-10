@@ -72,11 +72,26 @@ test('TR-03: regimen especial sobre umbral', () => {
 
 test('calculateScore: pesos por severidad y tope 100', () => {
   const sev3 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30
-  const sev2 = { ...FLAG_CATALOG['IC-01'], active: true };   // 18
+  const sev2 = { ...FLAG_CATALOG['IT-02'], active: true };   // 18 (sin correlación con IC-02)
   assert.equal(calculateScore([sev3]), 30);
   assert.equal(calculateScore([sev3, sev2]), 48);
   // banderas inactivas no suman
   assert.equal(calculateScore([{ ...FLAG_CATALOG['IC-02'], active: false }]), 0);
+});
+
+test('calculateScore: correlaciones descuentan 50% sin importar el orden', () => {
+  const ic01 = { ...FLAG_CATALOG['IC-01'], active: true };   // 18
+  const ic02 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30 -> 15 si IC-01 activa
+  assert.equal(calculateScore([ic02, ic01]), 33);
+  assert.equal(calculateScore([ic01, ic02]), 33);
+  const ip01 = { ...FLAG_CATALOG['IP-01'], active: true };   // 18
+  const cc05 = { ...FLAG_CATALOG['CC-05'], active: true };   // 30 -> 15 si IP-01 o CC-01 activa
+  assert.equal(calculateScore([ip01, cc05]), 33);
+  const cc01 = { ...FLAG_CATALOG['CC-01'], active: true };   // 30
+  // CC-05 descuenta UNA sola vez aunque tenga dos pares activos (CC-01 e IP-01)
+  assert.equal(calculateScore([cc01, ip01, cc05]), 63);
+  // la bandera "a" del par nunca se descuenta
+  assert.equal(calculateScore([cc01, cc05]), 45);
 });
 
 test('getRiskLevel: cortes low/moderate/high/critical (segun codigo real)', () => {
