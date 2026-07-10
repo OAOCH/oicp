@@ -80,6 +80,12 @@ try {
   console.warn(`[boot] limpieza de agregados incompletos: ${e.message}`);
 }
 
+// Cierra la conexión actual para permitir renombrar el archivo (Windows bloquea
+// rename sobre archivos abiertos; en Linux es válido pero cerrar es más limpio).
+export function closeDbForReplace() {
+  try { db.close(); } catch { /* ya cerrada */ }
+}
+
 export function replaceDatabase(newPath?: string) {
   try { db.close(); } catch {}
   const p = newPath || DB_PATH;

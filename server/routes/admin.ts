@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import express from 'express';
-import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase, getDb } from '../db.js';
+import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase, getDb, closeDbForReplace } from '../db.js';
 import { buildAnalytics, analyticsReady, mintMcpToken } from '../mcp-server.js';
 import { evaluateAllFlags, getRegime } from '../flag-engine.js';
-import { writeFileSync, readFileSync, createReadStream } from 'fs';
+import { writeFileSync, readFileSync, createReadStream, appendFileSync, statSync } from 'fs';
 import { createGzip } from 'zlib';
 import { resolve } from 'path';
 import crypto from 'crypto';
@@ -745,6 +745,106 @@ router.get('/backup', (req, res) => {
     createReadStream(dbPath).pipe(createGzip()).pipe(res);
   } catch (err: any) {
     res.status(500).json({ error: `Error al generar backup: ${err.message}` });
+  }
+});
+
+// ── LLAVE TEMPORAL DE ADMIN (45 min, hasheada; para restauraciones via curl) ──
+function ensureSettings(db: any) {
+  db.exec(`CREATE TABLE IF NOT EXISTS mcp_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+}
+
+function checkTempKey(req: any): boolean {
+  const provided = (req.query.tempkey || req.headers['x-temp-key']) as string;
+  if (!provided || provided.length < 32) return false;
+  try {
+    const db = getDb();
+    ensureSettings(db);
+    const row = db.prepare(`SELECT value FROM mcp_settings WHERE key = 'temp_admin_key'`).get() as any;
+    if (!row) return false;
+    const { hash, exp } = JSON.parse(row.value);
+    if (Date.now() > exp) return false;
+    const h = crypto.createHash('sha256').update(provided).digest('hex');
+    return h.length === hash.length && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(hash));
+  } catch { return false; }
+}
+
+router.post('/temp-key', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const db = getDb();
+  ensureSettings(db);
+  const key = crypto.randomBytes(32).toString('hex');
+  const value = JSON.stringify({ hash: crypto.createHash('sha256').update(key).digest('hex'), exp: Date.now() + 45 * 60 * 1000 });
+  db.prepare(`INSERT INTO mcp_settings (key, value) VALUES ('temp_admin_key', ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(value);
+  res.json({ success: true, key, expira_en_min: 45 });
+});
+
+// ── RESTAURACIÓN POR PARTES (para bases que exceden el limite de un solo POST) ──
+router.post('/restore-chunk', express.raw({ type: '*/*', limit: '30mb' }), (req, res) => {
+  if (!checkTempKey(req) && !checkAuth(req, res)) return;
+  try {
+    const part = Number(req.query.part || 0);
+    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    const inc = dbPath + '.incoming.gz';
+    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    if (part === 0) writeFileSync(inc, buf);
+    else appendFileSync(inc, buf);
+    res.json({ success: true, part, bytes_total: statSync(inc).size });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/restore-commit', express.json({ limit: '1mb' }), async (req, res) => {
+  if (!checkTempKey(req) && !checkAuth(req, res)) return;
+  try {
+    req.setTimeout(1800000); res.setTimeout(1800000);
+    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    const inc = dbPath + '.incoming.gz';
+    const out = dbPath + '.incoming';
+    const fsx = await import('fs');
+    const { createGunzip } = await import('zlib');
+    const { pipeline } = await import('stream/promises');
+    if (!fsx.existsSync(inc)) return res.status(400).json({ error: 'No hay archivo .incoming.gz (sube las partes primero)' });
+    const expected = Number(req.body?.expected_gz_bytes || 0);
+    const got = fsx.statSync(inc).size;
+    if (expected && expected !== got) {
+      return res.status(400).json({ error: `Tamaño no coincide: esperado ${expected}, recibido ${got}` });
+    }
+    // gunzip por streaming (¿gz? mira los magic bytes)
+    const fd = fsx.openSync(inc, 'r');
+    const head2 = Buffer.alloc(2); fsx.readSync(fd, head2, 0, 2, 0); fsx.closeSync(fd);
+    if (head2[0] === 0x1f && head2[1] === 0x8b) {
+      await pipeline(fsx.createReadStream(inc), createGunzip(), fsx.createWriteStream(out));
+      fsx.unlinkSync(inc);
+    } else {
+      fsx.renameSync(inc, out);
+    }
+    const fd2 = fsx.openSync(out, 'r');
+    const head = Buffer.alloc(15); fsx.readSync(fd2, head, 0, 15, 0); fsx.closeSync(fd2);
+    if (!head.toString('ascii').startsWith('SQLite format')) {
+      return res.status(400).json({ error: 'El archivo ensamblado no es SQLite válido' });
+    }
+    const size = fsx.statSync(out).size;
+    closeDbForReplace();
+    for (const suf of ['-wal', '-shm']) {
+      try { fsx.unlinkSync(dbPath + suf); } catch { /* puede no existir */ }
+    }
+    fsx.renameSync(out, dbPath);
+    replaceDatabase(dbPath);
+    invalidateStatsCache();
+    // la llave temporal se consume al restaurar
+    try { getDb().prepare(`DELETE FROM mcp_settings WHERE key = 'temp_admin_key'`).run(); } catch { /* opcional */ }
+    // liberar el volumen: las copias .corrupt-* apartadas ya no hacen falta
+    try {
+      const dir = (await import('path')).dirname(dbPath);
+      for (const f of fsx.readdirSync(dir)) {
+        if (f.includes('.corrupt-')) fsx.unlinkSync((await import('path')).join(dir, f));
+      }
+    } catch { /* limpieza opcional */ }
+    res.json({ success: true, message: `Base restaurada (${(size / 1048576).toFixed(0)} MB).`, size });
+  } catch (err: any) {
+    res.status(500).json({ error: `Error al restaurar: ${err.message}` });
   }
 });
 
