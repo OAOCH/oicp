@@ -1,13 +1,53 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'oicp.db');
 
+// ── Recuperación de arranque ─────────────────────────────────
+// Un build de agregados interrumpido puede dejar un WAL gigante (llenó el disco
+// del volumen en Railway y la app no podía ni arrancar). Un WAL legítimo pesa KBs;
+// >200MB en el boot (sin ningún otro proceso usando la base) es basura de una
+// corrida interrumpida: se descarta y la base vuelve al último checkpoint.
+function bootRecovery(dbPath: string) {
+  try {
+    const wal = dbPath + '-wal';
+    if (fs.existsSync(wal)) {
+      const mb = fs.statSync(wal).size / 1e6;
+      if (mb > 200) {
+        console.warn(`[boot] WAL de ${mb.toFixed(0)}MB detectado: descartando (rollback al último checkpoint)`);
+        fs.unlinkSync(wal);
+        try { fs.unlinkSync(dbPath + '-shm'); } catch { /* shm puede no existir */ }
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[boot] recovery WAL: ${e.message}`);
+  }
+}
+bootRecovery(DB_PATH);
+
 let db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+
+// Si quedó un build de agregados a medias, se descarta para liberar páginas.
+try {
+  const hasFts = db.prepare(`SELECT name FROM sqlite_master WHERE name = 'a_fts'`).get();
+  const buyersRow = db.prepare(`SELECT name FROM sqlite_master WHERE name = 'a_buyers'`).get();
+  const buyersOk = buyersRow && (db.prepare(`SELECT COUNT(*) AS n FROM a_buyers`).get() as any).n > 0;
+  if (hasFts && !buyersOk) {
+    console.warn('[boot] build de agregados incompleto: descartando tablas a_*');
+    db.exec(`DROP TABLE IF EXISTS a_fts; DROP TABLE IF EXISTS a_suppliers;
+             DROP TABLE IF EXISTS a_supplier_buyer; DROP TABLE IF EXISTS a_supplier_year;
+             DROP TABLE IF EXISTS a_buyers; DROP TABLE IF EXISTS a_flag_year;
+             DROP TABLE IF EXISTS a_risk_year; DROP TABLE IF EXISTS a_supplier_critical;`);
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+} catch (e: any) {
+  console.warn(`[boot] limpieza de agregados incompletos: ${e.message}`);
+}
 
 export function replaceDatabase(newPath?: string) {
   try { db.close(); } catch {}
