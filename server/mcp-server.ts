@@ -93,13 +93,15 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
   const ry = new Map<string, [number, number]>();
   const fy = new Map<string, number>();
 
-  const insFts = wdb.prepare(`INSERT INTO a_fts (ocid, texto) VALUES (?, ?)`);
   const scan = db.prepare(`SELECT id, flags, risk_level, score, source_year, buyer_id, buyer_name,
     description, title, final_amount, contract_amount, award_amount, suppliers FROM procedures`);
 
+  // CLAVE: ninguna escritura mientras el iterador de lectura está abierto. Un lector
+  // activo bloquea el checkpoint del WAL y los inserts masivos del FTS inflan el WAL
+  // hasta llenar el disco (visto en Railway: "disk I/O error"). Se acumula en memoria
+  // y se escribe todo al cerrar el scan, con checkpoints entre tablas.
   let n = 0;
-  const ftsTx = wdb.transaction((rows: [string, string][]) => { for (const r of rows) insFts.run(r[0], r[1]); });
-  let ftsBatch: [string, string][] = [];
+  const ftsRows: [string, string][] = [];
 
   for (const row of scan.iterate() as any) {
     n++;
@@ -153,10 +155,17 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     }
     const texto = [(row.description || row.title || '').slice(0, 400), row.buyer_name || '', names.join(' ')]
       .filter(Boolean).join(' ');
-    if (texto.trim()) ftsBatch.push([row.id, texto]);
-    if (ftsBatch.length >= 20000) { ftsTx(ftsBatch); ftsBatch = []; }
+    if (texto.trim()) ftsRows.push([row.id, texto]);
   }
-  if (ftsBatch.length) ftsTx(ftsBatch);
+
+  // Scan cerrado: ahora sí, escrituras por lotes con WAL acotado.
+  const insFts = wdb.prepare(`INSERT INTO a_fts (ocid, texto) VALUES (?, ?)`);
+  const ftsTx = wdb.transaction((rows: [string, string][]) => { for (const r of rows) insFts.run(r[0], r[1]); });
+  for (let i = 0; i < ftsRows.length; i += 50000) {
+    ftsTx(ftsRows.slice(i, i + 50000));
+    wdb.pragma('wal_checkpoint(TRUNCATE)');
+  }
+  ftsRows.length = 0;
 
   const insSup = wdb.prepare(`INSERT INTO a_suppliers VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   const insCrit = wdb.prepare(`INSERT INTO a_supplier_critical VALUES (?,?,?,?,?,?)`);
@@ -167,6 +176,7 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
       for (const t of v.top.slice(0, 5)) insCrit.run(r10, t.ocid, t.score, t.rl, t.y, Math.round(t.m * 100) / 100);
     }
   })();
+  wdb.pragma('wal_checkpoint(TRUNCATE)');
   const insSb = wdb.prepare(`INSERT INTO a_supplier_buyer VALUES (?,?,?,?,?,?)`);
   wdb.transaction(() => {
     for (const [k, v] of sb) {
@@ -174,6 +184,7 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
       insSb.run(r10, bid, v[0], v[1], Math.round(v[2] * 100) / 100, v[3]);
     }
   })();
+  wdb.pragma('wal_checkpoint(TRUNCATE)');
   const insSy = wdb.prepare(`INSERT INTO a_supplier_year VALUES (?,?,?,?)`);
   const insBuy = wdb.prepare(`INSERT INTO a_buyers VALUES (?,?,?,?,?,?)`);
   const insRy = wdb.prepare(`INSERT INTO a_risk_year VALUES (?,?,?,?)`);
@@ -193,6 +204,7 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     CREATE INDEX IF NOT EXISTS idx_a_buy_total ON a_buyers(total_usd DESC);
     CREATE INDEX IF NOT EXISTS idx_a_crit_sup ON a_supplier_critical(ruc10);
   `);
+  wdb.pragma('wal_checkpoint(TRUNCATE)');
   wdb.close();
   return { procesos: n, proveedores: sup.size, compradores: buy.size, segundos: Math.round((Date.now() - t0) / 1000) };
 }
@@ -331,7 +343,17 @@ export function callTool(db: Database.Database, name: string, args: any): any {
       const limit = Math.max(1, Math.min(Number(args?.limit) || 20, 100));
       // AND por término (no frase exacta): cada palabra entre comillas para FTS5.
       const match = texto.replace(/"/g, ' ').trim().split(/\s+/).map(t => `"${t}"`).join(' ');
-      const hits = (db.prepare(`SELECT ocid FROM a_fts WHERE a_fts MATCH ? LIMIT 400`).all(match) as any[]).map(r => r.ocid);
+      let hits: string[] = [];
+      const hasFts = !!db.prepare(`SELECT name FROM sqlite_master WHERE name = 'a_fts'`).get();
+      if (hasFts) {
+        hits = (db.prepare(`SELECT ocid FROM a_fts WHERE a_fts MATCH ? LIMIT 400`).all(match) as any[]).map(r => r.ocid);
+      }
+      if (!hits.length) {
+        // Fallback sin FTS: LIKE sobre descripcion/comprador (mas lento, acotado).
+        const like = `%${texto.split(/\s+/)[0]}%`;
+        hits = (db.prepare(`SELECT id FROM procedures WHERE description LIKE ? OR buyer_name LIKE ? LIMIT 200`)
+          .all(like, like) as any[]).map(r => r.id);
+      }
       if (!hits.length) return { resultados: [], nota: `Sin coincidencias para '${texto}'. Prueba con menos palabras.` };
       let cond = `id IN (${hits.map(() => '?').join(',')})`;
       const params: any[] = [...hits];
