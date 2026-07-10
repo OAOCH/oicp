@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import express from 'express';
-import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase } from '../db.js';
+import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase, getDb } from '../db.js';
+import { buildAnalytics, analyticsReady, mintMcpToken } from '../mcp-server.js';
 import { evaluateAllFlags, getRegime } from '../flag-engine.js';
 import { writeFileSync, readFileSync, createReadStream } from 'fs';
 import { createGzip } from 'zlib';
@@ -744,6 +745,47 @@ router.get('/backup', (req, res) => {
     createReadStream(dbPath).pipe(createGzip()).pipe(res);
   } catch (err: any) {
     res.status(500).json({ error: `Error al generar backup: ${err.message}` });
+  }
+});
+
+// ── MCP: construir agregados a_* (una vez, o tras actualizar datos) ──
+router.post('/build-analytics', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const stats = buildAnalytics(getDb());
+    res.json({ success: true, ...stats });
+  } catch (err: any) {
+    res.status(500).json({ error: `Error al construir agregados: ${err.message}` });
+  }
+});
+
+router.get('/analytics-status', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const db = getDb();
+    const ready = analyticsReady(db);
+    const counts: Record<string, number> = {};
+    if (ready) {
+      for (const t of ['a_suppliers', 'a_buyers', 'a_supplier_buyer', 'a_fts']) {
+        counts[t] = (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as any).n;
+      }
+    }
+    res.json({ ready, counts });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── MCP: emitir/rotar el token del conector (se muestra UNA sola vez) ──
+router.post('/mcp-token', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const token = mintMcpToken(getDb());
+    const base = (process.env.APP_URL || 'https://oicp-production.up.railway.app').replace(/\/+$/, '');
+    res.json({ success: true, connector_url: `${base}/mcp/${token}`,
+      nota: 'Guarda esta URL: el token no se puede recuperar (solo rotar). Cualquiera con la URL puede consultar los datos.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

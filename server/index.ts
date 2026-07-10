@@ -10,6 +10,7 @@ import { migrate, getStatistics, searchProcedures, getProcedure, getBuyerProfile
   getSupplierProfile, getRankings, getFilterOptions, getDb } from './db.js';
 import adminRouter from './routes/admin.js';
 import authRouter from './routes/auth.js';
+import mcpRouter from './routes/mcp.js';
 import { ensureAuthTables, requireAuth, authEnabled } from './auth.js';
 import { getCachedStatistics } from './cache.js';
 
@@ -113,6 +114,9 @@ app.use('/api', (req, res, next) => {
 
 // ── Admin routes (protegidos por rol superadmin dentro del router) ──
 app.use('/api/admin', adminRouter);
+
+// ── MCP remoto (conector para claude.ai; token secreto en la URL) ──
+app.use('/mcp', mcpRouter);
 
 // ── Statistics (cacheado 5 min) ──────────────────────────────
 app.get('/api/statistics', (req, res) => {
