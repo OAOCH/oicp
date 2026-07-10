@@ -92,35 +92,58 @@ router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (r
     req.setTimeout(600000);
     res.setTimeout(600000);
 
-    let buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
 
     if (buffer.length < 50) {
       return res.status(400).json({ error: `Archivo demasiado pequeño (${buffer.length} bytes). ¿Seleccionaste el archivo correcto?` });
     }
 
-    // Decompress gzip if needed (browser sends gzipped)
-    if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
-      const zlib = await import('zlib');
-      buffer = zlib.gunzipSync(buffer);
-    }
-
-    // Check SQLite magic bytes
-    const header = buffer.toString('ascii', 0, 15);
-    if (!header.startsWith('SQLite format')) {
-      return res.status(400).json({ error: `No es un archivo SQLite válido. Header: "${header.substring(0,10)}", size: ${buffer.length}` });
-    }
-
-    // Save and replace
     const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
-    writeFileSync(dbPath, buffer);
-    replaceDatabase(dbPath);
+    const tmp = dbPath + '.incoming';
+    const fsx = await import('fs');
 
-    const sizeMB = (buffer.length / 1048576).toFixed(1);
+    if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
+      // gunzip por STREAMING a archivo: gunzipSync revienta con bases >2GB
+      // (tope de Buffer en Node = 2^31-1 bytes).
+      const { createGunzip } = await import('zlib');
+      const { Readable } = await import('stream');
+      const { pipeline } = await import('stream/promises');
+      await pipeline(Readable.from(buffer), createGunzip(), fsx.createWriteStream(tmp));
+    } else {
+      fsx.writeFileSync(tmp, buffer);
+    }
+
+    // Check SQLite magic bytes (leyendo del archivo, no de un buffer gigante)
+    const fd = fsx.openSync(tmp, 'r');
+    const head = Buffer.alloc(15);
+    fsx.readSync(fd, head, 0, 15, 0);
+    fsx.closeSync(fd);
+    if (!head.toString('ascii').startsWith('SQLite format')) {
+      try { fsx.unlinkSync(tmp); } catch { /* limpieza */ }
+      return res.status(400).json({ error: `No es un archivo SQLite válido. Header: "${head.toString('ascii', 0, 10)}"` });
+    }
+
+    const finalSize = fsx.statSync(tmp).size;
+    closeDbForReplace();
+    for (const suf of ['-wal', '-shm']) {
+      try { fsx.unlinkSync(dbPath + suf); } catch { /* puede no existir */ }
+    }
+    fsx.renameSync(tmp, dbPath);
+    replaceDatabase(dbPath);
+    // liberar el volumen: copias .corrupt-* apartadas ya no hacen falta
+    try {
+      const dir = (await import('path')).dirname(dbPath);
+      for (const f of fsx.readdirSync(dir)) {
+        if (f.includes('.corrupt-')) fsx.unlinkSync((await import('path')).join(dir, f));
+      }
+    } catch { /* limpieza opcional */ }
+
+    const sizeMB = (finalSize / 1048576).toFixed(1);
     invalidateStatsCache();
     res.json({
       success: true,
       message: `Base de datos reemplazada exitosamente (${sizeMB} MB). La plataforma ya muestra los nuevos datos.`,
-      size: buffer.length,
+      size: finalSize,
     });
   } catch (err: any) {
     res.status(500).json({ error: `Error al subir: ${err.message}` });
