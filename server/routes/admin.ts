@@ -101,6 +101,18 @@ router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (r
     const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
     const tmp = dbPath + '.incoming';
     const fsx = await import('fs');
+    const pathmod = await import('path');
+
+    // Liberar espacio ANTES de escribir: las copias .corrupt-* apartadas y
+    // restos .incoming de intentos previos pueden dejar el volumen sin sitio (ENOSPC).
+    try {
+      const dir = pathmod.dirname(dbPath);
+      for (const f of fsx.readdirSync(dir)) {
+        if (f.includes('.corrupt-') || f.endsWith('.incoming') || f.endsWith('.incoming.gz')) {
+          fsx.unlinkSync(pathmod.join(dir, f));
+        }
+      }
+    } catch { /* limpieza opcional */ }
 
     if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
       // gunzip por STREAMING a archivo: gunzipSync revienta con bases >2GB
