@@ -269,6 +269,16 @@ const METHODOLOGY = {
 
 const MONTO_SQL = `COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0)`;
 
+// Corte real de datos (dinámico: la base se actualiza con la sincronización local).
+function dataCutoff(db: Database.Database): string {
+  try {
+    const r = db.prepare(`SELECT MAX(substr(published_date,1,10)) AS c FROM procedures
+      WHERE source_year = (SELECT MAX(source_year) FROM procedures)
+        AND published_date <= datetime('now','+1 day')`).get() as any;
+    return r?.c || 'desconocido';
+  } catch { return 'desconocido'; }
+}
+
 export function callTool(db: Database.Database, name: string, args: any): any {
   if (!analyticsReady(db) && name !== 'oicp_methodology') {
     return { error: 'Agregados no construidos todavía. El administrador debe ejecutar /api/admin/build-analytics.' };
@@ -282,7 +292,7 @@ export function callTool(db: Database.Database, name: string, args: any): any {
       const nsup = (db.prepare(`SELECT COUNT(*) AS n FROM a_suppliers`).get() as any).n;
       const nbuy = (db.prepare(`SELECT COUNT(*) AS n FROM a_buyers`).get() as any).n;
       return { plataforma: `${PROD} (acceso por invitación)`, procesos: n, rango_anios: `${years.a}-${years.b}`,
-        corte_datos: '2026-05-14', proveedores_unicos: nsup, compradores_unicos: nbuy,
+        corte_datos: dataCutoff(db), proveedores_unicos: nsup, compradores_unicos: nbuy,
         distribucion_riesgo: risk, convencion_monto: MONTO_NOTA,
         nota: 'Usa oicp_methodology para indicadores, pesos y umbrales verificados.', disclaimer: DISCLAIMER };
     }
@@ -426,7 +436,7 @@ export function handleMcpMessage(db: Database.Database, msg: any): any | null {
       protocolVersion: supported.includes(requested) ? requested : '2025-03-26',
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: 'oicp', title: 'OICP — Contratación Pública Ecuador', version: '1.0.0' },
-      instructions: 'Observatorio de contratación pública del Ecuador (1.46M procesos SERCOP 2019-2026, corte 2026-05-14). Usa oicp_info y oicp_methodology antes de interpretar scores. Los indicadores son señales, no pruebas de irregularidad.',
+      instructions: `Observatorio de contratación pública del Ecuador (SERCOP 2019-2026, corte ${dataCutoff(db)}; se actualiza automáticamente). Usa oicp_info y oicp_methodology antes de interpretar scores. Los indicadores son señales, no pruebas de irregularidad.`,
     } };
   }
   if (method === 'notifications/initialized' || method === 'notifications/cancelled') return null; // notificación: sin respuesta
