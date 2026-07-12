@@ -3,3 +3,5 @@ dist/
 data/*.db
 .env
 *.log
+.sync-token
+.sync-cursor.json

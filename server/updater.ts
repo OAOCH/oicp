@@ -14,7 +14,7 @@
  */
 import cron from 'node-cron';
 import type Database from 'better-sqlite3';
-import { getDb, rebuildConcentrationIndex } from './db.js';
+import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
 import { evaluateAllFlags, getRegime } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
@@ -442,8 +442,6 @@ export async function runUpdate(opts: { year?: number; budgetMin?: number; terms
         if (d !== exists.db) exists = { db: d, stmt: d.prepare(`SELECT 1 FROM procedures WHERE id=?`) };
         return exists.stmt.get(id);
       };
-      const { upsertProcedure } = await import('./db.js');
-
       const flush = () => {
         if (!pendingNew.length) return;
         patchAggregatesForNew(getDb(), pendingNew);
@@ -547,13 +545,75 @@ export function stopUpdate() {
   updateJob.progress = 'Detenido por el administrador (lo descargado queda guardado).';
 }
 
+// ── Ingesta remota: el barrido corre en una máquina con IP ecuatoriana
+//    (SERCOP bloquea IPs de datacenter) y empuja los procesos parseados aquí. ──
+export function missingOcids(ocids: string[]): string[] {
+  const db = getDb();
+  const exists = db.prepare(`SELECT 1 FROM procedures WHERE id=?`);
+  return ocids.filter(o => typeof o === 'string' && o && !exists.get(o));
+}
+
+export function ingestProcs(procs: any[]): { inserted: number; skipped: number } {
+  const db = getDb();
+  setSetting(db, 'update_clean', '0');
+  const exists = db.prepare(`SELECT 1 FROM procedures WHERE id=?`);
+  const fresh: any[] = [];
+  let skipped = 0;
+  for (const raw of procs) {
+    if (!raw || typeof raw.id !== 'string' || !raw.id) { skipped++; continue; }
+    if (exists.get(raw.id)) { skipped++; continue; }
+    const proc = { ...raw, suppliers: Array.isArray(raw.suppliers) ? raw.suppliers : [] };
+    const { flags, score, riskLevel } = evaluateAllFlags(proc);
+    upsertProcedure({ ...proc, flags, score, risk_level: riskLevel });
+    fresh.push({ ...proc, flags, score, risk_level: riskLevel });
+  }
+  patchAggregatesForNew(db, fresh);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  setSetting(db, 'update_clean', '1');
+  return { inserted: fresh.length, skipped };
+}
+
+export async function finalizeIngest(year: number): Promise<any> {
+  const db = getDb();
+  let reconciled = 0;
+  if (getSetting(db, 'update_clean') === '0') reconciled = await reconcileOrphans(db);
+  rebuildConcentrationIndex(year);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  const reflagged = await reflagChanged(getDb());
+  invalidateStatsCache();
+  refreshDataCutoff();
+  setSetting(getDb(), 'update_clean', '1');
+  setSetting(getDb(), 'update_last_run', JSON.stringify({
+    finishedAt: new Date().toISOString(), year, mode: 'ingesta-local',
+    reflagged, reconciled,
+  }));
+  log(`ingesta finalizada: reflag=${reflagged} reconciliados=${reconciled}`);
+  return { reflagged, reconciled, ...getDataCutoff() };
+}
+
+// ── ¿SERCOP responde desde este host? (Railway suele estar bloqueado) ──
+export async function sercopReachable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${SEARCH_API}?year=${new Date().getFullYear()}&search=agua&page=1`,
+      { headers: { 'User-Agent': 'OICP-updater' }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return false;
+    const text = await res.text();
+    return !text.startsWith('<');
+  } catch { return false; }
+}
+
 // ── Cron: martes y jueves 02:00 America/Guayaquil ────────────
 export function scheduleAutoUpdate() {
   const enabled = !['0', 'false', 'off'].includes((process.env.AUTO_UPDATE || '1').toLowerCase());
   if (!enabled) { log('auto-update DESACTIVADO (AUTO_UPDATE=0)'); return; }
   const expr = process.env.UPDATE_CRON || '0 2 * * 2,4';
-  cron.schedule(expr, () => {
+  cron.schedule(expr, async () => {
     if (updateJob.running) { log('cron: corrida anterior sigue activa, se omite'); return; }
+    if (!(await sercopReachable())) {
+      log('cron: SERCOP inaccesible desde este host (bloqueo de IP de datacenter); ' +
+          'se omite — la sincronización local desde la máquina de Oscar cubre la actualización.');
+      return;
+    }
     log(`cron: iniciando actualización automática (${expr})`);
     runUpdate({});
   }, { timezone: process.env.UPDATE_TZ || 'America/Guayaquil' });

@@ -429,6 +429,66 @@ router.get('/status', (req, res) => {
 // El updater consulta esto para no correr en paralelo con /load (y viceversa).
 export function loadJobRunning(): boolean { return currentJob.running; }
 
+// ── Token de sincronización local (el barrido corre en una PC con IP
+//    ecuatoriana porque SERCOP bloquea IPs de datacenter) ─────────────
+function syncTokenOk(req: any): boolean {
+  const t = req.headers['x-sync-token'] as string;
+  if (!t || t.length < 32) return false;
+  const row = getDb().prepare(`SELECT value FROM mcp_settings WHERE key='sync_token_hash'`).get() as any;
+  if (!row) return false;
+  const hash = crypto.createHash('sha256').update(t).digest('hex');
+  return hash.length === row.value.length &&
+    crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(row.value));
+}
+
+function checkAuthOrSync(req: any, res: any): boolean {
+  if (syncTokenOk(req)) return true;
+  return checkAuth(req, res);
+}
+
+router.post('/mint-sync-token', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const token = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const db = getDb();
+  db.exec(`CREATE TABLE IF NOT EXISTS mcp_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.prepare(`INSERT INTO mcp_settings (key,value) VALUES ('sync_token_hash',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(hash);
+  res.json({ token, nota: 'Guárdalo: no se puede volver a leer. Rota llamando de nuevo este endpoint.' });
+});
+
+// ── Ingesta desde la sincronización local ───────────────────
+router.post('/missing-ocids', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const ocids = req.body?.ocids;
+  if (!Array.isArray(ocids) || ocids.length > 2000) return res.status(400).json({ error: 'ocids[] requerido (máx 2000)' });
+  const { missingOcids } = await import('../updater.js');
+  res.json({ missing: missingOcids(ocids) });
+});
+
+router.post('/ingest', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const procs = req.body?.procs;
+  if (!Array.isArray(procs) || !procs.length || procs.length > 500) {
+    return res.status(400).json({ error: 'procs[] requerido (1 a 500 por lote)' });
+  }
+  try {
+    const { ingestProcs, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(ingestProcs(procs));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/ingest-finalize', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const year = Number(req.body?.year) || new Date().getFullYear();
+  try {
+    const { finalizeIngest, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(await finalizeIngest(year));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 async function updaterRunning(): Promise<boolean> {
   const { updateJob } = await import('../updater.js');
   return updateJob.running;
