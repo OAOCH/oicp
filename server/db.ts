@@ -99,6 +99,32 @@ export function getDb() { return db; }
 
 // ── Schema ──────────────────────────────────────────────────
 export function migrate() {
+  migrateInternal();
+}
+
+// Sana el esquema de bases pre-existentes (p.ej. restauradas desde una réplica
+// vieja): agrega las columnas que el código actual escribe pero la tabla no tiene.
+function healSchema() {
+  try {
+    const cols = new Set((db.prepare(`PRAGMA table_info(procedures)`).all() as any[]).map(c => c.name));
+    if (cols.size === 0) return; // la tabla aún no existe: CREATE la definirá completa
+    const needed: [string, string][] = [
+      ['data_coverage', 'REAL DEFAULT 0'],
+      ['raw_release', 'JSON'],
+    ];
+    for (const [name, type] of needed) {
+      if (!cols.has(name)) {
+        db.exec(`ALTER TABLE procedures ADD COLUMN ${name} ${type}`);
+        console.log(`✓ Schema heal: columna ${name} agregada a procedures`);
+      }
+    }
+  } catch (e: any) {
+    console.error(`Schema heal falló (no fatal): ${e.message}`);
+  }
+}
+
+function migrateInternal() {
+  healSchema();
   db.exec(`
     CREATE TABLE IF NOT EXISTS procedures (
       id TEXT PRIMARY KEY,                    -- OCID
