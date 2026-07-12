@@ -1,7 +1,24 @@
 import { Link, useLocation } from 'react-router-dom';
 import { Search, BookOpen, Trophy, Home, Shield, LogOut } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '../lib/auth';
+
+function useDataVersion() {
+  const [v, setV] = useState<{ processes?: number; dataCutoff?: string } | null>(null);
+  useEffect(() => {
+    fetch('/api/version').then(r => r.json()).then(setV).catch(() => {});
+  }, []);
+  return v;
+}
+
+function fmtCutoff(iso?: string): string | null {
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  return `${d} de ${meses[m - 1]} de ${y}`;
+}
 
 const NAV = [
   { to: '/', label: 'Inicio', icon: Home },
@@ -13,6 +30,9 @@ const NAV = [
 export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const { user, authEnabled, logout } = useAuth();
+  const dataV = useDataVersion();
+  const nProcs = dataV?.processes ? dataV.processes.toLocaleString('es-EC') : '1.460.511';
+  const cutoff = fmtCutoff(dataV?.dataCutoff) || '14 de mayo de 2026';
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -78,7 +98,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             OICP — Observatorio de Integridad de Contratación Pública del Ecuador
           </p>
           <p className="text-gray-400">
-            1.460.511 procesos · Datos actualizados al 14 de mayo de 2026
+            {nProcs} procesos · Datos actualizados al {cutoff}
           </p>
           <p>
             Datos fuente: <a href="https://datosabiertos.compraspublicas.gob.ec" target="_blank" rel="noopener" className="underline">SERCOP Datos Abiertos</a> |

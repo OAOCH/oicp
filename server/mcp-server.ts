@@ -113,10 +113,15 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     if (row.suppliers && row.suppliers !== '[]') {
       let arr: any[] = [];
       try { arr = JSON.parse(row.suppliers); } catch { arr = []; }
+      // RUC10 único por proceso: misma semántica que el patch incremental del updater
+      // (consorcios matriz+sucursal comparten los primeros 10 dígitos y contarían doble).
+      const seenR10 = new Set<string>();
       for (const s of arr) {
         const m = rx.exec(s.id || '');
         if (!m) continue;
         const r10 = m[0].slice(0, 10);
+        if (seenR10.has(r10)) continue;
+        seenR10.add(r10);
         names.push(s.name || '');
         let rec = sup.get(r10);
         if (!rec) { rec = { name: s.name || '', n: 0, t: 0, fy: yr, ly: yr, buyers: new Set(), crit: 0, high: 0, mod: 0, low: 0, top: [] }; sup.set(r10, rec); }

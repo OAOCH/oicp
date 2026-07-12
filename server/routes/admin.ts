@@ -86,6 +86,7 @@ async function safeFetch(url: string): Promise<Response | null> {
 
 // ── UPLOAD DATABASE ─────────────────────────────────────────
 router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (req, res) => {
+  if (await updaterRunning()) return res.status(409).json({ error: 'El actualizador incremental está corriendo; el reemplazo de base cerraría su conexión. Detenlo primero con POST /api/admin/stop-update.' });
   if (!checkAuth(req, res)) return;
 
   try {
@@ -356,110 +357,13 @@ router.post('/normalize', async (req, res) => {
     // PASO 2: Reconstruir el indice de concentracion (ANTES de evaluar banderas)
     rebuildConcentrationIndex();
 
-    // PASO 3: Construir el contexto de concentracion desde la tabla SQL.
-    // Para cada par comprador|proveedor calculamos: ínfimas del año, share,
-    // años activos (de los 7), y participación en consorcios.
-    // Se agrega por par tomando el MAXIMO across años para infima_count/share,
-    // y el CONTEO de años distintos para years_active.
-    const concRows = db.prepare(`
-      SELECT buyer_id, supplier_id, supplier_name,
-             year, contract_count, total_value,
-             COALESCE(infima_count, 0) as infima_count,
-             COALESCE(infima_total_value, 0) as infima_total_value,
-             COALESCE(share_of_buyer, 0) as share_of_buyer
-      FROM concentration_index
-      WHERE supplier_id IS NOT NULL
-    `).all() as any[];
-
-    // Mapa: "buyer|supplier" -> agregados
-    const bySupplier = new Map<string, any>();
-    const yearsByPair = new Map<string, Set<number>>();
-
-    for (const r of concRows) {
-      const key = `${r.buyer_id}|${r.supplier_id}`;
-      if (!bySupplier.has(key)) {
-        bySupplier.set(key, {
-          supplier_id: r.supplier_id,
-          supplier_name: r.supplier_name,
-          infima_count: 0,
-          infima_total_value: 0,
-          share_of_buyer: 0,
-          years_active: 0,
-          consortium_count: 0,
-          total_value: 0,
-          buyer_total_procs: 0,
-        });
-        yearsByPair.set(key, new Set());
-      }
-      const agg = bySupplier.get(key);
-      // infima y share: tomamos el pico anual (el año mas concentrado)
-      agg.infima_count = Math.max(agg.infima_count, r.infima_count);
-      agg.infima_total_value = Math.max(agg.infima_total_value, r.infima_total_value);
-      agg.share_of_buyer = Math.max(agg.share_of_buyer, r.share_of_buyer);
-      agg.total_value += (r.total_value || 0);
-      yearsByPair.get(key)!.add(r.year);
-    }
-    for (const [key, years] of yearsByPair) {
-      bySupplier.get(key).years_active = years.size;
-    }
-
-    // Volumen total de procesos por comprador (para el piso de CC-02).
-    const buyerProcs = new Map<string, number>();
-    for (const r of concRows) {
-      buyerProcs.set(r.buyer_id, (buyerProcs.get(r.buyer_id) || 0) + (r.contract_count || 0));
-    }
-    for (const [key, agg] of bySupplier) {
-      const buyerId = key.split('|')[0];
-      agg.buyer_total_procs = buyerProcs.get(buyerId) || 0;
-    }
-
-    // PASO 3b: contar consorcios por par comprador|proveedor.
-    // Un consorcio = proceso con 2+ proveedores.
-    const consortiumRows = db.prepare(`
-      SELECT buyer_id, suppliers FROM procedures
-      WHERE json_array_length(suppliers) >= 2
-    `).all() as any[];
-    for (const row of consortiumRows) {
-      let sups: any[] = [];
-      try { sups = JSON.parse(row.suppliers || '[]'); } catch { continue; }
-      for (const s of sups) {
-        if (!s.id) continue;
-        const key = `${row.buyer_id}|${s.id}`;
-        const agg = bySupplier.get(key);
-        if (agg) agg.consortium_count++;
-      }
-    }
-
-    const ctx = { bySupplier };
-
-    // PASO 4: Re-evaluar las 15 banderas para todos los procedimientos
-    const rows = db.prepare(`
-      SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
-             budget_amount, award_amount, contract_amount, final_amount,
-             published_date, submission_deadline, award_date,
-             number_of_tenderers, title, description, items_classification,
-             has_amendments, amendment_count, suppliers
-      FROM procedures
-    `).all() as any[];
-
-    const updateStmt = db.prepare(`
-      UPDATE procedures SET flags = ?, score = ?, risk_level = ? WHERE id = ?
-    `);
-
-    const tx = db.transaction(() => {
-      for (const row of rows) {
-        const proc = {
-          ...row,
-          // budget_amount puede venir como texto si quedo sin reparar; lo forzamos a numero
-          budget_amount: Number(row.budget_amount) || 0,
-          suppliers: JSON.parse(row.suppliers || '[]'),
-          has_amendments: !!row.has_amendments,
-        };
-        const { flags, score, riskLevel } = evaluateAllFlags(proc, ctx);
-        updateStmt.run(JSON.stringify(flags), score, riskLevel, row.id);
-      }
-    });
-    tx();
+    // PASO 3-4: Re-evaluación con contexto de concentración vía el updater:
+    // iterate() (sin cargar 1.46M filas en RAM), escritura SOLO de diffs, y
+    // fila+deltas de agregados a_* en la MISMA transacción por lote — así las
+    // herramientas MCP (a_risk_year/a_flag_year/a_suppliers) nunca quedan
+    // desincronizadas tras un normalize.
+    const { reflagChanged } = await import('../updater.js');
+    const reevaluated = await reflagChanged(db);
 
     // Estadisticas finales
     const riskCounts = db.prepare(`
@@ -475,8 +379,7 @@ router.post('/normalize', async (req, res) => {
     invalidateStatsCache();
     res.json({
       success: true,
-      message: `Normalizado y re-evaluado ${rows.length} procedimientos con las 15 banderas.`,
-      pares_concentracion: bySupplier.size,
+      message: `Normalizado. Re-evaluación completa: ${reevaluated} procedimientos cambiaron de banderas/score (los agregados a_* quedaron sincronizados).`,
       methodCounts,
       riskCounts,
       flagCounts,
@@ -523,6 +426,14 @@ router.get('/status', (req, res) => {
   res.json(currentJob);
 });
 
+// El updater consulta esto para no correr en paralelo con /load (y viceversa).
+export function loadJobRunning(): boolean { return currentJob.running; }
+
+async function updaterRunning(): Promise<boolean> {
+  const { updateJob } = await import('../updater.js');
+  return updateJob.running;
+}
+
 router.post('/stop', (req, res) => {
   if (!checkAuth(req, res)) return;
   currentJob.running = false;
@@ -537,6 +448,7 @@ router.post('/load', async (req, res) => {
   const term = req.query.term as string;
 
   if (currentJob.running) return res.json({ message: 'Ya hay una descarga en curso.', status: currentJob });
+  if (await updaterRunning()) return res.status(409).json({ error: 'El actualizador incremental está corriendo. Detenlo primero con POST /api/admin/stop-update.' });
 
   const terms = term ? [term] : SEARCH_TERMS_FULL;
   currentJob = { running: true, year, progress: 'Iniciando...', count: 0, errors: [], currentTerm: '', termsCompleted: 0, totalTerms: terms.length, skippedDuplicates: 0, lastApiResponse: '', startedAt: new Date().toISOString() };
@@ -657,6 +569,28 @@ function ocdsReleaseToProc(release: any, sr: any, year: number) {
     regime: getRegime(t.tenderPeriod?.startDate || release.date || sr?.date || `${year}-06-15`),
   };
 }
+
+// ── ACTUALIZACION INCREMENTAL (updater con cron mar/jue) ────
+router.post('/run-update', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const { runUpdate } = await import('../updater.js');
+  const year = req.query.year ? Number(req.query.year) : undefined;
+  const budgetMin = req.query.budgetMin ? Number(req.query.budgetMin) : undefined;
+  res.json(await runUpdate({ year, budgetMin }));
+});
+
+router.get('/update-status', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const { updateJob } = await import('../updater.js');
+  res.json(updateJob);
+});
+
+router.post('/stop-update', async (req, res) => {
+  if (!checkAuth(req, res)) return;
+  const { stopUpdate, updateJob } = await import('../updater.js');
+  stopUpdate();
+  res.json({ message: 'Detenido', status: updateJob });
+});
 
 // ── ADMIN PAGE ──────────────────────────────────────────────
 router.get('/', (req, res) => {
@@ -831,6 +765,7 @@ router.post('/restore-chunk', express.raw({ type: '*/*', limit: '30mb' }), (req,
 });
 
 router.post('/restore-commit', express.json({ limit: '1mb' }), async (req, res) => {
+  if (await updaterRunning()) return res.status(409).json({ error: 'El actualizador incremental está corriendo; el reemplazo de base cerraría su conexión. Detenlo primero con POST /api/admin/stop-update.' });
   if (!checkTempKey(req) && !checkAuth(req, res)) return;
   try {
     req.setTimeout(1800000); res.setTimeout(1800000);
@@ -887,6 +822,7 @@ router.post('/restore-commit', express.json({ limit: '1mb' }), async (req, res) 
 // Para bases grandes que exceden el límite del upload directo. La URL debe ser
 // un enlace de descarga directa; si es .gz se descomprime en streaming.
 router.post('/restore-from-url', express.json({ limit: '1mb' }), async (req, res) => {
+  if (await updaterRunning()) return res.status(409).json({ error: 'El actualizador incremental está corriendo; el reemplazo de base cerraría su conexión. Detenlo primero con POST /api/admin/stop-update.' });
   if (!checkAuth(req, res)) return;
   const url = String(req.body?.url || '');
   if (!/^https:\/\//.test(url)) return res.status(400).json({ error: 'URL https requerida en body.url' });

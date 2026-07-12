@@ -13,8 +13,16 @@ import authRouter from './routes/auth.js';
 import mcpRouter from './routes/mcp.js';
 import { ensureAuthTables, requireAuth, authEnabled } from './auth.js';
 import { getCachedStatistics } from './cache.js';
+import { scheduleAutoUpdate, refreshDataCutoff, getDataCutoff } from './updater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Red de seguridad: un rechazo no manejado (p.ej. en un job de fondo) se loguea
+// en vez de tumbar el proceso completo que sirve la web y el MCP.
+process.on('unhandledRejection', (reason: any) => {
+  console.error(`[unhandledRejection] ${reason?.stack || reason}`);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BOOT_TIME = new Date().toISOString();
@@ -78,11 +86,14 @@ app.get('/api/health', (req, res) => {
 
 // ── Version (publico, util para verificar el deploy) ─────────
 app.get('/api/version', (req, res) => {
+  const { cutoff, processes } = getDataCutoff();
   res.json({
     version: process.env.npm_package_version || '2.0.0',
     commit: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev',
     deployedAt: BOOT_TIME,
     authEnabled: authEnabled(),
+    dataCutoff: cutoff,
+    processes,
   });
 });
 
@@ -207,4 +218,6 @@ app.listen(PORT, () => {
   console.log(` API: http://localhost:${PORT}/api`);
   console.log(` Auth: ${authEnabled() ? 'ACTIVADA (magic link)' : 'abierta (sin JWT_SECRET)'}`);
   console.log(` App: http://localhost:5173 (dev) | http://localhost:${PORT} (prod)\n`);
+  refreshDataCutoff();
+  scheduleAutoUpdate();
 });
