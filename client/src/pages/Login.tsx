@@ -87,6 +87,9 @@ export default function Login() {
               <p className="text-xs text-gray-400 text-center">
                 Acceso por invitación. Te llegará un enlace de un solo uso, válido por 15 minutos.
               </p>
+              <p className="text-xs text-gray-400 text-center mt-1">
+                El uso de la plataforma queda registrado con fines de seguridad y auditoría.
+              </p>
             </form>
           )}
         </div>

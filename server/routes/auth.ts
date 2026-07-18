@@ -133,5 +133,18 @@ router.delete('/users/:email', requireSuperadmin, (req: AuthedRequest, res) => {
   res.json({ ok: true });
 });
 
+// ── Actividad por usuario (solo superadmin) ─────────────────
+router.get('/activity', requireSuperadmin, async (req, res) => {
+  try {
+    const email = normalizeEmail(String(req.query.email || ''));
+    if (!isValidEmail(email)) return res.status(400).json({ error: 'email invalido' });
+    const days = Number(req.query.days) || 30;
+    const { getActivity } = await import('../access-log.js');
+    res.json(getActivity(email, days));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;
 export { ensureAuthTables };

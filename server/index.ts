@@ -14,6 +14,7 @@ import mcpRouter from './routes/mcp.js';
 import { ensureAuthTables, requireAuth, authEnabled } from './auth.js';
 import { getCachedStatistics } from './cache.js';
 import { scheduleAutoUpdate, refreshDataCutoff, getDataCutoff } from './updater.js';
+import { accessLogger, ensureAccessLog } from './access-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +79,7 @@ app.use(express.json({ limit: '50mb' }));
 // Initialize DB + tablas de auth + seed superadmin
 migrate();
 ensureAuthTables(getDb());
+ensureAccessLog();
 
 // ── Health check (SIEMPRE publico, sin auth, sin rate limit, no toca BD) ──
 app.get('/api/health', (req, res) => {
@@ -122,6 +124,9 @@ app.use('/api', (req, res, next) => {
   if (p.startsWith('/auth') || p.startsWith('/admin')) return next();
   return requireAuth(req, res, next);
 });
+
+// ── Registro de actividad (best-effort; solo peticiones con sesión) ──
+app.use('/api', accessLogger);
 
 // ── Admin routes (protegidos por rol superadmin dentro del router) ──
 app.use('/api/admin', adminRouter);

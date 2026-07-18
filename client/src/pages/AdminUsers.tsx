@@ -71,7 +71,10 @@ export default function AdminUsers() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <div className="flex items-center gap-2 mb-1"><Shield className="text-brand-600" size={22} /><h1>Gestión de accesos</h1></div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2"><Shield className="text-brand-600" size={22} /><h1>Gestión de accesos</h1></div>
+        <a href="/admin/actividad" className="text-sm text-brand-600 hover:underline">Ver actividad por usuario →</a>
+      </div>
       <p className="text-sm text-gray-500 mb-6">Solo los correos en esta lista pueden ingresar. No hay registro público.</p>
 
       <form onSubmit={add} className="bg-white rounded-xl border p-4 mb-6 flex flex-wrap gap-3 items-end">

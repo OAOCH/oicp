@@ -10,6 +10,7 @@ import Rankings from './pages/Rankings';
 import Login from './pages/Login';
 import AdminUsers from './pages/AdminUsers';
 import AdminAudit from './pages/AdminAudit';
+import AdminActivity from './pages/AdminActivity';
 import { useAuth } from './lib/auth';
 
 function FullScreenLoading() {
@@ -53,6 +54,7 @@ export default function App() {
               <Route path="/rankings" element={<Rankings />} />
               <Route path="/admin/usuarios" element={<AdminUsers />} />
               <Route path="/admin/auditoria" element={<AdminAudit />} />
+              <Route path="/admin/actividad" element={<AdminActivity />} />
             </Routes>
           </Layout>
         }
