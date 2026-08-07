@@ -6,8 +6,15 @@ name: Monitor producción
 # apuntando al mismo endpoint.
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Cada 30 min: ~1.450 min/mes de Actions, dentro de los 2.000 gratuitos de
+    # repos privados. Con */5 la cuota se agotaba a inicios de mes y GitHub
+    # cancelaba los runs (visto 2026-08-06).
+    - cron: '*/30 * * * *'
   workflow_dispatch: {}
+
+concurrency:
+  group: monitor-produccion
+  cancel-in-progress: true
 
 jobs:
   healthcheck:

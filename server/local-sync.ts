@@ -11,7 +11,7 @@
  * Config: archivo .sync-token (token de /api/admin/mint-sync-token) junto a
  * package.json, o variable de entorno OICP_SYNC_TOKEN.
  */
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -25,6 +25,11 @@ const CURSOR_FILE = resolve(ROOT, '.sync-cursor.json');
 const SEARCH_API = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/search_ocds';
 const RECORD_API = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/record';
 const MAX_PAGES = 5000;
+// Tope de páginas por término POR CORRIDA: los términos genéricos ("del", "para")
+// superan las 1.000 páginas y una sola corrida se ahogaba en ellos sin llegar a
+// finalizar. Los específicos cubren casi todo; el barrido genérico avanza por tandas.
+const MAX_PAGES_PER_RUN = 300;
+const PENDING_FILE = resolve(ROOT, '.sync-pending-finalize');
 
 // Mantener en sincronía con server/updater.ts (TERMS y el parser del release).
 const TERMS = [
@@ -40,11 +45,13 @@ const TERMS = [
   'vehículos', 'tecnología', 'software', 'internet',
   'agua', 'eléctrico', 'electrónico', 'médico',
   'laboratorio', 'impresión', 'publicidad', 'comunicación',
-  'para', 'del', 'los', 'con', 'por', 'las',
   'municipal', 'provincial', 'ministerio', 'hospital',
   'universidad', 'escuela', 'instituto', 'empresa',
   'infraestructura', 'instalación', 'implementación',
   'evaluación', 'supervisión', 'control', 'gestión',
+  // Genéricos AL FINAL: son la red de seguridad (miles de páginas cada uno);
+  // primero deben completarse los términos específicos en cada corrida.
+  'para', 'del', 'los', 'con', 'por', 'las',
 ];
 
 function log(msg: string) { console.log(`[sync ${new Date().toISOString()}] ${msg}`); }
@@ -158,11 +165,28 @@ async function main() {
   const args = process.argv.slice(2);
   const argOf = (k: string) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const year = Number(argOf('--year')) || new Date().getFullYear();
-  const budgetMin = Number(argOf('--budget-min')) || 300;
+  const budgetMin = Number(argOf('--budget-min')) || 240;
   const oneTerm = argOf('--term');
   const terms = oneTerm ? [oneTerm] : TERMS;
 
   if (!TOKEN) { console.error('Falta el token: crea el archivo .sync-token o exporta OICP_SYNC_TOKEN'); process.exit(1); }
+
+  // Recuperación: si una corrida anterior murió (apagado/batería) después de
+  // ingerir pero antes de finalizar, la finalización quedó pendiente en el
+  // servidor (corte de datos y banderas de concentración desactualizados).
+  if (existsSync(PENDING_FILE)) {
+    const pendYear = Number(readFileSync(PENDING_FILE, 'utf-8').trim()) || year;
+    log(`finalización pendiente de una corrida interrumpida (año ${pendYear}); ejecutando primero…`);
+    try {
+      const fin = await prod('/api/admin/ingest-finalize', { year: pendYear });
+      log(`finalización recuperada: ${JSON.stringify(fin)}`);
+      try { unlinkSync(PENDING_FILE); } catch { /* mejor esfuerzo */ }
+    } catch (e: any) {
+      log(`no se pudo recuperar la finalización (seguirá pendiente): ${e.message}`);
+    }
+  }
+  // Marca que esta corrida deberá finalizar (se borra al finalizar con éxito).
+  writeFileSync(PENDING_FILE, String(year));
 
   const t0 = Date.now();
   const budgetMs = budgetMin * 60_000;
@@ -185,7 +209,8 @@ async function main() {
     if (outOfBudget) break;
     const term = terms[t];
     let page = (t === start.termIdx ? start.page : 1), totalPages = 1;
-    while (page <= totalPages && page <= MAX_PAGES && !outOfBudget) {
+    const pageCap = page + MAX_PAGES_PER_RUN - 1;
+    while (page <= totalPages && page <= MAX_PAGES && page <= pageCap && !outOfBudget) {
       if (Date.now() - t0 > budgetMs) { outOfBudget = true; if (!oneTerm) saveCursor(year, t, page); break; }
       const sd = await sercopFetch(`${SEARCH_API}?year=${year}&search=${encodeURIComponent(term)}&page=${page}`);
       searched++;
@@ -210,6 +235,9 @@ async function main() {
       }
       page++;
     }
+    if (page > pageCap && page <= totalPages) {
+      log(`  término "${term}": tope de ${MAX_PAGES_PER_RUN} págs/corrida alcanzado (${page - 1}/${totalPages}); continúa en tandas`);
+    }
   }
   await flush();
   if (!outOfBudget && !oneTerm) clearCursor();
@@ -219,6 +247,7 @@ async function main() {
     log('finalizando en producción (concentración + banderas + agregados)…');
     const fin = await prod('/api/admin/ingest-finalize', { year });
     log(`finalizado: ${JSON.stringify(fin)}`);
+    try { unlinkSync(PENDING_FILE); } catch { /* mejor esfuerzo */ }
   }
   log('OK');
   process.exit(0);
