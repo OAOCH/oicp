@@ -134,6 +134,13 @@ app.use('/api/admin', adminRouter);
 // ── MCP remoto (conector para claude.ai; token secreto en la URL) ──
 app.use('/mcp', mcpRouter);
 
+// ── Descubrimiento OAuth: este servidor NO usa OAuth (la autenticación del MCP
+// es el token en la URL). Sin esta respuesta explícita, el catch-all del SPA
+// contestaba HTML 200 a /.well-known/* y el flujo de conectores de Claude
+// intentaba registrarse contra un servicio de login inexistente
+// ("Couldn't register with OICP's sign-in service").
+app.all('/.well-known/*', (req, res) => res.status(404).json({ error: 'not_found' }));
+
 // ── Statistics (cacheado 5 min) ──────────────────────────────
 app.get('/api/statistics', (req, res) => {
   try {
