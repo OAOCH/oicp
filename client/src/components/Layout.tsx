@@ -31,8 +31,12 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const { user, authEnabled, logout } = useAuth();
   const dataV = useDataVersion();
-  const nProcs = dataV?.processes ? dataV.processes.toLocaleString('es-EC') : '1.460.511';
-  const cutoff = fmtCutoff(dataV?.dataCutoff) || '14 de mayo de 2026';
+  // Nunca inventar la cobertura de datos. Antes había aquí un conteo y una fecha de corte
+  // clavados ("1.460.511" y "14 de mayo de 2026") que se mostraban mientras cargaba
+  // /api/version o si fallaba: se publicaba una cobertura de hace meses como si fuera la
+  // vigente, y es justo el dato que un periodista cita. Sin dato, no se afirma nada.
+  const nProcs = dataV?.processes ? dataV.processes.toLocaleString('es-EC') : null;
+  const cutoff = fmtCutoff(dataV?.dataCutoff) || null;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -98,7 +102,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             OICP — Observatorio de Integridad de Contratación Pública del Ecuador
           </p>
           <p className="text-gray-400">
-            {nProcs} procesos · Datos actualizados al {cutoff}
+            {nProcs && cutoff
+              ? <>{nProcs} procesos · Datos actualizados al {cutoff}</>
+              : <>Consultando la cobertura de datos…</>}
           </p>
           <p>
             Datos fuente: <a href="https://datosabiertos.compraspublicas.gob.ec" target="_blank" rel="noopener" className="underline">SERCOP Datos Abiertos</a> |

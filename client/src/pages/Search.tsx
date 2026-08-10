@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search as SearchIcon, Filter, ChevronLeft, ChevronRight, ExternalLink, X } from 'lucide-react';
 import { api, mensajeDeError } from '../lib/api';
@@ -48,19 +48,49 @@ export default function Search() {
   const flag = searchParams.get('flag') || '';
   const year = searchParams.get('year') || '';
   const status = searchParams.get('status') || '';
+  // buyerId y supplierId NO se leían ni se enviaban: el enlace "Ver todos los
+  // procedimientos de este comprador" (BuyerProfile.tsx:110) apunta a /buscar?buyerId=…
+  // y devolvía la base completa sin filtrar, como si la entidad tuviera 1,47 M procesos.
+  const buyerId = searchParams.get('buyerId') || '';
+  const supplierId = searchParams.get('supplierId') || '';
   const sortBy = searchParams.get('sortBy') || 'score';
   const sortOrder = searchParams.get('sortOrder') || 'DESC';
 
-  const hasActiveFilters = risk || method || flag || year || status;
+  const hasActiveFilters = risk || method || flag || year || status || buyerId || supplierId;
+
+  // La caja de texto responde a cada tecla, pero la consulta sale 350 ms después de que
+  // dejas de escribir. Antes cada tecla disparaba una petición al servidor: "hospital"
+  // eran 8 búsquedas sobre 1,47 M filas.
+  const [texto, setTexto] = useState(q);
+  useEffect(() => { setTexto(q); }, [q]);
+  useEffect(() => {
+    if (texto === q) return;
+    const t = setTimeout(() => {
+      const p = new URLSearchParams(searchParams);
+      if (texto) p.set('q', texto); else p.delete('q');
+      p.delete('page');
+      setSearchParams(p);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [texto, q, searchParams, setSearchParams]);
+
+  // Descarta respuestas que llegan tarde: sin esto, una consulta lenta que volvía después
+  // de una más rápida pisaba la pantalla con los resultados de una búsqueda anterior.
+  const secuencia = useRef(0);
 
   const doSearch = useCallback(async () => {
+    const mia = ++secuencia.current;
     setLoading(true); setError(null);
     try {
-      const data = await api.searchProcedures({ q, page, risk, method, flag, year, status, sortBy, sortOrder });
+      const data = await api.searchProcedures({ q, page, risk, method, flag, year, status, buyerId, supplierId, sortBy, sortOrder });
+      if (mia !== secuencia.current) return;
       setResults(data);
-    } catch (e) { setError(e); setResults(null); }
-    setLoading(false);
-  }, [q, page, risk, method, flag, year, status, sortBy, sortOrder]);
+    } catch (e) {
+      if (mia !== secuencia.current) return;
+      setError(e); setResults(null);
+    }
+    if (mia === secuencia.current) setLoading(false);
+  }, [q, page, risk, method, flag, year, status, buyerId, supplierId, sortBy, sortOrder]);
 
   useEffect(() => { doSearch(); }, [doSearch]);
   useEffect(() => { api.getFilters().then(setFilters).catch(console.error); }, []);
@@ -69,6 +99,20 @@ export default function Search() {
     const p = new URLSearchParams(searchParams);
     if (value) p.set(key, value); else p.delete(key);
     if (key !== 'page') p.delete('page');
+    setSearchParams(p);
+  };
+
+  /** Actualiza VARIOS parámetros en una sola escritura. Llamar a updateParam dos veces
+   *  seguidas no sirve: ambas construyen su URLSearchParams desde el mismo searchParams
+   *  del render, así que la segunda pisa a la primera. Eso era exactamente lo que rompía
+   *  el orden: se guardaba sortOrder y se perdía sortBy, así que "Mayor monto" y "Más
+   *  recientes" no hacían nada y el selector se revertía solo a "Mayor riesgo". */
+  const updateParams = (cambios: Record<string, string>) => {
+    const p = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(cambios)) {
+      if (value) p.set(key, value); else p.delete(key);
+    }
+    p.delete('page');
     setSearchParams(p);
   };
 
@@ -86,8 +130,8 @@ export default function Search() {
       <div className="flex gap-2">
         <div className="relative flex-1">
           <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <input value={q}
-            onChange={e => updateParam('q', e.target.value)}
+          <input value={texto}
+            onChange={e => setTexto(e.target.value)}
             placeholder="Entidad, proveedor, OCID, palabra clave..."
             className="w-full pl-10 pr-4 py-2.5 rounded-lg border focus:ring-2 focus:ring-brand-500 outline-none" />
         </div>
@@ -102,6 +146,18 @@ export default function Search() {
       {hasActiveFilters && (
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-xs text-gray-500">Filtros activos:</span>
+          {/* Sin estas dos, quien llegaba desde el perfil de un comprador veía la lista
+              filtrada sin ninguna señal de por qué, y no tenía forma de quitar el filtro. */}
+          {buyerId && (
+            <button onClick={() => updateParam('buyerId', '')} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-medium hover:bg-brand-100 transition">
+              Comprador: {buyerId} <X size={12} />
+            </button>
+          )}
+          {supplierId && (
+            <button onClick={() => updateParam('supplierId', '')} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-medium hover:bg-brand-100 transition">
+              Proveedor: {supplierId} <X size={12} />
+            </button>
+          )}
           {status && (
             <button onClick={() => updateParam('status', '')} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-medium hover:bg-brand-100 transition">
               {STATUS_LABELS[status] || status} <X size={12} />
@@ -210,7 +266,7 @@ export default function Search() {
           <span className="text-gray-500">Ordenar:</span>
           <select value={`${sortBy}-${sortOrder}`} onChange={e => {
             const [s, o] = e.target.value.split('-');
-            updateParam('sortBy', s); updateParam('sortOrder', o);
+            updateParams({ sortBy: s, sortOrder: o });   // una sola escritura, ver updateParams
           }} className="border rounded px-2 py-1">
             <option value="score-DESC">Mayor riesgo</option>
             <option value="score-ASC">Menor riesgo</option>
@@ -239,7 +295,8 @@ export default function Search() {
                   </div>
                   <h3 className="font-medium text-brand-700 line-clamp-1">{p.title || p.id}</h3>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {p.buyer_name || 'Comprador desconocido'} · {formatDate(p.published_date)} · {formatCurrency(p.award_amount)}
+                    {/* monto_usd, no award_amount crudo: una sola definición de monto (regla 11). */}
+                    {p.buyer_name || 'Comprador desconocido'} · {formatDate(p.published_date)} · {formatCurrency(p.monto_usd ?? p.award_amount)}
                   </p>
                   {p.flags?.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
