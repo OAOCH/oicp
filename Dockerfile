@@ -1,10 +1,14 @@
-FROM node:20-slim
+# Node 22 LTS: Node 20 salio de soporte en abril de 2026 y ya no recibe parches.
+FROM node:22-slim
 
 WORKDIR /app
 
-# Install deps
-COPY package*.json ./
-RUN npm install
+# npm ci, no npm install: instala EXACTAMENTE lo del package-lock.json. Con npm install
+# el build no era reproducible (cada despliegue podia traer versiones distintas de las
+# dependencias aunque el commit fuera el mismo) y falla si el lockfile esta desfasado,
+# que es justo lo que se quiere saber antes de desplegar.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Copy source
 COPY . .

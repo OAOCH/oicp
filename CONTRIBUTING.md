@@ -55,13 +55,18 @@ Para validar que un cambio no altera la distribución de banderas:
    de tiempo). Diferencias grandes = revisar el cambio.
 
 > No cambies umbrales de banderas ni la detección de ínfima sin verificar el impacto
-> contra los datos reales y consultarlo. Ver `docs/BANDERAS.md` y `BUGS_RESUELTOS.md`.
+> contra los datos reales y consultarlo. La fuente de verdad es `server/flag-engine.ts`,
+> y si tocas una regla, un umbral o un peso, actualiza en el MISMO commit
+> `client/src/pages/Methodology.tsx` y el objeto `METHODOLOGY` de `server/mcp-server.ts`
+> (regla 10 de `CLAUDE.md`). Una divergencia ahí destruye la credibilidad.
 
 ## Deploy
 
 - Push a `main` → Railway redespliega automático (~3 min).
 - El `Dockerfile` corre `npx vite build` (frontend) y `npx tsx server/index.ts` (backend).
-- Healthcheck: `/api/health` (no tocar; cualquier ruta que consulte la BD rompe el deploy).
+- Healthcheck: `/api/health`. **Sí consulta la base** (un `SELECT 1`), a propósito: antes
+  respondía «ok» aunque la base estuviera corrupta o ausente y el monitor no se enteraba.
+  Lo que no debe hacer es una consulta costosa.
 - Si el deploy falla: Railway → Deployments → ver logs (Build vs Deploy).
 
 ## Variables de entorno

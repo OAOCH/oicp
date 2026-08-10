@@ -1,7 +1,12 @@
 name: CI
 
-# Lint de tipos + build + tests en cada push y PR.
-# NO bloquea el merge (los jobs informan, no exigen): Oscar itera rápido.
+# Typecheck (servidor Y cliente) + build + tests en cada push y PR.
+#
+# Estos pasos FALLAN de verdad. Antes llevaban `continue-on-error: true`, así que el CI
+# quedaba verde aunque los 21 tests del motor de banderas o el typecheck estuvieran
+# rotos: el peor de los dos mundos, porque el check verde daba una garantía falsa.
+# Un check rojo NO bloquea el despliegue (Railway observa el repo, no el CI), así que
+# esto no frena a nadie; solo deja de mentir.
 on:
   push:
     branches: [main]
@@ -16,15 +21,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: Install
-        run: npm install --no-audit --no-fund
-      - name: Typecheck servidor
-        run: npx tsc -p tsconfig.server.json --noEmit
-        continue-on-error: true
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck servidor y cliente
+        run: npm run typecheck
       - name: Build frontend
         run: npx vite build
       - name: Tests
-        run: npm test --if-present
-        continue-on-error: true
+        run: npm test

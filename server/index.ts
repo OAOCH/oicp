@@ -86,7 +86,10 @@ migrate();
 ensureAuthTables(getDb());
 ensureAccessLog();
 
-// ── Health check (SIEMPRE publico, sin auth, sin rate limit, no toca BD) ──
+// ── Health check (SIEMPRE publico, sin auth, sin rate limit) ─────────────
+// SI toca la base, a proposito: antes respondia "ok" aunque estuviera corrupta.
+// Comparte el unico hilo de Node, asi que una consulta pesada en cualquier otra
+// ruta tambien lo deja sin responder: no es un test de "el proceso vive".
 app.get('/api/health', (req, res) => {
   // Comprobación REAL: una consulta trivial a la base. Antes devolvía siempre "ok"
   // aunque la base estuviera corrupta o ausente, y el monitor no se enteraba.

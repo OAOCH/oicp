@@ -1,8 +1,15 @@
-# ESTADO — actualizado 2026-08-09
+# ESTADO — actualizado 2026-08-10
 
 Producción al momento de escribir (`GET /api/version`):
-`commit 5611b78` · `authEnabled: true` · **1 469 508 procesos** · **corte de datos `2026-07-11`**
-(la puesta al día está corriendo, ver «A medias»).
+`commit ab39bd8` · `authEnabled: true` · **1 470 321 procesos** · **corte de datos `2026-08-07`**
+
+**El pendiente de datos quedó resuelto**: el corte pasó de `2026-07-11` a `2026-08-07`. La corrida
+del 10-ago terminó bien (`finalizado: {"reflagged":606,"cutoff":"2026-08-07"}`), la tarea de Windows
+está en `Ready` con último resultado `0` y las tres protecciones (despertar el equipo, tolerar
+batería, no detenerse al pasar a batería) están verificadas en el XML de la tarea.
+
+Ojo: el barrido **no completa en una corrida**. La del 10-ago agotó el presupuesto de 240 min en el
+término 9 de 69 y guardó cursor (`.sync-cursor.json`). El corte avanza por tandas, no de golpe.
 
 ---
 
@@ -27,23 +34,62 @@ Producción al momento de escribir (`GET /api/version`):
 - **Calidad de código**: `npm run typecheck` limpio en servidor y cliente (había 11 errores
   preexistentes), 21/21 tests del motor de banderas en verde.
 
-## A medias — punto exacto donde quedó
+## Auditoría adversarial 2026-08-10 (segunda ronda)
 
-**Puesta al día de los datos: el corte sigue en 2026-07-11 y debería estar en agosto.**
-- Causa raíz encontrada: la tarea de Windows moría con código `0xC000013A` (proceso terminado) y el
-  registro del sistema muestra **suspensiones del equipo** en esos momentos. La laptop se dormía y
-  mataba el barrido.
-- Corregido: la tarea ahora **despierta el equipo** (`WakeToRun`), tolera batería y **reintenta 4
-  veces cada 15 minutos** si se interrumpe.
-- La corrida se relanzó el 2026-08-09 por la noche y está en curso. La recuperación automática ya
-  demostró funcionar: al arrancar detecta la finalización pendiente y la ejecuta antes de barrer.
+7 revisores independientes (backend/datos, seguridad, MCP/IA, metodología, frontend/UX,
+operación, producción en vivo), cada uno con un escéptico que intentó refutar sus hallazgos:
+**30 hallazgos confirmados** y 6 refutados. Dos escépticos (metodología y MCP/IA) murieron por
+límite de sesión, así que sus 17 hallazgos quedaron **sin veredicto** y se verifican a mano.
 
-## Siguiente paso concreto
+**Incidente durante la auditoría**: una consulta del propio revisor de MCP dejó la plataforma sin
+responder ~20 min (logs del edge: `POST /mcp/... 499 182951ms`, `GET /api/version 499 300004ms`).
+El proceso quedó vivo y colgado, no muerto, así que `restartPolicyType ON_FAILURE` no lo recuperó.
+Se liberó solo. **No hubo fuga de datos personales**: se revisaron los 14 transcritos y el correo
+del periodista no aparece en ninguno; la lista negra de `oicp_sql` aguantó.
 
-1. Verificar que el corte avanzó: `curl -s https://oicp-production.up.railway.app/api/version` →
-   `dataCutoff` debe pasar de `2026-07-11` a una fecha de agosto.
-2. Si no avanzó, leer `sync.log` (raíz del proyecto) y buscar la última línea `finalizado:`.
-3. La tarea programada corre sola los **martes y jueves a las 08:00**; no requiere intervención.
+### Terminado y desplegado
+
+- **`commit ccf6f28` — tope de costo real en `oicp_sql`.** Las guardas anteriores filtraban la
+  *forma* del SQL con expresiones regulares y habían fallado dos veces: la primera versión dejaba
+  pasar `FROM a x, b y`, la segunda cerró esa forma pero dejó abiertas `JOIN ... ON 1=1` y la
+  subconsulta antes de la coma. Ahora se le pregunta al **planificador** (`EXPLAIN QUERY PLAN`) qué
+  va a hacer y se rechaza el plan caro. Hallazgo clave al implementarlo: **SQLite reporta el alias,
+  no la tabla** (`FROM procedures p` → `SCAN p`), así que un filtro por nombre de tabla se evade
+  aliasando; y las dos evasiones aparecen como `SCAN ... USING COVERING INDEX`, de modo que permitir
+  los índices cubridores habría dejado pasar justo el caso catastrófico. La versión final resuelve
+  alias→tabla y **falla cerrado**: lo que no puede identificar, lo rechaza.
+  También: `LIMIT` impuesto siempre (antes bastaba escribir «limit» en un comentario para anularlo),
+  `dbstat` y todo `sqlite_*` en la lista negra, lote JSON-RPC acotado a 20 mensajes, `pageSize`
+  saneado con piso (con `-1` SQLite entiende «sin límite» = `.all()` sobre 1,47 M filas, regla 3),
+  404 explícito para `/api` (antes esas rutas quedaban colgadas para siempre), y eliminado el
+  *fallback* `LIKE` de `oicp_search`, que se disparaba con cualquier palabra mal escrita y recorría
+  la tabla entera. **32 pruebas nuevas**, una por evasión conocida (`server/mcp-guards.test.ts`).
+- **`commit ab39bd8` — perfil de proveedor: totales exactos (regla 11).** La web publicaba como
+  totales lo que era una muestra de 500 filas: COGECOMSA salía con 500 contratos cuando tiene
+  497 290, y ROCHE mostraba $109,7 M donde el MCP decía $213,0 M. Ahora los totales salen de
+  `a_suppliers`/`a_supplier_year`/`a_supplier_buyer`, **la misma fuente que el MCP**, así que la
+  regla 11 se cumple por construcción y no por disciplina. La lista va rotulada como muestra y se
+  filtra por `buyer_id` (indexado) en vez de recorrer 1,47 M filas con `EXISTS(json_each(...))`,
+  que era un tercer vector de congelamiento. 7 pruebas de integración, incluida una que compara
+  web contra MCP y exige coincidencia al centavo (`server/supplier-profile.test.ts`).
+
+### A medias — punto exacto donde quedó
+
+Pendiente un **recálculo de metodología** (una sola pasada que cubre tres correcciones entrelazadas,
+porque las tres cambian `share_of_buyer` y por tanto los scores publicados):
+
+1. **CC-02/CC-01/CC-05 usan el máximo histórico, no el año del proceso** (`updater.ts:283-285`,
+   `Math.max` al colapsar `concentration_index` por año). **Verificado con datos de producción**: el
+   proceso `ocds-5wno2w-RE-EPP-2017355-19-253178`, publicado en **marzo de 2019**, lleva CC-02 activa
+   con el detalle «CUERPO DE INGENIEROS representa 98.8% del gasto de este comprador». El share real
+   de 2019 fue **17,17%**; el 98,85% es el de **2026**. Como 17% no pasa del 40%, esa bandera **no
+   debía existir**, y deja el proceso en score 100/crítico. Lo publicado dice «en un año».
+2. **`concentration_index.total_value` suma `award_amount` crudo** (`db.ts:678`), no `MONTO_SQL`: el
+   ranking web difiere del MCP en $69 M en el primer puesto.
+3. **CC-03 publica una ventana de «los últimos 7 años» que no existe en el código**: el detalle en
+   producción dice literalmente «presente en **8 de los últimos 7 años**».
+
+Trabajo restante ya inventariado (ver «Hallazgos confirmados pendientes» abajo).
 
 ## Auditoría 2026-08-09: los 30 hallazgos y su corrección
 
@@ -98,6 +144,81 @@ Producción al momento de escribir (`GET /api/version`):
 - La ingesta local no verificaba el job de `/admin/load`: podían pisarse. **Corregido**.
 - `nixpacks.toml` era configuración muerta (Railway construye con **Dockerfile**, confirmado en el
   panel) y `npm start` apuntaba a `dist/`, que ningún build genera. **Ambos alineados con la realidad.**
+
+## Hallazgos confirmados pendientes (auditoría 2026-08-10)
+
+Ordenados por gravedad. Los marcados «sin veredicto» los reportó un revisor cuyo escéptico murió
+por límite de sesión: **hay que verificarlos antes de tocar el código**, no se dan por buenos.
+
+**Metodología (regla 10) — el riesgo reputacional más alto: son afirmaciones sobre entidades con
+nombre que un periodista puede citar.**
+- CC-02/CC-01/CC-05 con el máximo histórico en vez del año del proceso (verificado, ver arriba).
+- CC-03 con la ventana de 7 años inexistente (verificado: «8 de los últimos 7 años»).
+- IC-02 publica `procurement_method == "direct"` sin decir que esa etiqueta **la fabrica el OICP**:
+  65 497 órdenes de catálogo electrónico salen rotuladas «Adjudicación directa» (sin veredicto).
+- La exclusión de ínfima publicada para IT-02 y la rama de ínfima de IC-02 **no excluyen nada**:
+  ningún proceso del dataset tiene «ínfima» en el texto del método (sin veredicto).
+- «días hábiles» se publica como función sin definir y cuenta ambos extremos (sin veredicto).
+- `METHODOLOGY` del MCP: TR-02 omite la condición de longitud > 0 que sí publica la web, y el campo
+  `verificado` cita una auditoría sobre 1 460 511 procesos cuando producción tiene 1 470 321.
+- `ProcedureDetail.tsx:53` describe CC-05 y CC-04 con reglas que el motor no aplica.
+- `ProcedureDetail.tsx:274` la «Composición del Score» muestra una suma que no da el total que ella
+  misma imprime.
+
+**Disponibilidad**
+- `getStatistics` (`db.ts:245`) expande `FROM procedures, json_each(flags)` sobre 1,47 M filas dentro
+  de la petición HTTP: medido en 8-131 s de event loop bloqueado, y bloquea incluso `/api/health`.
+  El caché es de 5 min sin protección de estampida, así que **la primera visita a la portada tras el
+  vencimiento paga el costo**. Debe leer de `a_risk_year`/`a_flag_year` o materializarse.
+  El comentario de `index.ts:89` todavía dice «no toca BD» y ya no es verdad.
+- `railway.toml:8` `restartPolicyType ON_FAILURE` no cubre un proceso vivo pero colgado: fue
+  exactamente lo que pasó el 10-ago y no se recuperó solo.
+- `updater.ts:333` `reflagChanged` acumula el conjunto completo de cambios en RAM (~3 GB si se
+  cambia un peso de bandera): **esto afecta al recálculo pendiente**, hay que lotear antes de correrlo.
+- `db.ts:589` `rebuildConcentrationIndex()` completo reescribe 517 344 filas en dos sentencias sin
+  lotes ni checkpoint (regla 2).
+
+**Seguridad**
+- `admin.ts:64` `checkAuth` confía en el rol que viene **dentro de la cookie**: degradar o eliminar a
+  un superadmin no le revoca `/api/admin/*` por hasta 14 días, y eso incluye `backup` (descarga la
+  base completa, con `allowed_users` y `access_log`), `batch-clear` y `restore-from-url`. Nada queda
+  en `access_log` porque no setea `req.user`. **Contradice lo que este documento afirmaba sobre
+  revocación inmediata**: eso es cierto para las rutas de datos, no para `/api/admin/*`.
+  Cuidado al corregir: `auth.ts:60-63` repromueve `SUPERADMIN_EMAIL` en cada arranque.
+- `admin.ts:98` `upload-db` bufferiza hasta 500 MB en RAM **antes** de verificar autorización.
+- `auth.ts:251` el magic link completo va en texto claro a los logs cuando Resend falla.
+- `?tempkey=` no lo enmascara el filtro de morgan; el token del MCP sigue en claro en los logs del
+  **edge** de Railway (el enmascarado solo cubre el log de la app).
+
+**Datos y sincronización**
+- `local-sync.ts:238` el tope de 300 páginas por término no guarda cursor propio y deja huecos
+  silenciosos: julio 2026 tiene el 11% del volumen de julio 2025 y se publica como dato al día.
+- `local-sync.ts:115` escribe `regime` = `'LOIP'` donde el resto del código escribe
+  `'LOSNCP_REFORMADA'`, y la ficha lo muestra crudo.
+
+**UX**
+- `Search.tsx:90` dispara una consulta por cada tecla y una respuesta vieja puede pisar la nueva.
+- `Search.tsx:59` «Ver todos los procedimientos de este comprador» ignora `buyerId` y devuelve la
+  base completa.
+- `Search.tsx:213` ordenar por «Mayor monto» o «Más recientes» no hace nada y el selector se revierte.
+- `Layout.tsx:34` el pie imprime un corte de datos y un conteo **fijos y desactualizados** mientras
+  carga o si `/api/version` falla.
+
+**Operación**
+- `ci.yml:25` `continue-on-error` en typecheck y tests: **el CI queda verde aunque fallen**, y el
+  typecheck del cliente no se ejecuta en ningún paso.
+- `monitor.yml` no vigila que los datos avancen: la sincronización puede morir semanas en verde.
+- `index.ts:94` tras una corrupción la plataforma arranca con base vacía, el healthcheck sigue en
+  verde y el pie informa el conteo viejo.
+- `admin.ts:803` el único respaldo es una copia en caliente, sin cadencia y **nunca restaurada**.
+- `Dockerfile:7` build no reproducible sobre Node 20, sin soporte desde abril de 2026.
+- `.gitignore` cubre `data/*.db` pero no `data/*.db-wal` ni `-shm`.
+- `CONTRIBUTING.md:64` ordena que el healthcheck **no** consulte la base, lo contrario de lo que hace
+  el código corregido.
+
+**Refutados por el escéptico (no tocar)**: CSP con `unsafe-inline` (la necesita la página de
+administración), `JWT_SECRET` corto, `?tempkey=` sin enmascarar como crítico, contraste del score,
+el monitor que «se apaga solo», y la rutina semanal de `DEPLOY-RAILWAY.md`.
 
 ## Decisiones tomadas (con la alternativa descartada)
 
