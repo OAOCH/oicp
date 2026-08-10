@@ -49,6 +49,10 @@ export default function SupplierProfile() {
   const filteredProcedures = statusFilter
     ? profile.procedures?.filter((p: any) => p.status === statusFilter)
     : profile.procedures;
+  const criticos = profile.riskDistribution?.find((r: any) => r.risk_level === 'critical')?.count ?? null;
+  // El desglose por estado y la lista se calculan sobre la MUESTRA, no sobre el total:
+  // rotularlos con el total del proveedor fue justo el defecto que se corrigió.
+  const enMuestra = profile.muestraProcesos ?? profile.procedures?.length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -61,24 +65,37 @@ export default function SupplierProfile() {
         <p className="text-sm text-gray-500 font-mono">{profile.supplier?.id}</p>
       </div>
 
+      {/* Los totales salen de los agregados: son exactos sobre todos los procesos del
+          proveedor (2019-2026), no sobre la muestra que se lista más abajo. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Contratos" value={profile.totalProcedures} />
-        <StatCard label="Valor Total" value={formatCurrency(profile.totalValue)} />
-        <StatCard label="Score Promedio" value={profile.averageScore} />
-        <StatCard label="Compradores Distintos" value={profile.distinctBuyers} />
+        <StatCard label="Contratos" value={profile.totalProcedures ?? '—'} />
+        <StatCard label="Valor Total" value={profile.totalValue == null ? '—' : formatCurrency(profile.totalValue)} />
+        <StatCard label="Procesos Críticos" value={criticos ?? '—'} />
+        <StatCard label="Compradores Distintos" value={profile.distinctBuyers ?? '—'} />
       </div>
+
+      {profile.agregadosNoDisponibles && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Los totales de este proveedor no están disponibles en este momento porque los
+          agregados de la base se están reconstruyendo. Lo que se muestra abajo es una
+          muestra de sus procesos, no el total.
+        </div>
+      )}
 
       {/* Status Breakdown */}
       {profile.byStatus?.length > 0 && (
         <div className="bg-white rounded-xl border p-5 shadow-sm">
           <h2 className="font-semibold mb-3">Desglose por Estado</h2>
+          <p className="text-xs text-gray-500 mb-3">
+            Calculado sobre los {enMuestra} procesos listados abajo, no sobre el total del proveedor.
+          </p>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setStatusFilter('')}
               className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
                 !statusFilter ? 'bg-brand-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}>
-              Todos ({profile.totalProcedures})
+              Todos ({enMuestra})
             </button>
             {profile.byStatus.map((s: any) => {
               const color = STATUS_COLORS[s.status] || 'bg-gray-100 text-gray-600';
@@ -160,6 +177,13 @@ export default function SupplierProfile() {
             <span className="text-sm font-normal text-gray-400 ml-2">({filteredProcedures?.length || 0})</span>
           </h2>
         </div>
+        {profile.esMuestra && (
+          <p className="text-xs text-gray-500 mb-3">
+            Muestra de sus procesos más recientes
+            {profile.totalProcedures != null && <> de un total de {profile.totalProcedures}</>}.
+            Para el detalle completo, filtra en la búsqueda por este proveedor.
+          </p>
+        )}
         <div className="space-y-2">
           {filteredProcedures?.slice(0, 50).map((p: any) => (
             <Link key={p.id} to={`/proceso/${encodeURIComponent(p.id)}`}
@@ -176,7 +200,8 @@ export default function SupplierProfile() {
                 <p className="text-xs text-gray-500">{p.buyer_name} · {formatDate(p.published_date)}</p>
               </div>
               <div className="flex items-center gap-3 shrink-0">
-                <span className="font-mono text-sm">{formatCurrency(p.award_amount)}</span>
+                {/* monto_usd, no award_amount crudo: una sola definición de monto (regla 11). */}
+                <span className="font-mono text-sm">{formatCurrency(p.monto_usd ?? p.award_amount)}</span>
                 <RiskBadge level={p.risk_level} />
               </div>
             </Link>

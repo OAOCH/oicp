@@ -400,73 +400,150 @@ export function getBuyerProfile(buyerId: string) {
   return { ...info, byYear, topSuppliers, flagDistribution, riskDistribution };
 }
 
-// Supplier profile  
+// Supplier profile
+//
+// Los TOTALES salen de los agregados a_* — la misma fuente que usa el MCP en
+// oicp_supplier_profile — para que la web y el MCP no puedan dar cifras distintas
+// (regla 11). No es una elección de estilo: antes esta función traía las 500 filas más
+// recientes y publicaba rows.length como "Contratos" y un reduce de award_amount crudo
+// como "Valor Total". Para los proveedores grandes eso era falso por órdenes de
+// magnitud (COGECOMSA salía con 500 contratos cuando tiene 497.290) y además ignoraba
+// la regla de plausibilidad del monto, así que ROCHE mostraba $109,7 M donde el MCP
+// decía $213,0 M. La serie anual también quedaba truncada a los meses más recientes.
+//
+// La lista de procesos sigue acotada, pero ahora: (a) va rotulada como muestra, nunca
+// como total, y (b) se filtra por buyer_id usando idx_proc_buyer en vez de recorrer
+// 1,47 M filas con EXISTS(json_each(...)), que no puede usar ningún índice.
 export function getSupplierProfile(supplierIdOrName: string) {
-  // Search by ID in JSON suppliers array, or by name
+  const digitos = (s: string) => (s.match(/\d+/g) || []).join('');
+  const hayAgregados = !!db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='a_suppliers'`).get();
+
+  if (!hayAgregados) {
+    // Sin agregados no se puede dar un total exacto. Se devuelve la muestra rotulada
+    // como tal: es preferible un perfil incompleto y honesto a un total falso.
+    return perfilProveedorSoloMuestra(supplierIdOrName);
+  }
+
+  const d = digitos(supplierIdOrName);
+  let agg: any = null;
+  if (d.length >= 10) {
+    agg = db.prepare(`SELECT * FROM a_suppliers WHERE ruc10 = ?`).get(d.slice(0, 10));
+  }
+  if (!agg) {
+    agg = db.prepare(`SELECT * FROM a_suppliers WHERE name LIKE ? ORDER BY total_usd DESC`)
+      .get(`%${supplierIdOrName.toUpperCase()}%`);
+  }
+  if (!agg) return null;
+
+  // Serie anual COMPLETA (2019-2026), no solo los meses de la muestra.
+  const byYear = (db.prepare(`SELECT year, n_procs AS count, total_usd AS value
+    FROM a_supplier_year WHERE ruc10 = ? ORDER BY year DESC`).all(agg.ruc10) as any[]);
+
+  const topBuyers = db.prepare(`SELECT buyer_id, buyer_name, n_procs, total_usd, last_year
+    FROM a_supplier_buyer WHERE ruc10 = ? ORDER BY n_procs DESC LIMIT 20`).all(agg.ruc10) as any[];
+
+  // Distribución de riesgo EXACTA sobre todos los procesos del proveedor.
+  const riskDistribution = [
+    { risk_level: 'critical', count: agg.n_critical || 0 },
+    { risk_level: 'high', count: agg.n_high || 0 },
+    { risk_level: 'moderate', count: agg.n_moderate || 0 },
+    { risk_level: 'low', count: agg.n_low || 0 },
+  ].filter(r => r.count > 0);
+
+  // Muestra de procesos acotada por comprador (idx_proc_buyer), no por scan completo.
+  const idsComprador = topBuyers.map(b => b.buyer_id).filter(Boolean);
+  let muestra: any[] = [];
+  if (idsComprador.length) {
+    const marcadores = idsComprador.map(() => '?').join(',');
+    muestra = db.prepare(`
+      SELECT id, title, buyer_id, buyer_name, award_amount, score, risk_level,
+             flags, published_date, procurement_method_details, suppliers, source_year, status,
+             ${MONTO_SQL} AS monto_usd
+      FROM procedures
+      WHERE buyer_id IN (${marcadores})
+        AND EXISTS (SELECT 1 FROM json_each(suppliers) s
+                    WHERE json_extract(s.value, '$.id') LIKE ?)
+      ORDER BY published_date DESC
+      LIMIT 100
+    `).all(...idsComprador, `%${agg.ruc10}%`) as any[];
+  }
+
+  const conteoEstado: Record<string, number> = {};
+  for (const r of muestra) {
+    const s = r.status || 'unknown';
+    conteoEstado[s] = (conteoEstado[s] || 0) + 1;
+  }
+  const byStatus = Object.entries(conteoEstado).map(([status, count]) => ({ status, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const concentration = db.prepare(`
+    SELECT buyer_id, supplier_name, year, contract_count, total_value, share_of_buyer, infima_count
+    FROM concentration_index WHERE supplier_id LIKE ?
+    ORDER BY year DESC, total_value DESC LIMIT 200
+  `).all(`%${agg.ruc10}%`);
+
+  return {
+    supplier: { id: agg.ruc10, name: agg.name },
+    totalProcedures: agg.n_procs,          // exacto, de a_suppliers
+    totalValue: agg.total_usd,             // exacto, con la regla de plausibilidad
+    distinctBuyers: agg.n_buyers,          // exacto
+    firstYear: agg.first_year,
+    lastYear: agg.last_year,
+    riskDistribution,
+    byYear,
+    topBuyers,
+    byStatus,
+    // La lista es una MUESTRA: la UI debe rotularla como tal y nunca sumarla.
+    procedures: muestra.map((r: any) => ({ ...r, flags: JSON.parse(r.flags || '[]'), suppliers: JSON.parse(r.suppliers || '[]') })),
+    muestraProcesos: muestra.length,
+    esMuestra: agg.n_procs > muestra.length,
+    concentration,
+  };
+}
+
+// Camino de respaldo para bases sin agregados a_* construidos (p. ej. una base recién
+// restaurada). Devuelve la muestra SIN presentarla como total.
+function perfilProveedorSoloMuestra(supplierIdOrName: string) {
   const rows = db.prepare(`
     SELECT id, title, buyer_id, buyer_name, award_amount, score, risk_level,
-           flags, published_date, procurement_method_details, suppliers, source_year, status
+           flags, published_date, procurement_method_details, suppliers, source_year, status,
+           ${MONTO_SQL} AS monto_usd
     FROM procedures
     WHERE EXISTS (
-      SELECT 1 FROM json_each(suppliers) s 
+      SELECT 1 FROM json_each(suppliers) s
       WHERE json_extract(s.value, '$.id') LIKE ? OR json_extract(s.value, '$.name') LIKE ?
     )
     ORDER BY published_date DESC
-    LIMIT 500
+    LIMIT 100
   `).all(`%${supplierIdOrName}%`, `%${supplierIdOrName}%`) as any[];
-
   if (!rows.length) return null;
 
-  // Extract supplier info from first match
   let supplierInfo = { id: '', name: '' };
   for (const row of rows) {
     const suppliers = JSON.parse(row.suppliers || '[]');
     const match = suppliers.find((s: any) =>
-      s.id?.includes(supplierIdOrName) || s.name?.toLowerCase().includes(supplierIdOrName.toLowerCase())
-    );
+      s.id?.includes(supplierIdOrName) || s.name?.toLowerCase().includes(supplierIdOrName.toLowerCase()));
     if (match) { supplierInfo = match; break; }
   }
 
-  const totalValue = rows.reduce((sum: number, r: any) => sum + (r.award_amount || 0), 0);
-  const avgScore = rows.reduce((sum: number, r: any) => sum + r.score, 0) / rows.length;
-  const buyers = [...new Set(rows.map((r: any) => r.buyer_id))];
-
-  // Status breakdown
-  const statusCounts: Record<string, number> = {};
-  for (const row of rows) {
-    const s = row.status || 'unknown';
-    statusCounts[s] = (statusCounts[s] || 0) + 1;
-  }
-  const byStatus = Object.entries(statusCounts).map(([status, count]) => ({ status, count }))
-    .sort((a, b) => b.count - a.count);
-
-  // Year breakdown
-  const yearCounts: Record<number, { count: number; value: number }> = {};
-  for (const row of rows) {
-    const y = row.source_year || 0;
-    if (!yearCounts[y]) yearCounts[y] = { count: 0, value: 0 };
-    yearCounts[y].count++;
-    yearCounts[y].value += row.award_amount || 0;
-  }
-  const byYear = Object.entries(yearCounts).map(([year, data]) => ({ year: Number(year), ...data }))
-    .sort((a, b) => b.year - a.year);
-
-  const concentration = db.prepare(`
-    SELECT buyer_id, supplier_name, year, contract_count, total_value, share_of_buyer, infima_count
-    FROM concentration_index WHERE supplier_id LIKE ? OR supplier_name LIKE ?
-    ORDER BY year DESC, total_value DESC
-  `).all(`%${supplierIdOrName}%`, `%${supplierIdOrName}%`);
+  const conteoEstado: Record<string, number> = {};
+  for (const r of rows) { const s = r.status || 'unknown'; conteoEstado[s] = (conteoEstado[s] || 0) + 1; }
 
   return {
     supplier: supplierInfo,
-    totalProcedures: rows.length,
-    totalValue,
-    averageScore: Math.round(avgScore),
-    distinctBuyers: buyers.length,
-    byStatus,
-    byYear,
+    totalProcedures: null,                 // desconocido sin agregados: NO inventar
+    totalValue: null,
+    distinctBuyers: new Set(rows.map((r: any) => r.buyer_id)).size,
+    riskDistribution: [],
+    byYear: [],
+    topBuyers: [],
+    byStatus: Object.entries(conteoEstado).map(([status, count]) => ({ status, count })),
     procedures: rows.map((r: any) => ({ ...r, flags: JSON.parse(r.flags || '[]'), suppliers: JSON.parse(r.suppliers || '[]') })),
-    concentration,
+    muestraProcesos: rows.length,
+    esMuestra: true,
+    agregadosNoDisponibles: true,
+    concentration: [],
   };
 }
 
