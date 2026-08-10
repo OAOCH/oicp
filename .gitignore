@@ -5,3 +5,4 @@ data/*.db
 *.log
 .sync-token
 .sync-cursor.json
+.sync-pending-finalize

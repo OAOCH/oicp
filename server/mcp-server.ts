@@ -267,7 +267,17 @@ const METHODOLOGY = {
   disclaimer: DISCLAIMER,
 };
 
-const MONTO_SQL = `COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0)`;
+// Debe ser el equivalente EXACTO de montoPlausible() y de MONTO_SQL en db.ts:
+// una sola definición de "monto" para la web y para el MCP (hallazgo de auditoría:
+// oicp_search devolvía el COALESCE crudo pese a documentar la regla de >100x).
+const MONTO_SQL = `CASE
+    WHEN COALESCE(award_amount,0) > 0
+     AND COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0) > COALESCE(award_amount,0) * 100
+      THEN COALESCE(award_amount,0)
+    WHEN COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0) > 10000000000
+      THEN COALESCE(award_amount,0)
+    ELSE COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0)
+  END`;
 
 // Corte real de datos (dinámico: la base se actualiza con la sincronización local).
 function dataCutoff(db: Database.Database): string {
@@ -408,9 +418,39 @@ export function callTool(db: Database.Database, name: string, args: any): any {
     case 'oicp_sql': {
       const sql = String(args?.sql || '');
       if (!/^\s*(select|with)\b/i.test(sql)) return { error: 'Solo consultas SELECT o WITH.' };
+
+      // ── Guardas de la herramienta SQL (hallazgos de auditoría) ──
+      // 1) Tablas prohibidas: datos personales de la whitelist, tokens y el registro
+      //    de navegación de los usuarios (la investigación en curso de un periodista
+      //    es confidencial). Se normalizan comillas/corchetes para que no se puedan
+      //    esquivar escribiendo "allowed_users" o [allowed_users].
+      const plano = sql.replace(/["`\[\]]/g, '').toLowerCase();
+      const PROHIBIDAS = ['allowed_users', 'magic_tokens', 'mcp_settings', 'access_log',
+                          'sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'pragma_'];
+      const tocada = PROHIBIDAS.find(t => new RegExp(`\\b${t}`).test(plano));
+      if (tocada) {
+        return { error: `Tabla no disponible por privacidad: "${tocada}". Esta herramienta consulta únicamente datos públicos de contratación (procedures, concentration_index y agregados a_*).` };
+      }
+      // 2) Patrones que pueden bloquear el proceso: better-sqlite3 ejecuta de forma
+      //    síncrona, así que una consulta cartesiana congelaría toda la plataforma.
+      if (/\bwith\s+recursive\b/i.test(plano)) {
+        return { error: 'WITH RECURSIVE no está permitido (riesgo de consulta sin fin).' };
+      }
+      // Cubre las tres formas del join implícito: "FROM a, b", "FROM a x, b y"
+      // y "FROM a AS x, b AS y" (el alias puede ir con o sin la palabra AS).
+      const desdeCartesiano = /\bfrom\s+[a-z_]\w*\s*(?:(?:as\s+)?[a-z_]\w*\s*)?,/i.test(plano);
+      const joinSinCondicion = /\bcross\s+join\b/i.test(plano) ||
+        (/\bjoin\b/i.test(plano) && !/\b(on|using)\b/i.test(plano));
+      if (desdeCartesiano || joinSinCondicion) {
+        return { error: 'Producto cartesiano no permitido: usa JOIN ... ON (o USING) para relacionar las tablas.' };
+      }
+
       const maxRows = Math.max(1, Math.min(Number(args?.max_rows) || 200, 300));
+      // 3) Si la consulta no acota filas, se le impone un LIMIT (defensa extra sobre
+      //    el corte del iterador, que no evita el costo de un agregado sin cota).
+      const sqlAcotado = /\blimit\b/i.test(plano) ? sql : `SELECT * FROM (${sql.replace(/;\s*$/, '')}) LIMIT ${maxRows}`;
       let stmt;
-      try { stmt = db.prepare(sql); } catch (e: any) { return { error: `SQL error: ${e.message}` }; }
+      try { stmt = db.prepare(sqlAcotado); } catch (e: any) { return { error: `SQL error: ${e.message}` }; }
       if (!stmt.reader || !stmt.readonly) return { error: 'La consulta debe ser de solo lectura y devolver filas.' };
       const out: any[] = [];
       let truncated = false;

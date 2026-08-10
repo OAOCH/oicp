@@ -1,22 +1,24 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Search, FileText, Users, Trophy } from 'lucide-react';
-import { api } from '../lib/api';
-import { StatCard, RiskBadge, Loading, ScoreGauge } from '../components/UI';
+import { api, mensajeDeError } from '../lib/api';
+import { StatCard, RiskBadge, Loading, ScoreGauge, ErrorState } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
 
 export default function Home() {
   const [stats, setStats] = useState<any>(null);
+  const [error, setError] = useState<unknown>(null);
   const [query, setQuery] = useState('');
   const nav = useNavigate();
 
-  useEffect(() => { api.getStatistics().then(setStats).catch(console.error); }, []);
+  useEffect(() => { api.getStatistics().then(setStats).catch(setError); }, []);
 
   const onSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim()) nav(`/buscar?q=${encodeURIComponent(query.trim())}`);
   };
 
+  if (error) return <ErrorState message={mensajeDeError(error)} onRetry={() => window.location.reload()} />;
   if (!stats) return <Loading />;
 
   const riskMap: Record<string, number> = {};

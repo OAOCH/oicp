@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search as SearchIcon, Filter, ChevronLeft, ChevronRight, ExternalLink, X } from 'lucide-react';
-import { api } from '../lib/api';
-import { RiskBadge, FlagBadge, Loading, EmptyState } from '../components/UI';
+import { api, mensajeDeError } from '../lib/api';
+import { RiskBadge, FlagBadge, Loading, EmptyState, ErrorState } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -39,6 +39,7 @@ export default function Search() {
   const [filters, setFilters] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [error, setError] = useState<unknown>(null);
 
   const q = searchParams.get('q') || '';
   const page = Number(searchParams.get('page')) || 1;
@@ -53,11 +54,11 @@ export default function Search() {
   const hasActiveFilters = risk || method || flag || year || status;
 
   const doSearch = useCallback(async () => {
-    setLoading(true);
+    setLoading(true); setError(null);
     try {
       const data = await api.searchProcedures({ q, page, risk, method, flag, year, status, sortBy, sortOrder });
       setResults(data);
-    } catch (e) { console.error(e); }
+    } catch (e) { setError(e); setResults(null); }
     setLoading(false);
   }, [q, page, risk, method, flag, year, status, sortBy, sortOrder]);
 
@@ -220,7 +221,7 @@ export default function Search() {
       </div>
 
       {/* Results */}
-      {loading ? <Loading /> : !results?.procedures?.length ? <EmptyState /> : (
+      {loading ? <Loading /> : error ? <ErrorState message={mensajeDeError(error)} onRetry={doSearch} /> : !results?.procedures?.length ? <EmptyState /> : (
         <div className="space-y-2">
           {results.procedures.map((p: any) => (
             <Link key={p.id} to={`/proceso/${encodeURIComponent(p.id)}`}

@@ -40,15 +40,25 @@ const SEARCH_TERMS_FULL = [
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+/** ¿La petición trae la ADMIN_KEY correcta? (comparación en tiempo constante) */
+function hasValidAdminKey(req: any): boolean {
+  const key = process.env.ADMIN_KEY;
+  const provided = (req.query.key || req.headers['x-admin-key']) as string;
+  return !!(key && provided && provided.length === key.length &&
+    crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(key)));
+}
+
+/** Escapa un valor para incrustarlo con seguridad dentro de un <script> inline. */
+function toScriptLiteral(value: string): string {
+  return JSON.stringify(String(value ?? ''))
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 function checkAuth(req: any, res: any): boolean {
   // Acepta ADMIN_KEY válida (scripts internos) o sesión de cookie con rol superadmin.
   // Sin ADMIN_KEY configurada NO hay clave por defecto (se cerró el default débil).
-  const key = process.env.ADMIN_KEY;
-  const provided = (req.query.key || req.headers['x-admin-key']) as string;
-  if (key && provided && provided.length === key.length &&
-      crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(key))) {
-    return true;
-  }
+  if (hasValidAdminKey(req)) return true;
   if (authEnabled()) {
     const sess = sessionFromRequest(req);
     if (sess && sess.role === 'superadmin') return true;
@@ -166,6 +176,15 @@ router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (r
 // ── BATCH UPLOAD (chunked, for large databases) ─────────────
 router.post('/batch-clear', express.json({ limit: '1mb' }), async (req, res) => {
   if (!checkAuth(req, res)) return;
+  // Operación destructiva (borra procedures y concentration_index por completo).
+  // Exige confirmación explícita y que no haya ningún job escribiendo, para que
+  // una llamada accidental o a destiempo no vacíe la base de producción.
+  if (req.body?.confirm !== 'BORRAR TODO') {
+    return res.status(400).json({ error: 'Operación destructiva: envía {"confirm":"BORRAR TODO"} para confirmar que quieres vaciar la base.' });
+  }
+  if (await updaterRunning() || currentJob.running) {
+    return res.status(409).json({ error: 'Hay una carga o actualización en curso. Deténla antes de vaciar la base.' });
+  }
   try {
     const { getDb } = await import('../db.js');
     const db = getDb();
@@ -468,6 +487,7 @@ router.post('/missing-ocids', async (req, res) => {
 
 router.post('/ingest', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
+  if (currentJob.running) return res.status(409).json({ error: 'Hay una descarga /admin/load en curso; reintenta después.' });
   const procs = req.body?.procs;
   if (!Array.isArray(procs) || !procs.length || procs.length > 500) {
     return res.status(400).json({ error: 'procs[] requerido (1 a 500 por lote)' });
@@ -655,7 +675,12 @@ router.post('/stop-update', async (req, res) => {
 // ── ADMIN PAGE ──────────────────────────────────────────────
 router.get('/', (req, res) => {
   if (!checkAuth(req, res)) return;
-  const key = req.query.key;
+  // La clave SOLO se refleja al HTML si fue ella la que autorizó (scripts sin sesión).
+  // Si autorizó la cookie de superadmin, K queda vacío y las llamadas del panel viajan
+  // con la sesión (same-origin). Así un enlace con ?key=<payload> enviado a un
+  // superadmin logueado no puede inyectar código: su valor nunca llega al DOM.
+  // Además se serializa escapando < > & (XSS reflejado, hallazgo de auditoría).
+  const key = hasValidAdminKey(req) ? String(req.query.key || '') : '';
   res.send(`<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OICP Admin</title>
@@ -721,7 +746,8 @@ button:hover{background:#1d4ed8}
 <div class="card"><a href="/" target="_blank">Ver plataforma OICP</a></div>
 
 <script>
-const K='${key}',B='/api/admin';
+const K=${toScriptLiteral(key)},B='/api/admin';
+const Q=(u)=>K?(u+(u.includes('?')?'&':'?')+'key='+encodeURIComponent(K)):u;
 
 async function uploadDB(){
   const f=document.getElementById('dbfile').files[0];
@@ -737,7 +763,7 @@ async function uploadDB(){
     const blob=await new Response(compressed).blob();
     const compMB=(blob.size/1048576).toFixed(1);
     el.textContent='Subiendo '+compMB+' MB (comprimido de '+origMB+' MB)... Esto puede tomar unos minutos.';
-    const r=await fetch(B+'/upload-db?key='+K,{method:'POST',body:blob,headers:{'Content-Type':'application/octet-stream'}});
+    const r=await fetch(Q(B+'/upload-db'),{method:'POST',body:blob,headers:{'Content-Type':'application/octet-stream'}});
     const d=await r.json();
     if(d.success){el.className='st ok';el.textContent='✅ '+d.message}
     else{el.className='st err';el.textContent='❌ '+d.error}
@@ -745,14 +771,14 @@ async function uploadDB(){
 }
 
 async function diag(){const el=document.getElementById('diag');el.style.display='block';el.className='st run';el.textContent='Probando...';
-try{const r=await fetch(B+'/test?key='+K);const d=await r.json();
+try{const r=await fetch(Q(B+'/test'));const d=await r.json();
 const ok=d.every(t=>!t.error&&t.status!==429);el.className=ok?'st ok':'st err';el.textContent=JSON.stringify(d,null,2);
 if(!ok)el.textContent+='\\n\\n⚠️ SERCOP bloqueando. Usa descarga local.'}catch(e){el.textContent='Error: '+e.message}}
 
-async function l(y){if(!confirm('Cargar '+y+'?'))return;const r=await fetch(B+'/load?key='+K+'&year='+y,{method:'POST'});alert((await r.json()).message);ck()}
-async function lt(y,t){const r=await fetch(B+'/load?key='+K+'&year='+y+'&term='+encodeURIComponent(t),{method:'POST'});alert((await r.json()).message);ck()}
-async function stp(){if(!confirm('Detener?'))return;await fetch(B+'/stop?key='+K,{method:'POST'});ck()}
-async function ck(){try{const r=await fetch(B+'/status?key='+K),d=await r.json(),e=document.getElementById('s'),p=document.getElementById('p'),pf=document.getElementById('pf'),pt=document.getElementById('pt'),bs=document.getElementById('bs');
+async function l(y){if(!confirm('Cargar '+y+'?'))return;const r=await fetch(Q(B+'/load?year='+y),{method:'POST'});alert((await r.json()).message);ck()}
+async function lt(y,t){const r=await fetch(Q(B+'/load?year='+y+'&term='+encodeURIComponent(t)),{method:'POST'});alert((await r.json()).message);ck()}
+async function stp(){if(!confirm('Detener?'))return;await fetch(Q(B+'/stop'),{method:'POST'});ck()}
+async function ck(){try{const r=await fetch(Q(B+'/status')),d=await r.json(),e=document.getElementById('s'),p=document.getElementById('p'),pf=document.getElementById('pf'),pt=document.getElementById('pt'),bs=document.getElementById('bs');
 if(d.running){e.className='st run';e.textContent='EN CURSO — Año: '+d.year+'\\n'+d.progress+'\\nDescargados: '+d.count+'\\nDuplicados: '+d.skippedDuplicates;
 const pc=d.totalTerms>0?Math.round(d.termsCompleted/d.totalTerms*100):0;p.style.display='block';pf.style.width=pc+'%';pt.textContent=d.termsCompleted+'/'+d.totalTerms+' ('+pc+'%)';bs.style.display='inline-block'}
 else{bs.style.display='none';p.style.display='none';if(d.count>0){e.className='st ok';e.textContent=d.progress}else{e.className='st idle';e.textContent='Sin descargas activas.'}}
@@ -768,6 +794,9 @@ router.get('/backup', (req, res) => {
   if (!checkAuth(req, res)) return;
   try {
     const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    // Sin checkpoint, el .db en disco puede no incluir lo que aún vive en el WAL:
+    // la copia saldría desactualizada o inconsistente.
+    try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch { /* mejor esfuerzo */ }
     const date = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/gzip');
     res.setHeader('Content-Disposition', `attachment; filename="oicp-${date}.db.gz"`);

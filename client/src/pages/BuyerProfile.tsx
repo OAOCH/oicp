@@ -1,21 +1,26 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
-import { api } from '../lib/api';
-import { StatCard, RiskBadge, Loading, EmptyState } from '../components/UI';
+import { api, ApiError, mensajeDeError } from '../lib/api';
+import { StatCard, RiskBadge, Loading, EmptyState, ErrorState } from '../components/UI';
 import { formatCurrency } from '../lib/flags';
 
 export default function BuyerProfile() {
   const { id } = useParams<{ id: string }>();
   const [profile, setProfile] = useState<any>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
     if (!id) return;
-    api.getBuyer(id).then(setProfile).catch(e => setError(e.message));
+    api.getBuyer(id).then(setProfile).catch(setError);
   }, [id]);
 
-  if (error) return <EmptyState message="Comprador no encontrado" />;
+  if (error) {
+    const noExiste = error instanceof ApiError && error.esNoEncontrado;
+    return noExiste
+      ? <EmptyState message="Comprador no encontrado" />
+      : <ErrorState message={mensajeDeError(error)} onRetry={() => window.location.reload()} />;
+  }
   if (!profile) return <Loading />;
 
   return (

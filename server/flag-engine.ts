@@ -19,7 +19,11 @@ const UMBRALES: Record<number | string, YearThresholds> = {
   2022: { pie: 33_899_734_759.85, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_779.95, bs_menor_cuantia_max: 67_799.47 },
   2023: { pie: 31_502_865_593.76, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_300.57, bs_menor_cuantia_max: 63_005.73 },
   2024: { pie: 33_293_903_424.91, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_658.78, bs_menor_cuantia_max: 66_587.81 },
-  2025: { pie: 36_063_017_083.08, regime: 'LOSNCP_REFORMADA', infima_cuantia: 10_000.00 },
+  // 2025 es un año partido: hasta el 6-oct rige el coeficiente ($7.212,60) y desde el
+  // 7-oct la reforma fija $10.000. Esta fila guarda el valor del COEFICIENTE, que es el
+  // que corresponde a la mayor parte del año; la fecha exacta la resuelve
+  // getInfimaThreshold(). Antes decía 10.000 y contradecía a la propia función.
+  2025: { pie: 36_063_017_083.08, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 7_212.60 },
   2026: { pie: 46_255_572_824.33, regime: 'LOSNCP_REFORMADA', infima_cuantia: 10_000.00 },
 };
 
@@ -199,15 +203,15 @@ interface ProcedureData {
   award_amount?: number | null;
   contract_amount?: number | null;
   final_amount?: number | null;
-  published_date?: string;
-  submission_deadline?: string;
-  award_date?: string;
-  number_of_tenderers?: number;
+  published_date?: string | null;
+  submission_deadline?: string | null;
+  award_date?: string | null;
+  number_of_tenderers?: number | null;
   title?: string;
   description?: string;
-  items_classification?: string;
+  items_classification?: string | null;
   has_amendments?: boolean;
-  amendment_count?: number;
+  amendment_count?: number | null;
   suppliers?: { id: string; name: string }[];
 }
 

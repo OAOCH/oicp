@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api';
-import { Loading, EmptyState } from '../components/UI';
+import { api, mensajeDeError } from '../lib/api';
+import { Loading, EmptyState, ErrorState } from '../components/UI';
 import { formatCurrency } from '../lib/flags';
 
 export default function Rankings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
 
   const type = searchParams.get('type') || 'buyers';
 
   useEffect(() => {
-    setLoading(true);
-    api.getRankings(type).then(d => { setData(d); setLoading(false); }).catch(e => { console.error(e); setLoading(false); });
+    setLoading(true); setError(null);
+    api.getRankings(type)
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e); setData([]); setLoading(false); });
   }, [type]);
 
   const setType = (t: string) => {
@@ -43,7 +46,7 @@ export default function Rankings() {
         ))}
       </div>
 
-      {loading ? <Loading /> : !data.length ? <EmptyState message="No hay datos disponibles" /> : (
+      {loading ? <Loading /> : error ? <ErrorState message={mensajeDeError(error)} onRetry={() => window.location.reload()} /> : !data.length ? <EmptyState message="No hay datos disponibles" /> : (
         <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             {type === 'buyers' && (

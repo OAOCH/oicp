@@ -125,6 +125,7 @@ export default function AdminActivity() {
           {data.sesiones.length > 0 && (
             <div className="bg-white rounded-xl border p-4 mb-5">
               <p className="text-sm font-medium text-gray-900 mb-2 flex items-center gap-1"><Clock size={15} /> Sesiones</p>
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-xs uppercase text-gray-500">
                   <th className="py-1">Inicio (Ecuador)</th><th>Fin</th><th>Duración</th><th>Acciones</th>
@@ -140,13 +141,14 @@ export default function AdminActivity() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
 
           {data.eventos_recientes.length > 0 && (
             <div className="bg-white rounded-xl border p-4">
               <p className="text-sm font-medium text-gray-900 mb-2 flex items-center gap-1"><Eye size={15} /> Qué ha visto (más reciente primero)</p>
-              <div className="max-h-96 overflow-y-auto">
+              <div className="max-h-96 overflow-auto">
                 <table className="w-full text-sm">
                   <tbody>
                     {data.eventos_recientes.map((e: any, i: number) => (

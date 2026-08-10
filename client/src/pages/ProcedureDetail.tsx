@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Building2, User, AlertTriangle, Info } from 'lucide-react';
-import { api } from '../lib/api';
-import { ScoreGauge, RiskBadge, FlagCard, Loading } from '../components/UI';
+import { api, ApiError, mensajeDeError } from '../lib/api';
+import { ScoreGauge, RiskBadge, FlagCard, Loading, ErrorState } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
 
 // Generate a human-readable summary of why this procedure was flagged
@@ -78,14 +78,24 @@ function generateRiskSummary(proc: any, activeFlags: any[]): string {
 export default function ProcedureDetail() {
   const { id } = useParams<{ id: string }>();
   const [proc, setProc] = useState<any>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
     if (!id) return;
-    api.getProcedure(id).then(setProc).catch(e => setError(e.message));
+    api.getProcedure(id).then(setProc).catch(setError);
   }, [id]);
 
-  if (error) return <div className="text-center py-16 text-red-500">{error}</div>;
+  if (error) {
+    const noExiste = error instanceof ApiError && error.esNoEncontrado;
+    return (
+      <div className="max-w-lg mx-auto">
+        <ErrorState
+          message={noExiste ? 'No encontramos este proceso. Puede que el identificador esté incompleto o que el SERCOP ya no lo publique.' : mensajeDeError(error)}
+          onRetry={noExiste ? undefined : () => window.location.reload()} />
+        <div className="text-center"><Link to="/buscar" className="text-brand-600 underline text-sm">Volver a la búsqueda</Link></div>
+      </div>
+    );
+  }
   if (!proc) return <Loading />;
 
   const activeFlags = (proc.flags || []).filter((f: any) => f.active);
@@ -151,6 +161,14 @@ export default function ProcedureDetail() {
           {/* Key Data */}
           <div className="bg-white rounded-xl border p-5 shadow-sm">
             <h2 className="font-semibold mb-4">Datos del Procedimiento</h2>
+            {proc.monto_implausible && (
+              <div className="mb-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs px-3 py-2">
+                <strong>Monto inconsistente en la fuente.</strong> El valor contractual o final que publica el
+                SERCOP para este proceso es desproporcionado frente al monto adjudicado, por lo que todas las
+                cifras agregadas de la plataforma usan el adjudicado ({formatCurrency(proc.monto_usd)}).
+                Abajo se muestran los valores tal como constan en la fuente oficial.
+              </div>
+            )}
             <div className="grid sm:grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="text-gray-500">Presupuesto Referencial</span>

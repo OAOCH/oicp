@@ -329,14 +329,35 @@ export function searchProcedures(params: {
   };
 }
 
+// ── Monto por proceso: FUENTE ÚNICA DE VERDAD ───────────────
+// Toda cifra de dinero que ve el usuario (web, rankings, perfiles) y toda la que
+// entrega el MCP debe salir de esta misma regla; si no, la plataforma muestra dos
+// números distintos para lo mismo y pierde credibilidad ante una auditoría.
+// Regla: se toma el primer monto disponible (final > contrato > adjudicado) y se
+// descarta cuando es implausible frente al adjudicado (la fuente SERCOP publica
+// ~210 contratos con montos absurdos, p. ej. adjudicado $400k y contrato $3 billones).
+// Equivalente exacto de montoPlausible() en mcp-server.ts y updater.ts.
+export const MONTO_SQL = `CASE
+    WHEN COALESCE(award_amount,0) > 0
+     AND COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0) > COALESCE(award_amount,0) * 100
+      THEN COALESCE(award_amount,0)
+    WHEN COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0) > 10000000000
+      THEN COALESCE(award_amount,0)
+    ELSE COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0)
+  END`;
+
 // Get single procedure
 export function getProcedure(id: string) {
-  const row = db.prepare('SELECT * FROM procedures WHERE id = ?').get(id) as any;
+  const row = db.prepare(`SELECT *, ${MONTO_SQL} AS monto_usd FROM procedures WHERE id = ?`).get(id) as any;
   if (!row) return null;
+  // Señala si la fuente trae un contrato/final implausible: la ficha muestra el
+  // monto saneado y advierte, en vez de publicar una cifra absurda como si fuera real.
+  const crudo = Number(row.final_amount) || Number(row.contract_amount) || Number(row.award_amount) || 0;
   return {
     ...row,
     flags: JSON.parse(row.flags || '[]'),
     suppliers: JSON.parse(row.suppliers || '[]'),
+    monto_implausible: crudo > 0 && Math.abs(crudo - Number(row.monto_usd || 0)) > 0.01,
   };
 }
 
@@ -344,14 +365,14 @@ export function getProcedure(id: string) {
 export function getBuyerProfile(buyerId: string) {
   const info = db.prepare(`
     SELECT buyer_id, buyer_name, COUNT(*) as total_procedures,
-           SUM(award_amount) as total_value, AVG(score) as avg_score,
+           SUM(${MONTO_SQL}) as total_value, AVG(score) as avg_score,
            MAX(score) as max_score
     FROM procedures WHERE buyer_id = ? GROUP BY buyer_id
   `).get(buyerId) as any;
   if (!info) return null;
 
   const byYear = db.prepare(`
-    SELECT source_year as year, COUNT(*) as count, AVG(score) as avg_score, SUM(award_amount) as total_value
+    SELECT source_year as year, COUNT(*) as count, AVG(score) as avg_score, SUM(${MONTO_SQL}) as total_value
     FROM procedures WHERE buyer_id = ? GROUP BY source_year ORDER BY source_year
   `).all(buyerId);
 
@@ -453,7 +474,7 @@ export function getRankings(type: string = 'buyers', year?: number) {
   if (type === 'buyers') {
     return db.prepare(`
       SELECT buyer_id, buyer_name, COUNT(*) as procedure_count,
-             SUM(award_amount) as total_value, AVG(score) as avg_score,
+             SUM(${MONTO_SQL}) as total_value, AVG(score) as avg_score,
              MAX(score) as max_score,
              SUM(CASE WHEN risk_level IN ('high','critical') THEN 1 ELSE 0 END) as high_risk_count
       FROM procedures WHERE buyer_id IS NOT NULL ${yearFilter}

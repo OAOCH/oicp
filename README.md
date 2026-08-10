@@ -67,10 +67,13 @@ oicp/
 │   ├── index.ts             # Entry point del servidor
 │   ├── db.ts                # Base de datos + queries
 │   ├── flag-engine.ts       # Motor de 15 banderas de riesgo
+│   ├── updater.ts           # Actualización incremental + cron
+│   ├── local-sync.ts        # Barrido desde IP ecuatoriana → producción
+│   ├── mcp-server.ts        # Servidor MCP (10 herramientas)
+│   ├── auth.ts              # Magic link + whitelist + sesión
 │   ├── seed.ts              # Generador de datos demo
 │   └── migrate.ts           # Migración de esquema
-├── data/                    # SQLite DB (generada)
-└── scripts/                 # Pipeline de datos OCDS (futuro)
+└── data/                    # SQLite DB (generada, fuera de git)
 ```
 
 ## Cargar Datos Reales de SERCOP
@@ -93,7 +96,6 @@ El sistema viene con datos demo. Para cargar datos reales:
 | GET | `/api/suppliers/:id` | Perfil de proveedor |
 | GET | `/api/rankings?type=buyers\|suppliers\|pairs` | Rankings |
 | GET | `/api/filters` | Opciones de filtros |
-| GET | `/api/methodology` | Catálogo de flags |
 
 ## Despliegue
 

@@ -71,7 +71,12 @@ app.use(compression());
 
 // ── Logging que enmascara ?key=... y tokens en las URLs ──────
 morgan.token('maskedurl', (req: any) =>
-  (req.originalUrl || req.url || '').replace(/([?&])(key|token)=[^&]*/gi, '$1$2=***'));
+  (req.originalUrl || req.url || '')
+    // Secretos en la query (?key=..., ?token=...)
+    .replace(/([?&])(key|token)=[^&]*/gi, '$1$2=***')
+    // Secreto en la RUTA del conector MCP (/mcp/<token>): sin esto el token
+    // quedaba en texto plano en los logs de la plataforma en cada petición.
+    .replace(/\/mcp\/[^/?#\s]+/gi, '/mcp/***'));
 app.use(morgan(':method :maskedurl :status :res[content-length] - :response-time ms'));
 
 app.use(express.json({ limit: '50mb' }));
@@ -83,7 +88,14 @@ ensureAccessLog();
 
 // ── Health check (SIEMPRE publico, sin auth, sin rate limit, no toca BD) ──
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  // Comprobación REAL: una consulta trivial a la base. Antes devolvía siempre "ok"
+  // aunque la base estuviera corrupta o ausente, y el monitor no se enteraba.
+  try {
+    getDb().prepare('SELECT 1').get();
+    res.json({ status: 'ok' });
+  } catch (e: any) {
+    res.status(503).json({ status: 'error', detail: 'base de datos no disponible' });
+  }
 });
 
 // ── Version (publico, util para verificar el deploy) ─────────

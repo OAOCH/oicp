@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
-import { api } from '../lib/api';
-import { StatCard, RiskBadge, Loading, EmptyState } from '../components/UI';
+import { api, ApiError, mensajeDeError } from '../lib/api';
+import { StatCard, RiskBadge, Loading, EmptyState, ErrorState } from '../components/UI';
 import { formatCurrency, formatDate } from '../lib/flags';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -30,15 +30,20 @@ const STATUS_COLORS: Record<string, string> = {
 export default function SupplierProfile() {
   const { id } = useParams<{ id: string }>();
   const [profile, setProfile] = useState<any>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<unknown>(null);
   const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => {
     if (!id) return;
-    api.getSupplier(id).then(setProfile).catch(e => setError(e.message));
+    api.getSupplier(id).then(setProfile).catch(setError);
   }, [id]);
 
-  if (error) return <EmptyState message="Proveedor no encontrado" />;
+  if (error) {
+    const noExiste = error instanceof ApiError && error.esNoEncontrado;
+    return noExiste
+      ? <EmptyState message="Proveedor no encontrado" />
+      : <ErrorState message={mensajeDeError(error)} onRetry={() => window.location.reload()} />;
+  }
   if (!profile) return <Loading />;
 
   const filteredProcedures = statusFilter

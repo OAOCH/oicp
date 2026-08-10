@@ -109,6 +109,12 @@ export default function Layout({ children }: { children: ReactNode }) {
             Este sistema NO es una herramienta oficial del gobierno. Los indicadores son referenciales y pueden contener errores.
             No garantizamos la exactitud ni completitud de la información. Use bajo su propia responsabilidad.
           </p>
+          <p className="text-gray-400">
+            <strong>Privacidad:</strong> el acceso es nominativo y el uso de la plataforma (páginas y búsquedas)
+            queda registrado con fines de seguridad y auditoría durante 90 días, sin compartirse con terceros.
+            Para consultar, rectificar o eliminar tus datos escribe a{' '}
+            <a href="mailto:oscar.obandoch@gmail.com" className="underline">oscar.obandoch@gmail.com</a> (LOPDP).
+          </p>
         </div>
       </footer>
     </div>

@@ -148,7 +148,7 @@ for (const year of [2022, 2023, 2024, 2025]) {
       : Math.random() < 0.25 ? 1  // Single bidder 25% of competitive
       : Math.floor(rand(2, 8));
 
-    const proc = {
+    const proc: any = {
       id: `ocds-demo-${String(id).padStart(6, '0')}`,
       ocid: `ocds-demo-${String(id).padStart(6, '0')}`,
       title: pick(TITLES),
@@ -177,7 +177,7 @@ for (const year of [2022, 2023, 2024, 2025]) {
     };
 
     // Evaluate flags
-    const { flags, score, riskLevel } = evaluateAllFlags(proc);
+    const { flags, score, riskLevel } = evaluateAllFlags(proc as any);
     proc.flags = flags;
     proc.score = score;
     proc.risk_level = riskLevel;
@@ -190,7 +190,7 @@ for (const year of [2022, 2023, 2024, 2025]) {
 // Pattern 1: Same buyer+supplier, many ínfimas
 for (let i = 0; i < 8; i++) {
   id++;
-  const proc = {
+  const proc: any = {
     id: `ocds-demo-${String(id).padStart(6, '0')}`,
     ocid: `ocds-demo-${String(id).padStart(6, '0')}`,
     title: 'Adquisición de suministros de oficina',
@@ -226,7 +226,7 @@ for (let i = 0; i < 8; i++) {
 
 // Pattern 2: Large contract with huge amendment
 id++;
-const bigProc = {
+const bigProc: any = {
   id: `ocds-demo-${String(id).padStart(6, '0')}`,
   ocid: `ocds-demo-${String(id).padStart(6, '0')}`,
   title: 'Construcción de hospital tipo B — Provincia del Guayas',

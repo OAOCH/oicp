@@ -49,7 +49,13 @@ router.post('/login', loginLimiter, async (req, res) => {
     const db = getDb();
     const allowed = isAllowed(db, email);
     if (!allowed) {
-      // Respuesta neutra: no revela si el email existe o no, pero el brief pide mensaje claro de no-habilitado.
+      // DECISION CONSCIENTE (no es una respuesta neutra): se responde de forma
+      // distinta a un correo habilitado y a uno que no lo está, lo que permitiría
+      // comprobar si una dirección concreta tiene acceso. Se acepta porque la
+      // plataforma es por invitación y quien escribe necesita saber que debe
+      // pedirle acceso al administrador; una respuesta ambigua generaría gente
+      // esperando un correo que nunca llega. El riesgo se acota con el límite de
+      // 5 intentos por IP cada 15 minutos definido arriba.
       return res.status(403).json({ error: 'Tu acceso aun no esta habilitado. Pide al administrador que te agregue.', code: 'NOT_WHITELISTED' });
     }
 
