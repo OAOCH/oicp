@@ -73,6 +73,32 @@ del periodista no aparece en ninguno; la lista negra de `oicp_sql` aguantó.
   que era un tercer vector de congelamiento. 7 pruebas de integración, incluida una que compara
   web contra MCP y exige coincidencia al centavo (`server/supplier-profile.test.ts`).
 
+- **`commit 5b3ac38` — CI que no miente y build reproducible.** El CI llevaba
+  `continue-on-error` en typecheck y tests: quedaba **verde aunque fallaran**, y el typecheck del
+  cliente no corría en ningún paso. Además Node 20 (sin soporte desde abril de 2026) → 22 y
+  `npm install` → `npm ci`. `CONTRIBUTING.md` ordenaba que el healthcheck **no** tocara la base,
+  lo contrario de lo que hace el código.
+- **`commit 7db661d` — revocación inmediata en `/api/admin/*`.** `checkAuth` confiaba en el rol
+  que venía **dentro de la cookie firmada** (14 días de vida), así que degradar o eliminar a un
+  superadmin **no** le revocaba estas rutas: con esa cookie seguía pudiendo descargar la base
+  completa (incluidas `allowed_users` y `access_log`), vaciarla con `batch-clear` o reemplazarla con
+  `restore-from-url`. Las rutas de datos sí revalidaban; la incoherencia estaba solo aquí.
+  Ahora revalida contra la base en cada petición y **las acciones de administración quedan en
+  `access_log`** (antes ninguna, porque el `accessLogger` global corre antes de este router).
+  También: `upload-db` autoriza **antes** de bufferizar 500 MB en RAM, y el magic link ya no se
+  escribe en los logs cuando Resend falla (llevaba el token de un solo uso, válido 15 min).
+  Verificado en producción: `/api/admin/backup` → 403, `/api/admin/status` → 403.
+  *Riesgo aceptado y documentado*: el token del MCP sigue apareciendo en los logs del **edge** de
+  Railway porque viaja en la URL. Sacarlo de ahí invalidaría los conectores ya configurados, que
+  `CLAUDE.md` protege explícitamente.
+- **`commit 60955fb` — las tres fallas de la búsqueda.** `buyerId`/`supplierId` no se leían ni se
+  enviaban, así que «Ver todos los procedimientos de este comprador» devolvía **la base completa**;
+  ordenar por «Mayor monto» o «Más recientes» no hacía nada porque dos `updateParam` seguidos se
+  pisaban entre sí (la segunda construye la URL desde el mismo `searchParams` del render);
+  y cada tecla disparaba una consulta sobre 1,47 M filas sin cancelación. Además el pie de página
+  **dejó de inventar la cobertura de datos**: tenía clavados «1.460.511 procesos» y «14 de mayo de
+  2026» como valores de reserva, que se publicaban mientras cargaba `/api/version` o si fallaba.
+
 ### A medias — punto exacto donde quedó
 
 Pendiente un **recálculo de metodología** (una sola pasada que cubre tres correcciones entrelazadas,
@@ -262,17 +288,10 @@ IC-01, IT-01, IP-01, IP-03, TR-01 y TR-03.
 - `db.ts:589` `rebuildConcentrationIndex()` completo reescribe 517 344 filas en dos sentencias sin
   lotes ni checkpoint (regla 2).
 
-**Seguridad**
-- `admin.ts:64` `checkAuth` confía en el rol que viene **dentro de la cookie**: degradar o eliminar a
-  un superadmin no le revoca `/api/admin/*` por hasta 14 días, y eso incluye `backup` (descarga la
-  base completa, con `allowed_users` y `access_log`), `batch-clear` y `restore-from-url`. Nada queda
-  en `access_log` porque no setea `req.user`. **Contradice lo que este documento afirmaba sobre
-  revocación inmediata**: eso es cierto para las rutas de datos, no para `/api/admin/*`.
-  Cuidado al corregir: `auth.ts:60-63` repromueve `SUPERADMIN_EMAIL` en cada arranque.
-- `admin.ts:98` `upload-db` bufferiza hasta 500 MB en RAM **antes** de verificar autorización.
-- `auth.ts:251` el magic link completo va en texto claro a los logs cuando Resend falla.
-- `?tempkey=` no lo enmascara el filtro de morgan; el token del MCP sigue en claro en los logs del
-  **edge** de Railway (el enmascarado solo cubre el log de la app).
+**Seguridad** — cerrado en `7db661d`, ver arriba. Nota para quien vuelva: `auth.ts:60-63`
+repromueve `SUPERADMIN_EMAIL` a superadmin en **cada arranque**, así que degradar esa cuenta
+concreta no persiste tras un redeploy. Es a propósito (evita quedarse sin administrador), pero
+conviene saberlo.
 
 **Datos y sincronización**
 - `local-sync.ts:238` el tope de 300 páginas por término no guarda cursor propio y deja huecos
@@ -280,25 +299,24 @@ IC-01, IT-01, IP-01, IP-03, TR-01 y TR-03.
 - `local-sync.ts:115` escribe `regime` = `'LOIP'` donde el resto del código escribe
   `'LOSNCP_REFORMADA'`, y la ficha lo muestra crudo.
 
-**UX**
-- `Search.tsx:90` dispara una consulta por cada tecla y una respuesta vieja puede pisar la nueva.
-- `Search.tsx:59` «Ver todos los procedimientos de este comprador» ignora `buyerId` y devuelve la
-  base completa.
-- `Search.tsx:213` ordenar por «Mayor monto» o «Más recientes» no hace nada y el selector se revierte.
-- `Layout.tsx:34` el pie imprime un corte de datos y un conteo **fijos y desactualizados** mientras
-  carga o si `/api/version` falla.
+**UX** — cerrado en `60955fb`, ver arriba.
 
 **Operación**
-- `ci.yml:25` `continue-on-error` en typecheck y tests: **el CI queda verde aunque fallen**, y el
-  typecheck del cliente no se ejecuta en ningún paso.
 - `monitor.yml` no vigila que los datos avancen: la sincronización puede morir semanas en verde.
 - `index.ts:94` tras una corrupción la plataforma arranca con base vacía, el healthcheck sigue en
   verde y el pie informa el conteo viejo.
 - `admin.ts:803` el único respaldo es una copia en caliente, sin cadencia y **nunca restaurada**.
-- `Dockerfile:7` build no reproducible sobre Node 20, sin soporte desde abril de 2026.
-- `.gitignore` cubre `data/*.db` pero no `data/*.db-wal` ni `-shm`.
-- `CONTRIBUTING.md:64` ordena que el healthcheck **no** consulte la base, lo contrario de lo que hace
-  el código corregido.
+  Es el pendiente operativo más serio que queda: si el volumen se corrompe, no hay copia probada.
+
+## Orden recomendado para retomar
+
+1. **El recálculo de metodología** (sección «El recálculo pendiente» arriba), con sus dos
+   prerrequisitos de memoria y WAL. Es lo que más pesa: hoy producción publica banderas con
+   porcentajes de un año distinto al del proceso.
+2. **`getStatistics`** fuera del camino HTTP. Comparte solución con el recálculo, porque ambos
+   necesitan un punto donde recomputar agregados: conviene hacerlos juntos.
+3. **Respaldo probado** de la base (crear, restaurar en una copia, verificar, y fijar cadencia).
+4. **Alerta de datos viejos** en `monitor.yml` y arranque con base vacía que no quede en verde.
 
 **Refutados por el escéptico (no tocar)**: CSP con `unsafe-inline` (la necesita la página de
 administración), `JWT_SECRET` corto, `?tempkey=` sin enmascarar como crítico, contraste del score,
