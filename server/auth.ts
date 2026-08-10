@@ -245,17 +245,19 @@ export async function sendMagicLinkEmail(email: string, url: string): Promise<{ 
         text: `Ingresa a OICP con este enlace (valido ${TOKEN_TTL_MIN} minutos):\n${url}\n\nSi no solicitaste esto, ignora el mensaje.`,
       }),
     });
+    // El enlace NO se escribe en los logs cuando el envío falla. Contiene el token de un
+    // solo uso: cualquiera con acceso a los logs de Railway podía canjearlo dentro de sus
+    // 15 minutos y entrar como ese usuario. No hay nada que compensar, porque quien no
+    // recibe el correo puede pedir otro enlace.
     if (!resp.ok) {
       const t = await resp.text().catch(() => '');
-      console.error(`[auth] Resend fallo: HTTP ${resp.status} ${t.slice(0, 200)}`);
-      console.log(`[auth] (fallback) magic link para ${email}: ${url}`);
-      return { delivered: false, via: 'log' };
+      console.error(`[auth] Resend fallo: HTTP ${resp.status} ${t.slice(0, 200)} (destinatario ${email}; el enlace NO se registra)`);
+      return { delivered: false, via: 'error' };
     }
     return { delivered: true, via: 'resend' };
   } catch (e: any) {
-    console.error(`[auth] Resend error: ${e.message}`);
-    console.log(`[auth] (fallback) magic link para ${email}: ${url}`);
-    return { delivered: false, via: 'log' };
+    console.error(`[auth] Resend error: ${e.message} (destinatario ${email}; el enlace NO se registra)`);
+    return { delivered: false, via: 'error' };
   }
 }
 

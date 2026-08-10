@@ -7,8 +7,9 @@ import { writeFileSync, readFileSync, createReadStream, appendFileSync, statSync
 import { createGzip } from 'zlib';
 import { resolve } from 'path';
 import crypto from 'crypto';
-import { authEnabled, sessionFromRequest } from '../auth.js';
+import { authEnabled, sessionFromRequest, isAllowed, clearSessionCookie } from '../auth.js';
 import { invalidateStatsCache } from '../cache.js';
+import { escribirAcceso } from '../access-log.js';
 
 const router = Router();
 
@@ -56,12 +57,36 @@ function toScriptLiteral(value: string): string {
 }
 
 function checkAuth(req: any, res: any): boolean {
-  // Acepta ADMIN_KEY válida (scripts internos) o sesión de cookie con rol superadmin.
-  // Sin ADMIN_KEY configurada NO hay clave por defecto (se cerró el default débil).
-  if (hasValidAdminKey(req)) return true;
+  // Acepta ADMIN_KEY válida (scripts internos como subir.mjs y el flujo de sincronización)
+  // o sesión de cookie con rol superadmin. Sin ADMIN_KEY configurada NO hay clave por
+  // defecto (se cerró el default débil).
+  if (hasValidAdminKey(req)) return true;   // vía máquina: la traza queda en morgan
   if (authEnabled()) {
     const sess = sessionFromRequest(req);
-    if (sess && sess.role === 'superadmin') return true;
+    if (sess) {
+      // Rol y pertenencia FRESCOS desde la base, igual que requireSuperadmin (auth.ts:209).
+      // Antes se confiaba en el rol que venía DENTRO de la cookie firmada, que vive 14
+      // días: degradar o eliminar a un superadmin NO le revocaba estas rutas. Con esa
+      // cookie seguía pudiendo descargar la base COMPLETA (incluidas allowed_users y
+      // access_log, o sea el registro de navegación del periodista), vaciarla con
+      // batch-clear o reemplazarla con restore-from-url.
+      const row = isAllowed(getDb(), sess.email);
+      if (!row) {
+        clearSessionCookie(res);
+        res.status(401).json({ error: 'Acceso revocado', code: 'REVOKED' });
+        return false;
+      }
+      if (row.role !== 'superadmin') {
+        res.status(403).json({ error: 'Requiere rol superadmin', code: 'FORBIDDEN' });
+        return false;
+      }
+      req.user = { email: sess.email, role: row.role };
+      // El accessLogger global corre ANTES de este router (index.ts:141 vs 144), así que
+      // ya pasó sin req.user y ninguna acción de administración quedaba registrada.
+      // Se registra aquí, fuera del camino de la respuesta (regla 6).
+      escribirAcceso(sess.email, req.method, req.path, req.query);
+      return true;
+    }
   }
   res.status(403).json({ error: 'Requiere ADMIN_KEY o sesión de superadmin' });
   return false;
@@ -95,10 +120,19 @@ async function safeFetch(url: string): Promise<Response | null> {
 }
 
 // ── UPLOAD DATABASE ─────────────────────────────────────────
-router.post('/upload-db', express.raw({ type: '*/*', limit: '500mb' }), async (req, res) => {
-  if (await updaterRunning()) return res.status(409).json({ error: 'El actualizador incremental está corriendo; el reemplazo de base cerraría su conexión. Detenlo primero con POST /api/admin/stop-update.' });
+// La autorización y el chequeo del actualizador van ANTES del parser de cuerpo. Con
+// express.raw en primer lugar, CUALQUIERA sin autenticar podía hacer que el servidor
+// bufferizara hasta 500 MB en RAM antes de recibir su 403: una denegación de servicio
+// sin credenciales, sobre un contenedor con memoria acotada.
+async function puertaUploadDb(req: any, res: any, next: any) {
   if (!checkAuth(req, res)) return;
+  if (await updaterRunning()) {
+    return res.status(409).json({ error: 'El actualizador incremental está corriendo; el reemplazo de base cerraría su conexión. Detenlo primero con POST /api/admin/stop-update.' });
+  }
+  next();
+}
 
+router.post('/upload-db', puertaUploadDb, express.raw({ type: '*/*', limit: '500mb' }), async (req, res) => {
   try {
     req.setTimeout(600000);
     res.setTimeout(600000);

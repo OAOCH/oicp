@@ -50,23 +50,28 @@ function sanitizedQuery(q: any): string {
   } catch { return ''; }
 }
 
-/** Middleware: registra la petición si hay sesión (req.user). Nunca bloquea:
- *  el INSERT corre FUERA del camino de la respuesta (setImmediate). */
-export function accessLogger(req: any, _res: Response, next: NextFunction) {
+/** Registra un acceso. El INSERT corre FUERA del camino de la respuesta (setImmediate) y
+ *  descarta errores en silencio: la respuesta al usuario no se bloquea nunca (regla 6).
+ *  Se exporta porque las rutas /api/admin/* autorizan DENTRO del router, cuando el
+ *  accessLogger global ya pasó, y necesitan registrarse a mano. */
+export function escribirAcceso(email: string, method: string, path: string, query: any) {
   try {
-    const email = req.user?.email;
-    if (email) {
-      const method = req.method;
-      const path = String(req.path).slice(0, 300);
-      const query = sanitizedQuery(req.query).slice(0, 300);
-      setImmediate(() => {
-        try {
-          getDb().prepare(`INSERT INTO access_log (email, method, path, query) VALUES (?,?,?,?)`)
-            .run(email, method, path, query);
-        } catch { /* best-effort */ }
-      });
-    }
+    if (!email) return;
+    const m = String(method || '');
+    const p = String(path || '').slice(0, 300);
+    const q = sanitizedQuery(query).slice(0, 300);
+    setImmediate(() => {
+      try {
+        getDb().prepare(`INSERT INTO access_log (email, method, path, query) VALUES (?,?,?,?)`)
+          .run(email, m, p, q);
+      } catch { /* best-effort */ }
+    });
   } catch { /* best-effort: jamás afectar la respuesta */ }
+}
+
+/** Middleware: registra la petición si hay sesión (req.user). Nunca bloquea. */
+export function accessLogger(req: any, _res: Response, next: NextFunction) {
+  escribirAcceso(req.user?.email, req.method, req.path, req.query);
   next();
 }
 
