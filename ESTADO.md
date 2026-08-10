@@ -89,7 +89,37 @@ porque las tres cambian `share_of_buyer` y por tanto los scores publicados):
 3. **CC-03 publica una ventana de «los últimos 7 años» que no existe en el código**: el detalle en
    producción dice literalmente «presente en **8 de los últimos 7 años**».
 
-Trabajo restante ya inventariado (ver «Hallazgos confirmados pendientes» abajo).
+### El recálculo pendiente: orden exacto y por qué va en una sola pasada
+
+Las correcciones de arriba están entrelazadas: las tres cambian `share_of_buyer` y por tanto los
+scores y niveles de riesgo publicados. Hacerlas por separado obligaría a recalcular 1,47 M procesos
+varias veces. **Antes de correrlo hay que arreglar dos cosas o el recálculo tumba producción:**
+
+0. **Prerrequisito `updater.ts:333`**: `reflagChanged` acumula el conjunto completo de cambios en
+   RAM. Con un cambio de regla que toque a casi todos los procesos son ~3 GB y el contenedor muere.
+   Hay que lotear con escritura + `wal_checkpoint(TRUNCATE)` entre lotes (regla 2).
+0.b **Prerrequisito `db.ts:589`**: `rebuildConcentrationIndex()` reescribe 517 344 filas en dos
+   sentencias sin lotes ni checkpoint. Mismo tratamiento.
+
+Luego, en este orden:
+1. `db.ts:678`: `total_value` y `infima_total_value` pasan a usar `MONTO_SQL` en vez de
+   `award_amount` crudo. Esto **cambia `share_of_buyer`**, así que también arregla la divergencia de
+   $69 M del ranking web contra el MCP y el umbral de $50 000 de CC-03.
+2. `updater.ts:267-306`: indexar el contexto por `(buyer_id, supplier_id, año)` y que
+   `evaluateConcentrationFlags` lea la fila del **año del proceso**. Quitar los tres `Math.max`.
+   `buyer_total_procs` pasa a ser del año. `years_active` se recorta a una ventana real o se publica
+   sin ventana. `consortium_count` excluye catálogo.
+3. `flag-engine.ts`: excluir catálogo electrónico de IC-02; sustituir `isInfima` (texto muerto) por
+   `isInfimaByAmount` en IC-02 e IT-02; `businessDays` truncado a medianoche en zona de Ecuador y
+   sin contar el día inicial; interpolar el año en el `detail` de CC-02/CC-01/CC-05.
+4. Reescribir `Methodology.tsx` y `METHODOLOGY` para que digan exactamente lo que quedó (regla 10),
+   incluida la corrección de «15 banderas» → 14 vivas.
+5. `rebuildConcentrationIndex()` + reflag completo, y **verificar en producción los dos casos
+   nombrados** de CC-02: el share que muestren tiene que ser el de su año.
+6. Ampliar `flag-engine.test.ts` con un caso por cada corrección antes de correr nada.
+
+**Nada de esto está desplegado todavía.** Producción sigue mostrando los scores con el defecto del
+máximo entre años.
 
 ## Auditoría 2026-08-09: los 30 hallazgos y su corrección
 
@@ -151,19 +181,73 @@ Ordenados por gravedad. Los marcados «sin veredicto» los reportó un revisor c
 por límite de sesión: **hay que verificarlos antes de tocar el código**, no se dan por buenos.
 
 **Metodología (regla 10) — el riesgo reputacional más alto: son afirmaciones sobre entidades con
-nombre que un periodista puede citar.**
-- CC-02/CC-01/CC-05 con el máximo histórico en vez del año del proceso (verificado, ver arriba).
-- CC-03 con la ventana de 7 años inexistente (verificado: «8 de los últimos 7 años»).
-- IC-02 publica `procurement_method == "direct"` sin decir que esa etiqueta **la fabrica el OICP**:
-  65 497 órdenes de catálogo electrónico salen rotuladas «Adjudicación directa» (sin veredicto).
-- La exclusión de ínfima publicada para IT-02 y la rama de ínfima de IC-02 **no excluyen nada**:
-  ningún proceso del dataset tiene «ínfima» en el texto del método (sin veredicto).
-- «días hábiles» se publica como función sin definir y cuenta ambos extremos (sin veredicto).
-- `METHODOLOGY` del MCP: TR-02 omite la condición de longitud > 0 que sí publica la web, y el campo
-  `verificado` cita una auditoría sobre 1 460 511 procesos cuando producción tiene 1 470 321.
+nombre que un periodista puede citar.** Comparación literal de las 15 banderas entre motor, web y
+MCP hecha el 2026-08-10; **todo lo de abajo está verificado contra el código y contra producción**
+(los «sin veredicto» de la primera pasada quedaron confirmados, con una corrección de atribución).
+
+*Defectos del motor (cambian scores publicados → exigen recálculo):*
+- **CC-02, CC-01 y CC-05 usan el máximo entre años**, no el año del proceso
+  (`updater.ts:283-285`, `Math.max`). Dos casos verificados en producción:
+  `ocds-5wno2w-RE-EPP-2017355-19-253178` (marzo 2019, share real 17,17%, la bandera dice 98,8%, que
+  es el de 2026) y `ocds-5wno2w-CDC-001-GADPNT-2022-117563` (enero 2022, share real 1,6%, la bandera
+  dice 100,0%, que es el de 2021). El `detail` (`flag-engine.ts:464`) **nunca dice de qué año es el
+  porcentaje**, y el `description_es` (`flag-engine.ts:117`) afirma «en un año».
+- **El piso de 10 procesos de CC-02 también es acumulado** de 2019-2026, no del año
+  (`updater.ts:291-295`, `GROUP BY buyer_id` sin año).
+- **CC-03: la ventana de «los últimos 7 años» no existe** (`updater.ts:287-289` cuenta el tamaño del
+  conjunto de años sin recorte). En producción **2 861 procesos** llevan el detalle literal
+  «presente en 8 de los últimos 7 años» y 9 755 dicen «7 de los últimos 7». Total CC-03: 39 417.
+- **CC-03 compara su umbral de $50 000 contra `award_amount` crudo**, porque
+  `concentration_index.total_value` (`db.ts:678`) no usa `MONTO_SQL`.
+- **IC-02 no excluye el catálogo electrónico**: de sus 109 642 disparos, **65 497 (59,7%) son órdenes
+  de catálogo** rotuladas «Adjudicación directa». Es incoherente con `flag-engine.ts:436`, que sí
+  excluye el catálogo de todas las CC-* con el argumento de que es compra centralizada
+  precalificada. IC-02 es la bandera de peso 30 más disparada del sistema.
+  *Corrección de atribución*: la etiqueta `direct` **la trae el SERCOP**, no la fabrica el OICP (se
+  refutó con el reparto real: «Mejor oferta» y «Menor Cuantía» llegan como `selective`). El código
+  para fabricarla existe (`updater.ts:105`, `load-data.ts:141`, `db.ts:765-766`) pero no actuó.
+- **La detección de ínfima por texto es inoperante**: `isInfima` (`flag-engine.ts:231-235`) busca
+  «ínfima» en `procurement_method_details`, y **0 de 1 470 321 procesos** contienen esa palabra ahí
+  ni en el título. Consecuencias: la rama A de IC-02 (`flag-engine.ts:256`) es **código muerto con 0
+  disparos**, y la exclusión de ínfima que IT-02 publica **deja pasar 524 de sus 2 237 disparos
+  (23,4%)**. El propio repo ya lo sabía (comentario en `flag-engine.ts:413-416`) y por eso las CC-*
+  usan `isInfimaByAmount`; IC-02 e IT-02 se quedaron atrás. De paso, el tercer `includes` de
+  `isInfima` es un duplicado literal del primero.
+- **`businessDays` (`flag-engine.ts:218-229`) cuenta ambos extremos y depende de la hora**: no trunca
+  a medianoche y usa `getDay()`/`setDate()` en hora local del servidor, mientras las fechas del
+  SERCOP traen offset `-05:00` con hora real del día. Medido sobre los 2 237 disparos de IT-02: con
+  **la misma diferencia de 1 día calendario**, 395 procesos reportan «1 días hábiles» y **616
+  reportan «2»**. Hay 406 disparos con 0 días calendario que imprimen «1 días hábiles». No hay
+  calendario de feriados ecuatorianos en el repo, y «días hábiles» no está definido en ninguna de las
+  tres superficies publicadas.
+- **CC-04 cuenta procesos-consorcio de catálogo** (`updater.ts:296`, sin filtro) aunque el proceso
+  evaluado sí se excluye: 7 de los 41 procesos-consorcio del dataset son catálogo.
+
+*Divergencias de texto (no cambian scores; se corrigen publicando lo que el motor hace):*
+- IP-02: el motor exige además que `award_amount` sea truthy (`flag-engine.ts:304`); web y MCP no lo
+  publican, así que con adjudicado 0 la fórmula publicada dispararía y el motor no.
+- TR-02: el motor exige longitud `> 0` (`flag-engine.ts:349`) y la web lo publica; **el MCP no**
+  (`mcp-server.ts:277`), ni el `description_es` del motor (`flag-engine.ts:147`). Además la web
+  afirma que una descripción vacía «dispara TR-01», y eso es falso: TR-01 no mira description ni
+  title (`flag-engine.ts:335-339`).
+- CC-04: el MCP omite la condición de que el proceso tenga 2+ proveedores, que es media regla.
+- IC-02: el MCP omite el fallback a `budget_amount` y dice «umbral del año» cuando es por FECHA.
+- TR-03: el MCP dice «prefijo RE-» cuando el motor hace `includes('-RE-')` sobre el ocid.
+- `mcp-server.ts:258`: el campo `verificado` cita 1 460 511 procesos; producción tiene 1 470 321.
+- Web y MCP anuncian **15 banderas**; IP-03 tiene 0 disparos, así que las vivas son **14**.
+- No se publica que `getInfimaThreshold(null)` devuelve 10 000 (`flag-engine.ts:35`): un proceso sin
+  fecha usa el umbral post-reforma aunque sea de 2019.
+- El índice de concentración decide el umbral por `source_year` (`db.ts:686-692`) y el motor por
+  `published_date || award_date` (`flag-engine.ts:246`): dos implementaciones del mismo umbral.
 - `ProcedureDetail.tsx:53` describe CC-05 y CC-04 con reglas que el motor no aplica.
 - `ProcedureDetail.tsx:274` la «Composición del Score» muestra una suma que no da el total que ella
   misma imprime.
+
+*Lo que SÍ coincide en los tres* (verificado uno por uno, no volver a revisar): los 8 umbrales de
+ínfima cuantía y su fecha de corte del 7-oct-2025; los pesos por severidad `{0:3, 1:8, 2:18, 3:30}`;
+los cortes de riesgo 0-10 / 11-30 / 31-60 / 61-100; los 3 pares de correlación
+(IC-01+IC-02, CC-01+CC-05, IP-01+CC-05) al 50%; los 15 pesos por bandera; y las reglas de
+IC-01, IT-01, IP-01, IP-03, TR-01 y TR-03.
 
 **Disponibilidad**
 - `getStatistics` (`db.ts:245`) expande `FROM procedures, json_each(flags)` sobre 1,47 M filas dentro
