@@ -160,19 +160,37 @@ app.get('/api/statistics', (req, res) => {
   } catch (e: any) { res.status(500).json({ error: 'Error al obtener estadísticas' }); }
 });
 
+// ── Saneo de parámetros del cliente ──────────────────────────
+// `Math.min` solo ponía techo, nunca piso: con pageSize=-1 el valor llegaba intacto a
+// SQLite, donde un LIMIT negativo significa SIN LÍMITE, o sea un .all() sobre 1,47 M
+// filas (regla 3, medido en ~4 GB de RSS). Y los valores no numéricos (minScore=abc)
+// entraban como NaN al WHERE y devolvían 0 resultados en silencio, como si de verdad
+// no hubiera coincidencias.
+function enteroAcotado(v: any, porDefecto: number, min: number, max: number): number {
+  if (v === undefined || v === null || v === '') return porDefecto;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return porDefecto;
+  return Math.min(Math.max(n, min), max);
+}
+function numeroOpcional(v: any): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // ── Search procedures ────────────────────────────────────────
 app.get('/api/procedures', (req, res) => {
   try {
     const params = {
       query: req.query.q as string,
-      page: Number(req.query.page) || 1,
-      pageSize: Math.min(Number(req.query.pageSize) || 20, 100),
+      page: enteroAcotado(req.query.page, 1, 1, 100000),
+      pageSize: enteroAcotado(req.query.pageSize, 20, 1, 100),
       riskLevel: req.query.risk as string,
       method: req.query.method as string,
       flag: req.query.flag as string,
-      year: req.query.year ? Number(req.query.year) : undefined,
-      minScore: req.query.minScore ? Number(req.query.minScore) : undefined,
-      maxScore: req.query.maxScore ? Number(req.query.maxScore) : undefined,
+      year: numeroOpcional(req.query.year),
+      minScore: numeroOpcional(req.query.minScore),
+      maxScore: numeroOpcional(req.query.maxScore),
       buyerId: req.query.buyerId as string,
       supplierId: req.query.supplierId as string,
       status: req.query.status as string,
@@ -214,7 +232,7 @@ app.get('/api/suppliers/:id', (req, res) => {
 app.get('/api/rankings', (req, res) => {
   try {
     const type = (req.query.type as string) || 'buyers';
-    const year = req.query.year ? Number(req.query.year) : undefined;
+    const year = numeroOpcional(req.query.year);
     res.json(getRankings(type, year));
   } catch (e: any) { res.status(500).json({ error: 'Error al obtener rankings' }); }
 });
@@ -226,14 +244,22 @@ app.get('/api/filters', (req, res) => {
   } catch (e: any) { res.status(500).json({ error: 'Error al obtener filtros' }); }
 });
 
+// ── 404 explícito del API ────────────────────────────────────
+// Va después de todas las rutas /api y antes del SPA. Sin esto, una ruta inexistente
+// bajo /api (p. ej. GET /api/auth/login, que solo existe como POST) atravesaba los
+// routers sin emparejar y caía en el catch-all de abajo, que para esos paths no llamaba
+// a res.* ni a next(): la conexión quedaba abierta sin respuesta hasta que el cliente
+// abandonaba (el edge de Railway la cortaba como 499 a los 300 s).
+app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));
+
 // ── Serve static in production ───────────────────────────────
 if (process.env.NODE_ENV === 'production') {
   const publicDir = path.join(__dirname, '..', 'dist', 'public');
   app.use(express.static(publicDir));
   app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api')) {
-      res.sendFile(path.join(publicDir, 'index.html'));
-    }
+    // Ninguna rama puede quedarse sin responder ni sin delegar.
+    if (req.path.startsWith('/api')) return res.status(404).json({ error: 'not_found' });
+    res.sendFile(path.join(publicDir, 'index.html'));
   });
 }
 

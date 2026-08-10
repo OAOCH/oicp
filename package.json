@@ -9,7 +9,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "NODE_ENV=production npx tsx server/index.ts",
-    "test": "tsx --test server/flag-engine.test.ts",
+    "test": "tsx --test server/flag-engine.test.ts server/mcp-guards.test.ts",
     "db:migrate": "tsx server/migrate.ts",
     "db:seed": "tsx server/seed.ts",
     "load": "tsx server/load-data.ts",

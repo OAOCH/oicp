@@ -278,9 +278,13 @@ export function searchProcedures(params: {
   status?: string;
   sortBy?: string; sortOrder?: string;
 }) {
-  const { query, page = 1, pageSize = 20, riskLevel, method, flag,
+  const { query, riskLevel, method, flag,
     year, minScore, maxScore, buyerId, supplierId, status,
     sortBy = 'score', sortOrder = 'DESC' } = params;
+  // Segunda barrera (regla 3): no se confía en el llamador. Un pageSize negativo se
+  // traduce en SQLite a LIMIT -1, es decir SIN LÍMITE, y materializa la tabla entera.
+  const pageSize = Math.min(Math.max(Math.floor(Number(params.pageSize) || 20), 1), 100);
+  const page = Math.max(Math.floor(Number(params.page) || 1), 1);
 
   const conditions: string[] = [];
   const values: any[] = [];

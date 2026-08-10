@@ -26,6 +26,13 @@ router.post('/:token', (req, res) => {
   const body = req.body;
   try {
     if (Array.isArray(body)) {
+      // Cota del lote: sin ella, una sola petición JSON-RPC podía pedir miles de
+      // llamadas a herramientas y saltarse por completo el rate limit de 120/min, que
+      // cuenta peticiones HTTP y no mensajes.
+      if (body.length > 20) {
+        return res.status(413).json({ jsonrpc: '2.0', id: null,
+          error: { code: -32000, message: 'Lote demasiado grande: máximo 20 mensajes por petición.' } });
+      }
       const out = body.map(m => handleMcpMessage(db, m)).filter(Boolean);
       if (!out.length) return res.status(202).end();
       return res.json(out);

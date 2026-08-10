@@ -293,6 +293,103 @@ const MONTO_SQL = `CASE
     ELSE COALESCE(NULLIF(final_amount,0), NULLIF(contract_amount,0), NULLIF(award_amount,0), 0)
   END`;
 
+// ── Tope de COSTO para oicp_sql ──────────────────────────────
+// Tablas cuyo recorrido completo bloquea el proceso: `procedures` tiene 1,47 M filas
+// y `concentration_index` más de 500 k. better-sqlite3 ejecuta de forma síncrona en el
+// único hilo de Node, así que una sola consulta pesada deja sin respuesta la web, el
+// MCP y hasta /api/health, y no hay forma de abortarla (esta compilación no expone
+// progress handler ni interrupt). Ya ocurrió en producción.
+export const TABLAS_GRANDES = ['procedures', 'concentration_index'];
+
+// Tablas cuyo recorrido completo es barato: los agregados precalculados (miles de filas,
+// no millones) y el registro de importaciones.
+const TABLAS_CHICAS = new Set(['a_suppliers', 'a_supplier_buyer', 'a_supplier_year',
+  'a_buyers', 'a_flag_year', 'a_risk_year', 'a_supplier_critical', 'a_fts', 'import_log']);
+
+// Los nombres de ÍNDICE sí son globales y no se pueden aliasar, así que identifican la
+// tabla sin ambigüedad aunque la consulta la renombre.
+const INDICE_DE_TABLA_GRANDE =
+  /\b(idx_proc_|idx_conc_|sqlite_autoindex_procedures|sqlite_autoindex_concentration_index)/i;
+
+/**
+ * Mapa alias -> tabla real. Es imprescindible porque EXPLAIN QUERY PLAN reporta el
+ * ALIAS, no la tabla: `FROM procedures p` sale como "SCAN p".
+ *
+ * Este análisis por expresión regular es deliberadamente burdo, y eso aquí es seguro:
+ * un alias que no se resuelva se RECHAZA (ver verificarPlan). Un fallo del parseo
+ * produce un falso rechazo, nunca un falso permiso. Es lo contrario de las guardas
+ * anteriores, que al no reconocer una forma la dejaban pasar.
+ */
+function mapaAlias(sql: string): Map<string, string> {
+  const mapa = new Map<string, string>();
+  const PALABRAS_SQL = new Set(['where', 'group', 'order', 'limit', 'on', 'using', 'join',
+    'inner', 'left', 'right', 'full', 'outer', 'cross', 'natural', 'having', 'window',
+    'union', 'select', 'and', 'or', 'as']);
+  const rx = /\b(?:from|join)\s+([a-z_][\w$]*)\s*(?:as\s+)?([a-z_][\w$]*)?/gi;
+  let g: RegExpExecArray | null;
+  while ((g = rx.exec(sql)) !== null) {
+    const tabla = g[1].toLowerCase();
+    if (PALABRAS_SQL.has(tabla)) continue;
+    mapa.set(tabla, tabla);
+    const alias = g[2]?.toLowerCase();
+    if (alias && !PALABRAS_SQL.has(alias)) mapa.set(alias, tabla);
+  }
+  return mapa;
+}
+
+/**
+ * Rechaza los planes de ejecución que dejarían la plataforma sin responder. Devuelve el
+ * mensaje de error, o null si el plan es aceptable.
+ *
+ * Filtrar por la FORMA del SQL con expresiones regulares ya falló dos veces (quedaron
+ * abiertos `JOIN ... ON 1=1` y la subconsulta antes de la coma). Aquí se le pregunta al
+ * planificador de SQLite qué va a hacer de verdad:
+ *   - Cualquier SCAN (recorrido completo) que toque una tabla grande se rechaza, incluso
+ *     por índice cubridor: son 1,47 M de entradas y es la forma que toman los dos
+ *     productos cartesianos que evadían las guardas viejas.
+ *   - Dos lecturas de tablas grandes se rechazan: es un bucle anidado. `procedures`
+ *     contra sí misma son ~2,16 billones de combinaciones, o sea horas de bloqueo.
+ *   - Un objeto que no se pueda identificar como tabla chica se rechaza (falla cerrado).
+ */
+function verificarPlan(db: Database.Database, sqlEjecutable: string, sqlPlano: string): string | null {
+  let plan: any[];
+  try { plan = db.prepare(`EXPLAIN QUERY PLAN ${sqlEjecutable}`).all() as any[]; }
+  catch (e: any) { return `SQL error: ${e.message}`; }
+
+  const alias = mapaAlias(sqlPlano);
+  const consejo = 'Filtra por una columna indexada (id, buyer_id, source_year, risk_level, score, published_date, status, procurement_method_details) o usa los agregados precalculados a_buyers, a_suppliers, a_supplier_buyer, a_supplier_year, a_flag_year, a_risk_year.';
+  let lecturasGrandes = 0;
+
+  for (const fila of plan) {
+    const detalle = String(fila?.detail || '');
+    const recorrido = /^\s*SCAN\s+(?:TABLE\s+)?(\S+)/i.exec(detalle);
+
+    if (INDICE_DE_TABLA_GRANDE.test(detalle)) {
+      lecturasGrandes++;
+      if (recorrido) {
+        return `Consulta demasiado costosa: recorrería de punta a punta un índice de una tabla de 1,47 M filas y dejaría la plataforma sin responder. ${consejo}`;
+      }
+      continue;
+    }
+    if (!recorrido) continue;                       // SEARCH por índice de tabla chica: barato
+
+    const objeto = recorrido[1].toLowerCase();
+    if (objeto.startsWith('(') || objeto === 'constant') continue;  // (subquery-N), CONSTANT ROW
+
+    const tabla = alias.get(objeto);
+    if (tabla && TABLAS_CHICAS.has(tabla)) continue;
+    if (tabla && TABLAS_GRANDES.includes(tabla)) {
+      return `Consulta demasiado costosa: recorrería la tabla "${tabla}" completa y dejaría la plataforma sin responder. ${consejo}`;
+    }
+    return `No se puede acotar el costo de recorrer "${objeto}". ${consejo}`;
+  }
+
+  if (lecturasGrandes > 1) {
+    return 'Consulta demasiado costosa: cruza dos tablas grandes en un bucle anidado. Relaciona contra los agregados a_* en vez de cruzar "procedures" o "concentration_index" consigo mismas.';
+  }
+  return null;
+}
+
 // Corte real de datos (dinámico: la base se actualiza con la sincronización local).
 function dataCutoff(db: Database.Database): string {
   try {
@@ -384,14 +481,19 @@ export function callTool(db: Database.Database, name: string, args: any): any {
       const match = texto.replace(/"/g, ' ').trim().split(/\s+/).map(t => `"${t}"`).join(' ');
       let hits: string[] = [];
       const hasFts = !!db.prepare(`SELECT name FROM sqlite_master WHERE name = 'a_fts'`).get();
-      if (hasFts) {
-        hits = (db.prepare(`SELECT ocid FROM a_fts WHERE a_fts MATCH ? LIMIT 400`).all(match) as any[]).map(r => r.ocid);
+      if (!hasFts) {
+        // Aquí había un LIKE sobre `procedures`. Con 1,47 M filas y sin índice posible
+        // para '%texto%', un término sin coincidencias en FTS obligaba a recorrer la
+        // tabla entera de forma síncrona y dejaba toda la plataforma sin responder:
+        // bastaba una palabra mal escrita. Sin índice FTS la búsqueda no se atiende.
+        return { error: 'El índice de búsqueda (a_fts) no está construido en esta base. Reconstruye los agregados antes de usar oicp_search.' };
       }
-      if (!hits.length) {
-        // Fallback sin FTS: LIKE sobre descripcion/comprador (mas lento, acotado).
-        const like = `%${texto.split(/\s+/)[0]}%`;
-        hits = (db.prepare(`SELECT id FROM procedures WHERE description LIKE ? OR buyer_name LIKE ? LIMIT 200`)
-          .all(like, like) as any[]).map(r => r.id);
+      try {
+        hits = (db.prepare(`SELECT ocid FROM a_fts WHERE a_fts MATCH ? LIMIT 400`).all(match) as any[]).map(r => r.ocid);
+      } catch {
+        // Sintaxis MATCH inválida (caracteres especiales de FTS5): el problema es el
+        // término, no el servidor.
+        return { resultados: [], nota: `No se pudo interpretar '${texto}' como búsqueda. Usa solo palabras.` };
       }
       if (!hits.length) return { resultados: [], nota: `Sin coincidencias para '${texto}'. Prueba con menos palabras.` };
       let cond = `id IN (${hits.map(() => '?').join(',')})`;
@@ -437,35 +539,37 @@ export function callTool(db: Database.Database, name: string, args: any): any {
       // 1) Tablas prohibidas: datos personales de la whitelist, tokens y el registro
       //    de navegación de los usuarios (la investigación en curso de un periodista
       //    es confidencial). Se normalizan comillas/corchetes para que no se puedan
-      //    esquivar escribiendo "allowed_users" o [allowed_users].
+      //    esquivar escribiendo "allowed_users" o [allowed_users]. Se bloquea también
+      //    toda tabla interna (sqlite_*, dbstat): además de exponer el esquema, el
+      //    recorrido de dbstat lee el archivo completo de la base.
       const plano = sql.replace(/["`\[\]]/g, '').toLowerCase();
       const PROHIBIDAS = ['allowed_users', 'magic_tokens', 'mcp_settings', 'access_log',
-                          'sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'pragma_'];
-      const tocada = PROHIBIDAS.find(t => new RegExp(`\\b${t}`).test(plano));
+                          'dbstat', 'pragma_'];
+      const tocada = PROHIBIDAS.find(t => new RegExp(`\\b${t}`).test(plano))
+        || /\bsqlite_[a-z0-9_]+/.exec(plano)?.[0];
       if (tocada) {
         return { error: `Tabla no disponible por privacidad: "${tocada}". Esta herramienta consulta únicamente datos públicos de contratación (procedures, concentration_index y agregados a_*).` };
       }
-      // 2) Patrones que pueden bloquear el proceso: better-sqlite3 ejecuta de forma
-      //    síncrona, así que una consulta cartesiana congelaría toda la plataforma.
+      // 2) WITH RECURSIVE puede no terminar nunca.
       if (/\bwith\s+recursive\b/i.test(plano)) {
         return { error: 'WITH RECURSIVE no está permitido (riesgo de consulta sin fin).' };
       }
-      // Cubre las tres formas del join implícito: "FROM a, b", "FROM a x, b y"
-      // y "FROM a AS x, b AS y" (el alias puede ir con o sin la palabra AS).
-      const desdeCartesiano = /\bfrom\s+[a-z_]\w*\s*(?:(?:as\s+)?[a-z_]\w*\s*)?,/i.test(plano);
-      const joinSinCondicion = /\bcross\s+join\b/i.test(plano) ||
-        (/\bjoin\b/i.test(plano) && !/\b(on|using)\b/i.test(plano));
-      if (desdeCartesiano || joinSinCondicion) {
-        return { error: 'Producto cartesiano no permitido: usa JOIN ... ON (o USING) para relacionar las tablas.' };
-      }
 
       const maxRows = Math.max(1, Math.min(Number(args?.max_rows) || 200, 300));
-      // 3) Si la consulta no acota filas, se le impone un LIMIT (defensa extra sobre
-      //    el corte del iterador, que no evita el costo de un agregado sin cota).
-      const sqlAcotado = /\blimit\b/i.test(plano) ? sql : `SELECT * FROM (${sql.replace(/;\s*$/, '')}) LIMIT ${maxRows}`;
+      // 3) LIMIT impuesto SIEMPRE. Antes se buscaba la subcadena "limit" en el texto y
+      //    bastaba escribirla dentro de un comentario para anular el tope. Envolver una
+      //    consulta que ya trae su propio LIMIT es inocuo. Los saltos de línea son
+      //    necesarios: sin ellos, una consulta terminada en "--" comentaría el
+      //    paréntesis de cierre.
+      const sqlAcotado = `SELECT * FROM (\n${sql.replace(/;\s*$/, '')}\n) LIMIT ${maxRows}`;
       let stmt;
       try { stmt = db.prepare(sqlAcotado); } catch (e: any) { return { error: `SQL error: ${e.message}` }; }
       if (!stmt.reader || !stmt.readonly) return { error: 'La consulta debe ser de solo lectura y devolver filas.' };
+      // 4) Tope de costo por PLAN DE EJECUCIÓN, no por sintaxis (ver verificarPlan).
+      //    Sustituye a las viejas heurísticas de producto cartesiano, que se evadían
+      //    con "JOIN ... ON 1=1" o abriendo un paréntesis antes de la coma.
+      const planCaro = verificarPlan(db, sqlAcotado, plano);
+      if (planCaro) return { error: planCaro };
       const out: any[] = [];
       let truncated = false;
       for (const row of stmt.iterate()) {
