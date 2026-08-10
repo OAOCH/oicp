@@ -67,6 +67,16 @@ curl -s https://oicp-production.up.railway.app/api/version
 7. **Un flag no es un hallazgo**: mantener el disclaimer en UI y en toda salida del MCP.
 8. **Ningún secreto en el repo.** Verificado: no hay claves escritas en `server/` ni `client/`.
 9. **Respetar el rate limit del SERCOP**: concurrencia ≤3, ~3 req/s, honrar `Retry-After` del 429.
+10. **Lo publicado tiene que ser lo que ejecuta el código.** Si cambias una regla, un umbral o un
+    peso en `flag-engine.ts`, actualiza en el mismo commit `client/src/pages/Methodology.tsx` y el
+    objeto `METHODOLOGY` de `mcp-server.ts`. Una divergencia aquí destruye la credibilidad.
+11. **Una sola definición de "monto"**: `MONTO_SQL` en `db.ts` y `montoPlausible()` en
+    `mcp-server.ts`/`updater.ts` deben ser equivalentes. Web y MCP nunca pueden dar cifras distintas.
+12. **`oicp_sql` es una superficie de ataque**: no relajes la lista de tablas prohibidas ni las
+    guardas contra producto cartesiano; better-sqlite3 es síncrono y una consulta pesada congela
+    toda la plataforma.
+13. **Nada de valores del usuario dentro de un `<script>`**: si hace falta, serializar escapando
+    el marcado (ver `toScriptLiteral` en `routes/admin.ts`).
 
 ## Qué NO tocar nunca
 - **`data/*.db` en producción a mano.** La base vive en el volumen `oicp-volume`; se reemplaza solo
@@ -80,14 +90,9 @@ curl -s https://oicp-production.up.railway.app/api/version
   (incluye el cambio del 7-oct-2025). No "redondear" ni ajustar sin norma que lo respalde.
 - **`/mcp/:token`**: el token viaja en la URL y su hash vive en `mcp_settings`. Rotarlo invalida
   los conectores ya configurados en las máquinas de Oscar.
+- **`/api/admin/batch-clear`**: vacía `procedures` y `concentration_index` por completo. Exige
+  `{"confirm":"BORRAR TODO"}` a propósito; no lo automatices.
 
-## POR CONFIRMAR
-- **`nixpacks.toml` convive con `railway.toml`** (que fuerza Dockerfile). ¿Es residuo que se puede
-  borrar o hay algún entorno que lo use?
-- **`npm run build` compila a `dist/` y `npm start` lo ejecuta, pero producción corre `tsx`.**
-  ¿Se mantiene ese camino por algo o se puede eliminar?
-- **Ruta exacta de montaje del volumen `oicp-volume`.** `.env.example` dice que `DB_PATH` apunta a
-  `/data` en Railway; no verifiqué el valor real de la variable (no leo valores de secretos/config).
-- **`DEPLOY-RAILWAY.md` y `GUIA-PASO-A-PASO.md`** describen el alta inicial (repo público, $0/mes)
-  y ya no coinciden con la operación actual. ¿Se actualizan o se archivan?
-- **`README.md` menciona una carpeta `scripts/`** que no existe en el proyecto.
+## Notas de mantenimiento
+- `DEPLOY-RAILWAY.md` y `GUIA-PASO-A-PASO.md` documentan el **alta inicial** (junio 2026) y ya no
+  reflejan la operación vigente: la fuente de verdad para operar es este archivo y `ESTADO.md`.
