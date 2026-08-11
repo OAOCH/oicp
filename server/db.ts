@@ -113,6 +113,11 @@ function healSchema() {
     const needed: [string, string][] = [
       ['data_coverage', 'REAL DEFAULT 0'],
       ['raw_release', 'JSON'],
+      // Fin del período de preguntas y aclaraciones. Es la fecha desde la que corre el término
+      // del Art. 96 del Reglamento ("contados a partir de fenecer la fecha límite para contestar
+      // respuestas y aclaraciones"), así que sin ella IT-01 no puede reproducir el plazo legal.
+      // El SERCOP SÍ la publica, en tender.enquiryPeriod.endDate; la plataforma no la leía.
+      ['enquiry_deadline', 'TEXT'],
     ];
     for (const [name, type] of needed) {
       if (!cols.has(name)) {
@@ -151,6 +156,7 @@ function migrateInternal() {
       -- Dates
       published_date TEXT,                    -- tender.tenderPeriod.startDate
       submission_deadline TEXT,               -- tender.tenderPeriod.endDate
+      enquiry_deadline TEXT,                  -- tender.enquiryPeriod.endDate (Art. 96 Reglamento)
       award_date TEXT,
       contract_date TEXT,
       
@@ -691,10 +697,10 @@ export function upsertProcedure(proc: any) {
   const stmt = db.prepare(`
     INSERT INTO procedures (id, ocid, title, description, status, procurement_method, procurement_method_details,
       buyer_id, buyer_name, budget_amount, budget_currency, award_amount, contract_amount, final_amount,
-      published_date, submission_deadline, award_date, contract_date, suppliers,
+      published_date, submission_deadline, enquiry_deadline, award_date, contract_date, suppliers,
       number_of_tenderers, items_classification, has_amendments, amendment_count,
       flags, score, risk_level, data_coverage, source_year, regime, raw_release, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
       title=excluded.title, description=excluded.description, status=excluded.status,
       procurement_method=excluded.procurement_method, procurement_method_details=excluded.procurement_method_details,
@@ -702,6 +708,7 @@ export function upsertProcedure(proc: any) {
       budget_amount=excluded.budget_amount, award_amount=excluded.award_amount,
       contract_amount=excluded.contract_amount, final_amount=excluded.final_amount,
       published_date=excluded.published_date, submission_deadline=excluded.submission_deadline,
+      enquiry_deadline=excluded.enquiry_deadline,
       award_date=excluded.award_date, contract_date=excluded.contract_date,
       suppliers=excluded.suppliers, number_of_tenderers=excluded.number_of_tenderers,
       items_classification=excluded.items_classification, has_amendments=excluded.has_amendments,
@@ -716,7 +723,8 @@ export function upsertProcedure(proc: any) {
     proc.procurement_method, proc.procurement_method_details,
     proc.buyer_id, proc.buyer_name, proc.budget_amount, proc.budget_currency || 'USD',
     proc.award_amount, proc.contract_amount, proc.final_amount,
-    proc.published_date, proc.submission_deadline, proc.award_date, proc.contract_date,
+    proc.published_date, proc.submission_deadline, proc.enquiry_deadline ?? null,
+    proc.award_date, proc.contract_date,
     JSON.stringify(proc.suppliers || []),
     proc.number_of_tenderers, proc.items_classification,
     proc.has_amendments ? 1 : 0, proc.amendment_count || 0,

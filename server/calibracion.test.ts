@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas, calculateScore, esFeriadoNacional } from './flag-engine.js';
+import { valorReferencial } from './ocds-valor.js';
 
 const codigos = (fs: any[]) => fs.map(f => f.code);
 
@@ -169,6 +170,41 @@ test('con budget_amount como texto y sin adjudicado, el motor normalizado marca 
   const sinNormalizar = codigos(evaluateIndividualFlags(crudo as any));
   assert.ok(!sinNormalizar.includes('TR-01'),
     'sin normalizar, la cadena "USD" es truthy y TR-01 se pierde: por eso la normalización es obligatoria');
+});
+
+// ── El presupuesto referencial vive en tender.lots[], no en tender.value ──
+// Los 174.547 procesos con el TEXTO "USD" en el campo del monto (11,9% del corpus) se habían
+// dado por perdidos. No lo estaban: la fuente sí publica el presupuesto, pero en los lotes. Los
+// montos de abajo se trajeron de la API del SERCOP el 2026-08-11, un proceso por caso, y en los
+// cinco `tender.value` venía vacío.
+test('el presupuesto sale de los lotes cuando tender.value viene vacío', () => {
+  const casos: [string, any, number][] = [
+    ['SIE-DD01D04S-2024-00003', { lots: [{ value: { amount: 40105.69 } }] }, 40105.69],
+    ['SIE-CELECEP-2024-04422', { lots: [{ value: { amount: 536037.63 } }] }, 536037.63],
+    ['SIE-GADMCG-2024-071', { lots: [{ value: { amount: 26057.94 } }] }, 26057.94],
+    ['SIE-EMAPAACEP-2024-015', { lots: [{ value: { amount: 18033.59 } }] }, 18033.59],
+    ['SIE-GADGIRON-2024-20', { lots: [{ value: { amount: 16812.60 } }] }, 16812.60],
+  ];
+  for (const [nombre, tender, esperado] of casos) {
+    assert.equal(valorReferencial(tender, {}, null), esperado, `presupuesto de ${nombre}`);
+  }
+});
+
+test('varios lotes suman, y tender.value manda cuando existe', () => {
+  assert.equal(valorReferencial({ lots: [{ value: { amount: 100 } }, { value: { amount: 250 } }] }, {}, null), 350);
+  // Si el campo directo existe, no se toca: es el valor del procedimiento completo.
+  assert.equal(valorReferencial({ value: { amount: 999 }, lots: [{ value: { amount: 100 } }] }, {}, null), 999);
+  // Y el presupuesto de planificación sigue sirviendo de segundo recurso.
+  assert.equal(valorReferencial({}, { planning: { budget: { amount: { amount: 777 } } } }, null), 777);
+});
+
+test('nunca devuelve una cadena: el texto "USD" como monto fue el origen del problema', () => {
+  assert.equal(valorReferencial({}, {}, { budget: 'USD' }), null,
+    'parseFloat("USD") es NaN y no puede acabar guardado como monto');
+  assert.equal(valorReferencial({}, {}, null), null);
+  assert.equal(valorReferencial({ value: { amount: 0 } }, {}, null), null, 'un cero no es un presupuesto');
+  assert.equal(valorReferencial({ lots: [{ value: { amount: -5 } }] }, {}, null), null, 'ni un negativo');
+  assert.equal(typeof valorReferencial({ lots: [{ value: { amount: 1 } }] }, {}, null), 'number');
 });
 
 // ── Feriados del Art. 65 del Código del Trabajo ──

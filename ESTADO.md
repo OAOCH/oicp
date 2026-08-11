@@ -145,10 +145,22 @@ domingo→lunes, martes→lunes, miércoles→viernes y el caso sin traslado.
    indicador mide publicación→límite de ofertas, cuyos mínimos son 6/10/14/18; y esos mínimos
    escalonados no existían antes del 28-oct-2025. Es **decisión de Oscar**: o se aplican solo desde
    esa fecha, o el indicador se declara referencial para los años anteriores.
-3. **El presupuesto referencial falta en 174 547 procesos (11,9%)** porque el SERCOP publica la
-   palabra «USD» en el campo del monto. No es recuperable: `budget_currency` está en NULL en esas
-   filas. Queda **declarado en la metodología publicada**. Recuperarlo exigiría volver a descargar
-   esos procesos de la fuente.
+3. **El presupuesto de los 174 547 procesos SÍ es recuperable, y era un defecto nuestro.**
+   Se había dado por perdido. Falso. La ingesta leía el presupuesto de `tender.value`, que el
+   SERCOP publica **vacío** en esos procesos, cuando el monto vive en **`tender.lots[].value`**.
+   Comprobado contra la API de la fuente en cinco procesos de esa bolsa, y en los cinco
+   `tender.value` venía vacío y los lotes traían el monto: $40.105,69 · $536.037,63 · $26.057,94
+   · $18.033,59 · $16.812,60.
+
+   **La lectura ya está corregida** (`server/ocds-valor.ts`, una sola definición para los dos
+   caminos de ingesta, con pruebas). Todo lo que entre o se actualice desde ahora trae su
+   presupuesto. **Falta el rellenado de los 174 547 anteriores**, que exige volver a pedirlos a la
+   API del SERCOP: son ~174 mil peticiones con el límite de 3 por segundo y respeto del 429, o sea
+   unas 16 horas de trabajo de fondo. Hay que correrlo como job resumible, no en una sesión.
+
+   Se aprovechó el mismo arreglo para empezar a guardar **`tender.enquiryPeriod.endDate`** en la
+   columna nueva `enquiry_deadline`: es la fecha desde la que corre el término del Art. 96 y sin
+   ella IT-01 no puede reproducir el plazo legal. También la publica el SERCOP y tampoco se leía.
 4. **El respaldo.** Sigue sin poder correr por espacio, y ampliar el volumen cuesta dinero: es
    decisión de Oscar.
 2. ~~Las citas a la guía de la OCP.~~ **Resuelto el mismo 11-ago.** De las 13, solo 3 eran

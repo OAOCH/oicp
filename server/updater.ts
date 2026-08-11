@@ -15,6 +15,7 @@
 import cron from 'node-cron';
 import type Database from 'better-sqlite3';
 import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
+import { valorReferencial } from './ocds-valor.js';
 import { evaluateAllFlags, getRegime } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
@@ -108,14 +109,16 @@ function releaseToProc(release: any, sr: any, year: number) {
   let ac = 0; for (const c of co) ac += (c.amendments || []).length;
   const pub = t.tenderPeriod?.startDate || release.date || sr?.date || null;
   return {
+    // (ver valorReferencial más abajo: el presupuesto casi nunca viene en tender.value)
     id: release.ocid || sr?.ocid, ocid: release.ocid || sr?.ocid,
     title: t.title || t.description || sr?.title || '', description: t.description || sr?.description || '',
     status: release.tag?.includes('contract') ? 'contract' : release.tag?.includes('award') ? 'award' : 'tender',
     procurement_method: m, procurement_method_details: md, buyer_id: bi, buyer_name: bn,
-    budget_amount: t.value?.amount || release.planning?.budget?.amount?.amount || (sr?.budget ? parseFloat(sr.budget) : null),
+    budget_amount: valorReferencial(t, release, sr),
     budget_currency: 'USD', award_amount: fa.value?.amount || (sr?.amount ? parseFloat(sr.amount) : null),
     contract_amount: fc.value?.amount || null, final_amount: fc.implementation?.finalValue?.amount || null,
     published_date: pub, submission_deadline: t.tenderPeriod?.endDate || null,
+    enquiry_deadline: t.enquiryPeriod?.endDate || null,
     award_date: fa.date || null, contract_date: fc.dateSigned || null,
     suppliers, number_of_tenderers: t.numberOfTenderers || release.bids?.details?.length || null,
     items_classification: t.items?.[0]?.classification?.id || null,

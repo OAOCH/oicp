@@ -298,13 +298,23 @@ export default function Methodology() {
         <h2 className="font-semibold mb-3">Qué no se puede medir con estos datos</h2>
         <div className="text-sm text-gray-600 space-y-2">
           <p>
-            <strong>El presupuesto referencial falta en 174.547 procesos (11,9% del total).</strong> En
-            esas filas el SERCOP publica la palabra «USD» en el campo del monto en vez de la cifra, y
-            el valor real no quedó en ningún otro campo, así que no es recuperable. Está presente en
-            los ocho años, entre 5.070 procesos en 2026 y 35.533 en 2022. Consecuencia directa: los
-            indicadores que dependen del presupuesto referencial, sobre todo <strong>IP-02</strong>,
-            no pueden evaluar esos procesos; y donde falta también el monto adjudicado, lo que marca
-            la plataforma es TR-01 (información incompleta), que es lo correcto.
+            <strong>El presupuesto referencial falta hoy en 174.547 procesos (11,9% del total),
+            y es un defecto nuestro, no de la fuente.</strong> En esas filas quedó guardada la
+            palabra «USD» en el campo del monto en vez de la cifra. La causa, encontrada el 11 de
+            agosto de 2026: la ingesta leía el presupuesto de <code>tender.value</code>, que en
+            estos procesos el SERCOP publica vacío, cuando el monto vive en{' '}
+            <code>tender.lots[].value</code>. Se llegó a concluir que el dato era irrecuperable y
+            era falso: la fuente sí lo publica. Comprobado contra la API del SERCOP en cinco
+            procesos de esa bolsa, con montos entre $16.812,60 y $536.037,63.
+          </p>
+          <p>
+            La lectura ya está corregida, así que todo proceso que se incorpore o se actualice
+            desde ahora trae su presupuesto. <strong>Los 174.547 anteriores siguen sin él hasta que
+            se vuelvan a leer de la fuente</strong>, que es un trabajo de horas contra una API con
+            límite de peticiones. Mientras tanto, los indicadores que dependen del referencial,
+            sobre todo <strong>IP-02</strong>, no pueden evaluar esos procesos; y donde falta
+            también el monto adjudicado, lo que marca la plataforma es TR-01 (información
+            incompleta), que es lo correcto.
           </p>
           <p>
             <strong>El SERCOP no publica enmiendas contractuales</strong> en el OCDS de búsqueda, así

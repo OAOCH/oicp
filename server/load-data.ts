@@ -9,6 +9,7 @@
 
 import { migrate, upsertProcedure, rebuildConcentrationIndex } from './db.js';
 import { evaluateAllFlags, getRegime, getInfimaThreshold, FLAG_CATALOG } from './flag-engine.js';
+import { valorReferencial } from './ocds-valor.js';
 
 migrate();
 
@@ -106,7 +107,10 @@ function parseRelease(release: any, searchResult: any): any {
   }
 
   // Amounts
-  const budgetAmount = tender.value?.amount || planning.budget?.amount?.amount || null;
+  // El presupuesto sale de valorReferencial(), que cae a la suma de tender.lots[].value cuando
+  // tender.value viene vacío: es donde el SERCOP lo publica de verdad en la mayoría de procesos.
+  // La misma función que usa updater.ts, para no tener dos definiciones del monto (regla 11).
+  const budgetAmount = valorReferencial(tender, release, searchResult);
   const awardAmount = firstAward.value?.amount || null;
   const contractAmount = firstContract.value?.amount || null;
   const finalAmount = firstContract.implementation?.finalValue?.amount || null;
@@ -114,6 +118,7 @@ function parseRelease(release: any, searchResult: any): any {
   // Dates
   const publishedDate = tender.tenderPeriod?.startDate || release.date || null;
   const submissionDeadline = tender.tenderPeriod?.endDate || null;
+  const enquiryDeadline = tender.enquiryPeriod?.endDate || null;
   const awardDate = firstAward.date || null;
   const contractDate = firstContract.dateSigned || null;
 
@@ -164,6 +169,7 @@ function parseRelease(release: any, searchResult: any): any {
     final_amount: finalAmount,
     published_date: publishedDate,
     submission_deadline: submissionDeadline,
+    enquiry_deadline: enquiryDeadline,
     award_date: awardDate,
     contract_date: contractDate,
     suppliers,
