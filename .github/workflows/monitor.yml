@@ -36,3 +36,37 @@ jobs:
             exit 1
           fi
           echo "OK"
+
+      # Nada vigilaba que los DATOS avanzaran: la sincronización podía morir semanas
+      # (ya pasó: la laptop se dormía) y el monitor seguía en verde porque la app
+      # respondía perfectamente con datos viejos. Esto falla si el corte de datos se
+      # queda atrás o si la base arranca vacía tras una recuperación por corrupción.
+      - name: Vigilar frescura de los datos
+        run: |
+          URL="${{ vars.APP_URL || 'https://oicp-production.up.railway.app' }}/api/version"
+          curl -s --max-time 25 "$URL" -o /tmp/ver || { echo "::error::/api/version no respondió"; exit 1; }
+          cat /tmp/ver
+
+          CUTOFF=$(grep -o '"dataCutoff":"[^"]*"' /tmp/ver | cut -d'"' -f4)
+          PROCS=$(grep -o '"processes":[0-9]*' /tmp/ver | cut -d: -f2)
+
+          if [ -z "$CUTOFF" ] || [ -z "$PROCS" ]; then
+            echo "::error::/api/version no trae dataCutoff o processes"; exit 1
+          fi
+
+          # Base vacía o casi: síntoma de arranque tras corrupción. La app responde "ok"
+          # igual, así que sin esta comprobación la caída de datos pasa inadvertida.
+          if [ "$PROCS" -lt 1000000 ]; then
+            echo "::error::La base tiene solo $PROCS procesos (se esperan >1.000.000). ¿Arrancó vacía tras una corrupción?"
+            exit 1
+          fi
+
+          # El barrido corre martes y jueves. 10 días de margen cubre un fallo aislado
+          # sin generar ruido, y grita si la sincronización está muerta de verdad.
+          LIMITE=$(date -u -d '10 days ago' +%Y-%m-%d)
+          echo "corte=$CUTOFF  limite=$LIMITE  procesos=$PROCS"
+          if [ "$CUTOFF" \< "$LIMITE" ]; then
+            echo "::error::Datos estancados: el corte es $CUTOFF y el límite aceptable era $LIMITE. Revisa sync.log y la tarea 'OICP Sync SERCOP'."
+            exit 1
+          fi
+          echo "Datos frescos"

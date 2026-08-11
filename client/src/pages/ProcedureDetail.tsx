@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Building2, User, AlertTriangle, Info } from 'lucide-react';
 import { api, ApiError, mensajeDeError } from '../lib/api';
 import { ScoreGauge, RiskBadge, FlagCard, Loading, ErrorState } from '../components/UI';
-import { formatCurrency, formatDate } from '../lib/flags';
+import { formatCurrency, formatDate, statusLabel, regimeLabel } from '../lib/flags';
 
 // Generate a human-readable summary of why this procedure was flagged
 function generateRiskSummary(proc: any, activeFlags: any[]): string {
@@ -127,7 +127,7 @@ export default function ProcedureDetail() {
             <div className="flex items-center gap-3 mb-2">
               <RiskBadge level={proc.risk_level} />
               <span className="text-xs font-mono text-gray-400">{proc.procurement_method_details}</span>
-              <span className="text-xs text-gray-400">{proc.regime}</span>
+              <span className="text-xs text-gray-400">{regimeLabel(proc.regime)}</span>
             </div>
             <h1 className="text-xl font-bold text-gray-900 mb-1">{proc.title || proc.id}</h1>
             {proc.description && proc.description !== proc.title && (
@@ -204,7 +204,7 @@ export default function ProcedureDetail() {
               </div>
               <div>
                 <span className="text-gray-500">Estado</span>
-                <p className="font-medium capitalize">{proc.status || '—'}</p>
+                <p className="font-medium">{statusLabel(proc.status)}</p>
               </div>
               <div>
                 <span className="text-gray-500">Clasificación CPC</span>

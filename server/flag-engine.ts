@@ -218,6 +218,11 @@ interface ProcedureData {
   source_year?: number | null;
 }
 
+// Formato de moneda del texto de las banderas. Sin locale, toLocaleString() usaba el del
+// servidor (inglés) y la ficha mostraba "$40,328,858.64" mientras el resto de la interfaz
+// mostraba "$40.328.858,64": dos formatos para la misma cifra en la misma pantalla.
+const DOS_DECIMALES = { minimumFractionDigits: 2, maximumFractionDigits: 2 } as const;
+
 function businessDays(start: string, end: string): number {
   const s = new Date(start);
   const e = new Date(end);
@@ -259,13 +264,13 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
   if (isInfima(proc.procurement_method_details) && value > threshold) {
     flags.push({
       ...FLAG_CATALOG['IC-02'], active: true,
-      detail: `Valor $${value.toLocaleString()} supera umbral ínfima $${threshold.toLocaleString()}`,
+      detail: `Valor $${value.toLocaleString('es-EC', DOS_DECIMALES)} supera umbral ínfima $${threshold.toLocaleString('es-EC', DOS_DECIMALES)}`,
     });
   }
   if (proc.procurement_method === 'direct' && value > threshold) {
     flags.push({
       ...FLAG_CATALOG['IC-02'], active: true,
-      detail: `Adjudicación directa $${value.toLocaleString()} > umbral $${threshold.toLocaleString()}`,
+      detail: `Adjudicación directa $${value.toLocaleString('es-EC', DOS_DECIMALES)} > umbral $${threshold.toLocaleString('es-EC', DOS_DECIMALES)}`,
     });
   }
 
@@ -278,7 +283,7 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     if (days < minDays) {
       flags.push({
         ...FLAG_CATALOG['IT-01'], active: true,
-        detail: `${days} días hábiles (mínimo: ${minDays} para $${value.toLocaleString()})`,
+        detail: `${days} días hábiles (mínimo: ${minDays} para $${value.toLocaleString('es-EC', DOS_DECIMALES)})`,
       });
     }
   }
@@ -299,7 +304,7 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     const pct = ((value / threshold) * 100).toFixed(1);
     flags.push({
       ...FLAG_CATALOG['IP-01'], active: true,
-      detail: `Valor $${value.toLocaleString()} = ${pct}% del umbral $${threshold.toLocaleString()}`,
+      detail: `Valor $${value.toLocaleString('es-EC', DOS_DECIMALES)} = ${pct}% del umbral $${threshold.toLocaleString('es-EC', DOS_DECIMALES)}`,
     });
   }
 
@@ -309,7 +314,7 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     if (diff > 0.15) {
       flags.push({
         ...FLAG_CATALOG['IP-02'], active: true,
-        detail: `Diferencia ${(diff * 100).toFixed(1)}% entre presupuesto ($${proc.budget_amount.toLocaleString()}) y adjudicación ($${proc.award_amount.toLocaleString()})`,
+        detail: `Diferencia ${(diff * 100).toFixed(1)}% entre presupuesto ($${proc.budget_amount.toLocaleString('es-EC', DOS_DECIMALES)}) y adjudicación ($${proc.award_amount.toLocaleString('es-EC', DOS_DECIMALES)})`,
       });
     }
   }
@@ -371,7 +376,7 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
   if (isRegimenEspecial && value > threshold) {
     flags.push({
       ...FLAG_CATALOG['TR-03'], active: true,
-      detail: `Posible régimen especial (${proc.procurement_method_details || 'contratación directa'}) de $${value.toLocaleString()} sin justificación en datos OCDS`,
+      detail: `Posible régimen especial (${proc.procurement_method_details || 'contratación directa'}) de $${value.toLocaleString('es-EC', DOS_DECIMALES)} sin justificación en datos OCDS`,
     });
   }
 
@@ -504,7 +509,7 @@ export function evaluateConcentrationFlags(
     if (cp && cp.years_active >= 5 && cp.total_value > 50000) {
       flags.push({
         ...FLAG_CATALOG['CC-03'], active: true,
-        detail: `${supplier.name} contrató con este comprador en ${cp.years_active} años distintos del período, por $${Math.round(cp.total_value).toLocaleString()} acumulados`,
+        detail: `${supplier.name} contrató con este comprador en ${cp.years_active} años distintos del período, por $${Math.round(cp.total_value).toLocaleString('es-EC', DOS_DECIMALES)} acumulados`,
       });
     }
 
@@ -522,7 +527,7 @@ export function evaluateConcentrationFlags(
     if (cy && cy.infima_count >= 2 && cy.infima_total_value > threshold) {
       flags.push({
         ...FLAG_CATALOG['CC-05'], active: true,
-        detail: `${cy.infima_count} ínfimas a ${supplier.name} en ${anio} suman $${Math.round(cy.infima_total_value).toLocaleString()} (umbral de ínfima: $${threshold.toLocaleString()})`,
+        detail: `${cy.infima_count} ínfimas a ${supplier.name} en ${anio} suman $${Math.round(cy.infima_total_value).toLocaleString('es-EC', DOS_DECIMALES)} (umbral de ínfima: $${threshold.toLocaleString('es-EC', DOS_DECIMALES)})`,
       });
     }
   }

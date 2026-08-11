@@ -111,8 +111,12 @@ function releaseFrom(recData: any): any | null {
 
 function getRegimeLocal(dateStr: string | null): string {
   // LOSNCP reformada rige desde 2025-10-07 (RO 4S 140); antes coeficientes.
+  // Devuelve 'LOSNCP_REFORMADA', NO 'LOIP': el resto del código (updater.ts, load-data.ts,
+  // flag-engine.ts) usa ese identificador y la ficha del proceso muestra el campo. Con dos
+  // nombres para el mismo régimen, dos procesos idénticos aparecían etiquetados distinto
+  // según por qué vía se hubieran ingerido.
   if (!dateStr) return 'LOSNCP_COEFICIENTES';
-  return dateStr >= '2025-10-07' ? 'LOIP' : 'LOSNCP_COEFICIENTES';
+  return dateStr >= '2025-10-07' ? 'LOSNCP_REFORMADA' : 'LOSNCP_COEFICIENTES';
 }
 
 function releaseToProc(release: any, sr: any, year: number) {

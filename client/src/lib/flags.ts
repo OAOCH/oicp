@@ -72,6 +72,24 @@ export function statusColor(status: string | null | undefined): string {
   return STATUS_COLORS[s] || 'bg-gray-100 text-gray-600';
 }
 
+// ── Régimen normativo ───────────────────────────────────────
+// El campo `regime` guarda identificadores internos (LOSNCP_COEFICIENTES,
+// LOSNCP_REFORMADA, LOIP) que se mostraban CRUDOS en la ficha del proceso, con guion bajo y
+// en mayúsculas. Aquí se traducen a algo que un lector pueda entender, y un valor no
+// catalogado se limpia en vez de exponer el identificador.
+const REGIMEN_LABELS: Record<string, string> = {
+  LOSNCP_COEFICIENTES: 'LOSNCP · umbrales por coeficiente (hasta el 6-oct-2025)',
+  LOSNCP_REFORMADA: 'LOSNCP reformada (desde el 7-oct-2025)',
+  LOIP: 'LOSNCP reformada (desde el 7-oct-2025)',
+  LOSNCP: 'LOSNCP',
+};
+
+export function regimeLabel(regime: string | null | undefined): string {
+  if (!regime) return '';
+  const r = String(regime).trim().toUpperCase();
+  return REGIMEN_LABELS[r] || r.replace(/[_-]+/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+}
+
 /** Cantidad entera para mostrar. Distingue el CERO real (se imprime "0") de la ausencia de
  *  dato (se imprime "—"). Mostrar un guion cuando el valor es cero hace leer "no se sabe"
  *  donde en realidad dice "ninguno". */
