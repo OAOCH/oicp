@@ -142,6 +142,56 @@ del periodista no aparece en ninguno; la lista negra de `oicp_sql` aguantó.
 - **El registro de acciones de administración funciona**: tras `7db661d`, una llamada a
   `/api/admin/status` aparece en `/admin/actividad`. Antes no se registraba ninguna.
 
+### 2026-08-11 — el recálculo SE APLICÓ y quedó verificado en producción
+
+`commit 3cf4b6b` · **79 pruebas** · typecheck, tests y build limpios en cada despliegue.
+
+El reflag corrió con el finalize de la sincronización del 11-ago (el cliente se cortó, pero el
+servidor completó el trabajo). **Verificado en pantalla, no inferido:**
+
+| Caso | Antes | Ahora |
+|---|---|---|
+| `ocds-5wno2w-RE-EPP-2017355-19-253178` (mar-2019) | CC-02 «98.8%», score 100, crítico | **sin CC-02**, score **74** |
+| `ocds-5wno2w-CDC-001-GADPNT-2022-117563` (ene-2022) | CC-02 «100.0%», score 48, alto | **sin CC-02**, score **18**, moderado |
+| CC-03 en la ficha | «presente en 8 de los últimos 7 años» | «contrató en 8 años distintos del período» |
+| Composición del Score | no sumaba el total | 30+8+18+18 = **74**, cuadra |
+| Críticos en el corpus | 16 623 | **13 259** |
+| Riesgo alto | 51 418 | **47 738** |
+
+O sea que ~6 800 procesos dejaron de estar mal clasificados.
+
+**Rendimiento**: `getStatistics` ya no recorre `procedures` (leía 8-131 s de hilo bloqueado); lee
+`a_risk_year` y `a_flag_year`. El caché pasa a *stale-while-revalidate*, así que ninguna petición
+espera un recálculo. Los rankings y las opciones de filtro, que también recorrían la tabla en cada
+carga, usan el mismo caché. Medido en producción: todas las rutas entre **196 y 391 ms**.
+
+**Regla 11 cerrada en todas las superficies**: el ranking de proveedores lee `a_suppliers` (mismo
+agregado que el MCP): ROCHE muestra $213 034 526,12, la cifra que la web antes contradecía con
+$109,7 M. La lista de búsqueda, la portada y el perfil usan `monto_usd`, no `award_amount` crudo.
+
+**Metodología publicada**: además de las condiciones, ahora se declaran tres limitaciones reales
+que antes se ocultaban: que ~60% de los disparos de IC-02 son órdenes de catálogo electrónico
+(porque el SERCOP las publica como `direct`), que la exclusión de ínfima de IT-02 **no excluye nada**
+y deja pasar ~23% de sus disparos, y una sección nueva que explica cómo se cuentan los días hábiles
+(incluye ambos extremos, no descuenta feriados, depende de la hora de la fuente).
+
+**Defectos de UX corregidos, todos vistos en pantalla en producción**: el estado salía como
+`Complete` en inglés crudo; el régimen como `LOSNCP_COEFICIENTES`; los montos del texto de las
+banderas en formato inglés (`$40,328,858.64`) junto a otros en formato ecuatoriano; «Procesos
+Críticos» imprimía un guion donde el valor real era cero; los conteos sin separador de miles; y la
+distribución de riesgo del perfil de comprador en orden arbitrario. Las etiquetas de estado estaban
+duplicadas en dos pantallas y ninguna cubría los valores que el SERCOP devuelve: ahora hay una sola
+definición y un valor no catalogado se capitaliza en vez de exponer el identificador técnico.
+
+**Alerta de datos estancados** en `monitor.yml`: falla si el corte se atrasa más de 10 días o si la
+base trae menos de un millón de procesos (el síntoma de haber arrancado vacía tras una corrupción,
+que antes respondía «ok» y pasaba inadvertido).
+
+**Aviso**: la sincronización del 11-ago **falló** (`0xC000013A`, las 60 búsquedas al SERCOP sin
+respuesta). El corte sigue en 2026-08-07. `.sync-pending-finalize` queda en disco, así que la
+próxima corrida reintenta la finalización sola. Si el SERCOP sigue sin responder, es la fuente, no
+la plataforma.
+
 ### A medias — punto exacto donde quedó
 
 Pendiente un **recálculo de metodología** (una sola pasada que cubre tres correcciones entrelazadas,
@@ -350,6 +400,27 @@ conviene saberlo.
   verde y el pie informa el conteo viejo.
 - **Cadencia del respaldo**: el mecanismo ya es correcto y está probado (ver `f3cc9ce`), pero sigue
   siendo **manual**. Falta decidir cada cuánto se corre y dónde se guarda la copia.
+
+## Lo único estructural que queda
+
+**El volumen está al 93%** (base de 2,50 GB en 5 GB) y por eso el respaldo no se puede generar: el
+endpoint responde 507 con las cifras en vez de llenar el disco. Es la misma condición que en julio
+corrompió la base.
+
+La causa está identificada con evidencia: **la columna `flags` duplica texto de catálogo estático en
+cada una de los 1,47 M de filas**. Una sola bandera TR-02 ocupa 272 bytes, de los cuales solo unos 60
+son datos reales (`code`, `active`, `detail`); el resto — `name`, `name_es`, `description_es`,
+`category`, `severity`, `ocp_ref` — es el mismo texto repetido un millón de veces.
+
+Guardar solo lo dinámico y renderizar el texto desde el catálogo al mostrarlo:
+1. Baja la base de 2,50 GB a bien por debajo de 1 GB → volumen del 93% a ~40%, respaldos posibles.
+2. **Hace imposible que la regla 10 vuelva a romperse**: hoy el texto que ve el usuario sale de la
+   base, así que corregir la metodología exige reescribir 1,47 M de filas. Con el texto renderizado
+   del catálogo, una corrección surte efecto al instante y no puede quedar desincronizada.
+3. Va **gratis** con el próximo reflag, que ya reescribe esa columna de todos modos.
+
+Es un cambio que toca **cada** punto donde el sistema lee banderas (ficha, búsqueda, perfiles, MCP y
+los agregados `a_flag_year`), así que merece una sesión propia y su propia tanda de pruebas.
 
 ## Orden recomendado para retomar
 
