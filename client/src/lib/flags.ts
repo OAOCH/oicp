@@ -77,8 +77,13 @@ export function statusColor(status: string | null | undefined): string {
 // LOSNCP_REFORMADA, LOIP) que se mostraban CRUDOS en la ficha del proceso, con guion bajo y
 // en mayúsculas. Aquí se traducen a algo que un lector pueda entender, y un valor no
 // catalogado se limpia en vez de exponer el identificador.
+// El régimen y el UMBRAL de ínfima cambian en fechas distintas, así que la etiqueta ya no
+// puede prometer "coeficiente hasta el 6-oct": el régimen legal pasa a LOSNCP reformada el
+// 7-oct-2025, pero el umbral de ínfima ya era de USD 10.000 desde el 7-jul-2025 por la
+// Resolución R.E-SERCOP-2025-0152. Un proceso de agosto de 2025 lleva régimen de coeficientes
+// y umbral de 10.000 a la vez, y la etiqueta anterior lo desmentía en la propia ficha.
 const REGIMEN_LABELS: Record<string, string> = {
-  LOSNCP_COEFICIENTES: 'LOSNCP · umbrales por coeficiente (hasta el 6-oct-2025)',
+  LOSNCP_COEFICIENTES: 'LOSNCP · marco previo a la reforma del 7-oct-2025',
   LOSNCP_REFORMADA: 'LOSNCP reformada (desde el 7-oct-2025)',
   LOIP: 'LOSNCP reformada (desde el 7-oct-2025)',
   LOSNCP: 'LOSNCP',

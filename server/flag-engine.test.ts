@@ -15,17 +15,24 @@ import {
 
 function codes(flags: any[]): string[] { return flags.map((f) => f.code); }
 
-test('getInfimaThreshold: reforma rige desde 2025-10-07', () => {
+// OJO: el umbral y el REGIMEN cambian en fechas distintas y eso es correcto, no un descuido.
+// El umbral salta a USD 10.000 el 7-jul-2025 (Resolucion R.E-SERCOP-2025-0152), mientras que el
+// regimen legal pasa a "LOSNCP reformada" el 7-oct-2025 (R.O. 4S 140). Entre esas dos fechas rige
+// el monto nuevo bajo el marco viejo.
+test('getInfimaThreshold: el umbral salta el 7-jul-2025, no el 7-oct', () => {
   assert.equal(getInfimaThreshold('2024-06-15'), 6658.78);
   assert.equal(getInfimaThreshold('2023-06-15'), 6300.57); // mid-year evita el desfase de zona horaria
   assert.equal(getInfimaThreshold('2025-03-15'), 7212.60); // 2025 pre-reforma: coeficiente
+  assert.equal(getInfimaThreshold('2025-07-06'), 7212.60); // ultimo dia del coeficiente
+  assert.equal(getInfimaThreshold('2025-07-07'), 10000);   // Resolucion R.E-SERCOP-2025-0152
   assert.equal(getInfimaThreshold('2025-10-07'), 10000); // dia de la reforma
   assert.equal(getInfimaThreshold('2025-12-01'), 10000); // post reforma
   assert.equal(getInfimaThreshold(null), 10000);         // sin fecha -> reformada
 });
 
-test('getRegime: antes/despues de la reforma', () => {
+test('getRegime: antes/despues de la reforma (el regimen SI cambia el 7-oct)', () => {
   assert.equal(getRegime('2025-01-15'), 'LOSNCP_COEFICIENTES');
+  assert.equal(getRegime('2025-08-15'), 'LOSNCP_COEFICIENTES'); // umbral nuevo, marco viejo
   assert.equal(getRegime('2025-10-07'), 'LOSNCP_REFORMADA');
 });
 

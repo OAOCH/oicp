@@ -62,9 +62,10 @@ test('IC-02 no dispara si el monto no supera el umbral de su fecha', () => {
 
 // ── IT-02: la exclusión de ínfima ahora funciona ──
 // Antes se evaluaba buscando la palabra "ínfima" en el texto del procedimiento, que no aparece en
-// ninguno de los 1.470.321 procesos: la exclusión no descartaba nada y 524 de los 2.237 disparos
-// (23%) eran compras por debajo del umbral, marcadas por ser rápidas cuando su rapidez es lo
-// esperable en una ínfima cuantía.
+// ninguno de los 1.470.321 procesos: la exclusión no descartaba nada y 525 de los 2.237 disparos
+// (23,5%) eran compras por debajo del umbral, marcadas por ser rápidas cuando su rapidez es lo
+// esperable en una ínfima cuantía. Medido sobre producción: 522 estrictamente bajo el umbral de su
+// fecha y 3 exactamente en el umbral, que cuentan porque el Art. 50 dice "igual o inferior".
 test('IT-02 NO dispara en una compra bajo el umbral de ínfima (la exclusión ya funciona)', () => {
   const proc = { id: 'x', procurement_method: 'direct', procurement_method_details: 'Subasta Inversa Electronica',
     award_amount: 1_000,   // muy por debajo del umbral de 2024 (6.658,78)

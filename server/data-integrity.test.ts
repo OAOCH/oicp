@@ -10,6 +10,7 @@
  *   - Rangos y magnitudes: ¿hay scores fuera de 0-100, montos negativos, años imposibles?
  *   - Nulos: ¿los campos que la interfaz asume presentes lo están?
  *   - Definición única de monto: ¿MONTO_SQL y montoPlausible() dan lo mismo? (regla 11)
+ *   - Definición única de ínfima: ¿SQL_ES_INFIMA_POR_MONTO e isInfimaByAmount() dan lo mismo?
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,9 +22,10 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'oicp-integridad-'));
 process.env.DB_PATH = path.join(TMP, 'integridad.db');
 process.env.JWT_SECRET = '';
 
-const { migrate, getDb, upsertProcedure, rebuildConcentrationIndex, MONTO_SQL } = await import('./db.js');
+const { migrate, getDb, upsertProcedure, rebuildConcentrationIndex, MONTO_SQL,
+  SQL_UMBRAL_INFIMA, SQL_ES_INFIMA_POR_MONTO } = await import('./db.js');
 const { buildAnalytics, callTool } = await import('./mcp-server.js');
-const { evaluateAllFlags, getRiskLevel, getInfimaThreshold } = await import('./flag-engine.js');
+const { evaluateAllFlags, getRiskLevel, getInfimaThreshold, isInfimaByAmount } = await import('./flag-engine.js');
 const { reflagChanged, buildConcentrationContext } = await import('./updater.js');
 
 // Conjunto de datos de prueba deliberadamente HOSTIL: incluye los casos sucios que la fuente
@@ -175,6 +177,78 @@ test('ningún monto publicado es negativo', () => {
   const db = getDb();
   const neg = db.prepare(`SELECT id FROM procedures WHERE ${MONTO_SQL} < 0`).all();
   assert.deepEqual(neg, []);
+});
+
+// ── Definición única de ínfima cuantía ──
+// La misma clase de defecto que MONTO_SQL contra montoPlausible(), pero en el umbral. El motor
+// decide si un proceso ES ínfima (isInfimaByAmount) y el índice de concentración cuenta cuántas
+// acumula el par comprador-proveedor (SQL_ES_INFIMA_POR_MONTO). CC-01 y CC-05 usan las dos a la
+// vez, así que si divergen la bandera cuenta una cosa y marca otra.
+//
+// Divergieron de verdad: hasta el 11 de agosto de 2026 el SQL situaba el salto a USD 10.000 el
+// 7-oct-2025 y el motor el 7-jul-2025, y eso clasificaba distinto los 711 procesos de esa ventana
+// cuyo adjudicado cae entre los dos umbrales. Esta prueba existe para que no vuelva a pasar en
+// silencio: la rejilla incluye los tres cortes de 2025 y los montos exactamente en el umbral.
+test('SQL_UMBRAL_INFIMA y getInfimaThreshold() dan el mismo umbral en cada corte', () => {
+  const db = getDb();
+  const consulta = db.prepare(`SELECT ${SQL_UMBRAL_INFIMA} AS u
+    FROM (SELECT ? AS published_date, NULL AS award_date) p`);
+  const casos: [string, number][] = [
+    ['2019-02-26T12:00:00-05:00', 7105.88], ['2020-06-15T12:00:00-05:00', 7099.68],
+    ['2021-06-15T12:00:00-05:00', 6416.07], ['2022-06-15T12:00:00-05:00', 6779.95],
+    ['2023-06-15T12:00:00-05:00', 6300.57], ['2024-06-15T12:00:00-05:00', 6658.78],
+    ['2025-01-02T12:00:00-05:00', 7212.60],
+    ['2025-07-06T23:59:59-05:00', 7212.60],   // último día del coeficiente
+    ['2025-07-07T00:00:00-05:00', 10000.00],  // Resolución R.E-SERCOP-2025-0152
+    ['2025-08-15T12:00:00-05:00', 10000.00],
+    ['2025-10-06T12:00:00-05:00', 10000.00],  // zona gris declarada
+    ['2025-10-07T12:00:00-05:00', 10000.00],  // LOSNCP reformada, Art. 50
+    ['2026-03-01T12:00:00-05:00', 10000.00],
+  ];
+  for (const [fecha, esperado] of casos) {
+    const enSql = (consulta.get(fecha) as any).u;
+    assert.ok(Math.abs(enSql - esperado) < 0.005, `el SQL da ${enSql} para ${fecha}, se esperaba ${esperado}`);
+    assert.equal(getInfimaThreshold(fecha), esperado, `el motor da otro umbral para ${fecha}`);
+  }
+});
+
+test('SQL_ES_INFIMA_POR_MONTO e isInfimaByAmount() coinciden en toda la rejilla de bordes', () => {
+  const db = getDb();
+  const consulta = db.prepare(`SELECT ${SQL_ES_INFIMA_POR_MONTO} AS es
+    FROM (SELECT ? AS published_date, NULL AS award_date, ? AS award_amount,
+                 ? AS procurement_method_details, ? AS title) p`);
+  const fechas = ['2019-02-26', '2024-06-15', '2025-07-06', '2025-07-07', '2025-08-15',
+    '2025-10-06', '2025-10-07', '2026-03-01'];
+  const montos = [0, 1, 6658.78, 7105.88, 7212.60, 7212.61, 9999.99, 10000, 10000.01, 50000];
+  // Incluye el catálogo escrito en mayúscula con tilde: UPPER() de SQLite solo convierte ASCII,
+  // así que el patrón anterior con Á no lo alcanzaba y el motor sí, por usar toLowerCase().
+  const metodos = ['Subasta Inversa Electronica', 'Catálogo electrónico - Compra directa',
+    'CATÁLOGO ELECTRÓNICO', 'catalogo electronico', 'Régimen Especial'];
+  const titulos = ['Proceso de prueba', 'ORDEN DE COMPRA CE-20240001'];
+
+  const discrepancias: string[] = [];
+  for (const f of fechas) for (const monto of montos) for (const metodo of metodos) for (const titulo of titulos) {
+    const fecha = `${f}T12:00:00-05:00`;
+    const proc = { id: 'x', published_date: fecha, award_amount: monto,
+      procurement_method_details: metodo, title: titulo };
+    const enSql = Boolean((consulta.get(fecha, monto, metodo, titulo) as any).es);
+    const enMotor = isInfimaByAmount(proc as any);
+    if (enSql !== enMotor) {
+      discrepancias.push(`${fecha} | $${monto} | ${metodo} | ${titulo}: SQL=${enSql} motor=${enMotor}`);
+    }
+  }
+  assert.deepEqual(discrepancias, [],
+    'el índice de concentración y el motor tienen que usar la MISMA definición de ínfima: si no, CC-01 y CC-05 cuentan una cosa y marcan otra');
+});
+
+test('las filas reales de la base también coinciden entre SQL y motor', () => {
+  const db = getDb();
+  const filas = db.prepare(`SELECT p.id, p.published_date, p.award_date, p.award_amount,
+      p.procurement_method_details, p.title, ${SQL_ES_INFIMA_POR_MONTO} AS sql_infima
+    FROM procedures p`).all() as any[];
+  const discrepancias = filas.filter(f => Boolean(f.sql_infima) !== isInfimaByAmount(f as any));
+  assert.deepEqual(discrepancias.map(d => d.id), [],
+    'una fila clasificada como ínfima por el índice y no por el motor (o al revés) desalinea CC-01 y CC-05');
 });
 
 // ── Concentración: el share es del año y suma coherente ──

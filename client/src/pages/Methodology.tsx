@@ -9,7 +9,7 @@ const FLAGS = [
   { code: 'IC-02', category: 'competencia', severity: 3, ocp: 'R055', name: 'Alto Valor Sin Competencia',
     desc: 'Adjudicación directa o ínfima cuantía por monto superior al umbral permitido.',
     legal: 'Art. 50 LOSNCP reformada; umbrales SERCOP por año',
-    logic: 'procurement_method == "direct" AND valor > umbral_ínfima(fecha del proceso) — valor = award_amount, o budget_amount si no hay adjudicado. AVISO DE ALCANCE: el SERCOP publica las órdenes de catálogo electrónico con procurement_method "direct", así que ~60% de los disparos de este indicador son compras de catálogo, a diferencia de las banderas CC-*, que sí excluyen el catálogo. El motor también evalúa una rama por el texto "ínfima" del procedimiento, pero ese texto no aparece en ningún proceso del conjunto de datos, así que esa rama no produce disparos' },
+    logic: 'procurement_method == "direct" AND valor > umbral_ínfima(fecha del proceso) AND NO es catálogo electrónico — valor = award_amount, o budget_amount si no hay adjudicado. CORREGIDO EL 11-AGO-2026: hasta esa fecha el indicador NO excluía el catálogo electrónico, y como el SERCOP publica esas órdenes con procurement_method "direct", 65.497 de sus 109.642 disparos (60%) eran compras de catálogo marcadas con la bandera de mayor peso del sistema por hacer algo enteramente regular. El catálogo es compra centralizada en la que el propio SERCOP precalifica proveedores y fija precios, así que la ausencia de competencia en el momento de la orden no indica direccionamiento de la entidad: la competencia ocurrió antes, al armar el catálogo. Es además el mismo criterio que el motor ya aplicaba a todas las banderas CC-*. Se eliminó también la rama que buscaba la palabra "ínfima" en el texto del procedimiento: ese texto no aparece en ningún proceso del conjunto de datos, así que aportaba 0 disparos' },
   { code: 'IT-01', category: 'tiempo', severity: 1, ocp: 'R003', name: 'Plazo de Publicación Insuficiente',
     desc: 'El período entre publicación y cierre de ofertas es menor al mínimo legal.',
     legal: 'Arts. 91, 96, 111 Reglamento D.E. 193',
@@ -17,7 +17,7 @@ const FLAGS = [
   { code: 'IT-02', category: 'tiempo', severity: 2, ocp: 'R061', name: 'Adjudicación Relámpago',
     desc: 'La adjudicación ocurrió en menos de 3 días hábiles desde la publicación. No aplica a ínfima cuantía.',
     legal: 'Art. 111 Reglamento (mínimo 3 días hábiles para adjudicación)',
-    logic: 'días_hábiles(published_date, award_date) < 3. LIMITACIÓN CONOCIDA: la exclusión de ínfima cuantía se evalúa por el texto del procedimiento, y ese texto no dice "ínfima" en ningún proceso del conjunto de datos, así que en la práctica no excluye nada: alrededor del 23% de los disparos son procesos cuyo monto está por debajo del umbral de ínfima' },
+    logic: 'días_hábiles(published_date, award_date) < 3 AND NO es ínfima por monto. CORREGIDO EL 11-AGO-2026: hasta esa fecha la exclusión de ínfima cuantía se evaluaba por el TEXTO del procedimiento, y ese texto no dice "ínfima" en ningún proceso del conjunto de datos, así que la exclusión que esta metodología prometía no descartaba nada: 525 de los 2.237 disparos (23,5%) eran compras por debajo del umbral de su fecha, marcadas por ser rápidas cuando su rapidez es justamente lo esperable en una ínfima cuantía. Ahora la exclusión se evalúa POR MONTO, el mismo criterio que usan las banderas CC-*' },
   { code: 'IP-01', category: 'precio', severity: 2, ocp: 'R011', name: 'Valor Cercano al Umbral',
     desc: 'El monto está entre 85% y 100% del umbral de ínfima cuantía, posible fraccionamiento.',
     legal: 'Art. 50 LOSNCP reformada (prohibición de subdividir)',
@@ -75,9 +75,9 @@ export default function Methodology() {
         <h1>Metodología OICP</h1>
         <p className="text-gray-500 mt-1">
           15 indicadores de riesgo calibrados para la contratación pública ecuatoriana,
-          basados en la <a href="https://www.open-contracting.org/resources/red-flags-for-integrity-guide/"
-          target="_blank" rel="noopener" className="text-brand-600 underline">Guía de Red Flags OCP 2024</a> y
-          la LOSNCP reformada (7 octubre 2025).
+          basados en <a href="https://www.open-contracting.org/wp-content/uploads/2024/12/OCP2024-RedFlagProcurement-1.pdf"
+          target="_blank" rel="noopener" className="text-brand-600 underline">Red flags in public procurement (Open
+          Contracting Partnership, 2024)</a> y la LOSNCP reformada (7 octubre 2025).
         </p>
       </div>
 
@@ -149,14 +149,31 @@ export default function Methodology() {
               <th className="pb-2 font-medium">Ínfima Cuantía</th>
             </tr></thead>
             <tbody className="text-gray-700">
-              <tr className="border-b"><td className="py-2">2019 — 6 oct 2025</td><td>LOSNCP, coeficiente × PIE (umbral por año)</td><td>2019: $7.105,88 · 2020: $7.099,68 · 2021: $6.416,07 · 2022: $6.779,95 · 2023: $6.300,57 · 2024: $6.658,78 · 2025 hasta el 6 oct: $7.212,60</td></tr>
-              <tr className="border-b"><td className="py-2">7 oct 2025 en adelante</td><td>LOSNCP reformada (R.O. 4S No. 140)</td><td>$10.000,00 (fijo)</td></tr>
+              <tr className="border-b"><td className="py-2">2019 — 6 jul 2025</td><td>LOSNCP, coeficiente × PIE (umbral por año)</td><td>2019: $7.105,88 · 2020: $7.099,68 · 2021: $6.416,07 · 2022: $6.779,95 · 2023: $6.300,57 · 2024: $6.658,78 · 2025 hasta el 6 jul: $7.212,60</td></tr>
+              <tr className="border-b"><td className="py-2">7 jul — 6 oct 2025</td><td>Ley Orgánica de Integridad Pública, aplicada por la Resolución R.E-SERCOP-2025-0152</td><td>$10.000,00 (fijo)</td></tr>
+              <tr className="border-b"><td className="py-2">7 oct 2025 en adelante</td><td>LOSNCP reformada, Art. 50 (R.O. 4S No. 140)</td><td>$10.000,00 (fijo)</td></tr>
             </tbody>
           </table>
         </div>
         <p className="text-xs text-gray-400 mt-3">
-          Fuentes: SERCOP, LOSNCP reformada R.O. CS No. 140 (7 oct 2025), Reglamento D.E. 193 (28 oct 2025).
+          Fuentes: SERCOP, LOSNCP reformada R.O. Cuarto Suplemento No. 140 (7 oct 2025), Reglamento D.E. 193 (28 oct 2025).
           Los montos de 2019-2024 fueron verificados contra PDFs oficiales de SERCOP.
+        </p>
+        <p className="text-xs text-gray-500 mt-2">
+          <strong>2025 tiene tres tramos, no dos.</strong> El salto a USD 10.000 ocurrió el <strong>7 de julio</strong> de
+          2025 y no el 7 de octubre: la Resolución R.E-SERCOP-2025-0152 (R.O. Quinto Suplemento No. 69, 27 jun 2025)
+          dispuso en su numeral 4 que «las contrataciones de ínfima cuantía que superen el monto de siete mil doscientos
+          doce dólares con sesenta centavos (7.212,60 USD) hasta el monto de diez mil dólares (10.000,00 USD) podrán
+          realizarse a partir del 07 de julio de 2025». La reforma de la LOSNCP del 7 de octubre fijó el mismo monto en
+          el Art. 50, esta vez con rango de ley. Hasta el 11 de agosto de 2026 la plataforma situaba el corte en octubre
+          y evaluaba con el umbral equivocado los tres meses intermedios.
+        </p>
+        <p className="text-xs text-gray-500 mt-2">
+          <strong>Zona gris declarada:</strong> la Corte Constitucional declaró inconstitucional la Ley Orgánica de
+          Integridad Pública en la sentencia 52-25-IN/25, publicada el 3 de octubre de 2025, con efectos hacia el futuro.
+          Entre el 3 y el 6 de octubre de 2025 el umbral aplicable es jurídicamente discutible y no hay pronunciamiento
+          del SERCOP que lo resuelva. La plataforma mantiene USD 10.000 en esa ventana por continuidad con el tramo
+          anterior, y lo declara aquí en vez de esconderlo.
         </p>
       </div>
 
@@ -214,7 +231,7 @@ export default function Methodology() {
           <p>1. SERCOP — Montos de Contratación Pública 2019-2026</p>
           <p>2. LOSNCP Reformada — R.O. Cuarto Suplemento No. 140, 7 octubre 2025</p>
           <p>3. Reglamento General D.E. 193 — R.O. Noveno Suplemento No. 153, 28 octubre 2025</p>
-          <p>4. OCP Red Flags for Integrity Guide 2024 — Open Contracting Partnership</p>
+          <p>4. Red flags in public procurement: a guide to using data to detect and mitigate risks — Open Contracting Partnership, 2024. (El título «Red Flags for Integrity Guide» corresponde a la edición de 2016, no a esta.)</p>
           <p>5. Cardinal — github.com/open-contracting/cardinal-rs</p>
           <p>6. Sentencia CC 52-25-IN/25 — Inconstitucionalidad LOIP</p>
           <p>7. Resolución RE-SERCOP-2025-0154 — Lineamientos de transición</p>

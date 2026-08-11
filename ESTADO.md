@@ -1,4 +1,62 @@
-# ESTADO — actualizado 2026-08-10
+# ESTADO — actualizado 2026-08-11 (tarde)
+
+> **Lee primero esta sección.** Lo que sigue después conserva el historial de las auditorías
+> anteriores y tiene tramos que ya quedaron superados; donde haya contradicción, manda lo de aquí.
+
+## 2026-08-11 (tarde) — auditoría de verificación y cierre de la regla 10
+
+Se auditó, contra producción y contra la norma en su fuente primaria, todo lo que la sesión de la
+mañana dio por hecho. **Las cifras que reportó son ciertas**, comprobadas una por una: los 1 704
+disparos de IP-02 en 2024 con CERO por encima del presupuesto, los 65 497 de catálogo entre los
+109 642 de IC-02, las 123 pruebas, los 29 commits de dos días. **La norma también resistió**: la
+Resolución R.E-SERCOP-2025-0152 dice textualmente, en su numeral 4, que las ínfimas de más de
+USD 7.212,60 y hasta USD 10.000 «podrán realizarse a partir del 07 de julio de 2025», y el Art. 50
+de la LOSNCP vigente (verificado en Lexis) fija la ínfima en «igual o inferior a» USD 10.000
+«siempre que no consten en el Catálogo Electrónico».
+
+**Lo que no resistió fue la propagación.** El commit `109cd90` cambió cuatro reglas del motor pero
+solo llevó UNA de las cuatro (IP-02) a las superficies publicadas. Es la regla 10 rota en el mismo
+commit que dice respetarla. Corregido ahora:
+
+- **`db.ts` tenía una SEGUNDA definición de ínfima** con el corte en el 7-oct-2025 mientras el motor
+  usaba el 7-jul-2025. El índice de concentración clasificaba distinto que el motor **711 procesos**
+  de esa ventana (USD 6,1 M), y CC-01 y CC-05 leen ese índice: contaban una cosa y marcaban otra.
+  Ahora hay una sola definición (`SQL_ES_INFIMA_POR_MONTO`), réplica fiel de `isInfimaByAmount()`,
+  y **tres pruebas nuevas** las comparan sobre una rejilla de cortes y montos y sobre las filas
+  reales. Es el mismo blindaje que ya tenían `MONTO_SQL` y `montoPlausible()` (regla 11).
+- **IC-02**: `Methodology.tsx` y el MCP seguían diciendo que el indicador INCLUYE el catálogo
+  electrónico y que existe una rama por el texto «ínfima». El motor hace lo contrario desde
+  `109cd90`. Reescritos los dos.
+- **IT-02**: `Methodology.tsx` seguía publicando como «limitación conocida» el defecto ya corregido
+  («la exclusión no descarta nada»). Reescrito, y el MCP explicitado a «por MONTO».
+- **Umbral de ínfima**: la tabla del marco normativo y el `umbral_infima_cuantia_usd` del MCP
+  seguían con dos tramos y el salto en octubre. Ahora publican los **tres tramos** con la
+  Resolución citada, y declaran la zona gris del 3 al 6 de octubre por la sentencia 52-25-IN/25.
+- **La etiqueta de régimen de la ficha** prometía «umbrales por coeficiente hasta el 6-oct-2025»,
+  lo que desmentía al motor en los procesos de julio a septiembre de 2025. Reescrita.
+- **URL de la guía de la OCP**: la publicada devolvía 404 (comprobado). Reemplazada por el PDF
+  oficial de la edición 2024. El pie de página le ponía a esa edición el título de la de 2016;
+  corregido.
+- **La cifra «524 de los 2.237»** de IT-02 estaba corta en uno: son **525** (522 estrictamente bajo
+  el umbral y 3 exactamente en él, que cuentan porque el Art. 50 dice «igual o inferior»).
+
+### Lo que sigue pendiente y es lo primero que hay que hacer
+
+1. **El recálculo NO se ha aplicado.** Producción sigue sirviendo los 1 704 falsos positivos de
+   IP-02 en 2024 y los 65 497 disparos de catálogo de IC-02. Y hay algo peor que esperar: como la
+   ficha rehidrata el texto desde el catálogo vigente pero conserva el `detail` guardado, hoy los
+   **10 849** procesos con IP-02 muestran el título nuevo «Adjudicación **sobre** el presupuesto
+   referencial» junto a un detalle que dice lo contrario. Comprobado en producción: el proceso
+   `ocds-5wno2w-MCB-EPMMM--2024-002-452218` tiene presupuesto $21 655,48 y adjudicado **$659,67**,
+   y se publica como si hubiera excedido el referencial. Es una contradicción visible para el
+   usuario externo, y solo la cierra el recálculo.
+2. **Las citas a la guía de la OCP.** De las 13, **10 no corresponden** a lo que el indicador
+   evalúa (verificado contra el PDF oficial de 2024, no contra el resumen de nadie). Los casos más
+   claros: IP-02 cita R059, que compara adjudicado contra contrato final, cuando el código compara
+   adjudicado contra presupuesto referencial y el código correcto es **R031**; IC-02 cita R055, que
+   exige sumar varias adjudicaciones directas del mismo par comprador-proveedor, cuando el código
+   evalúa un proceso aislado; CC-05 implementa justamente la fórmula de R055 pero cita R011. Es
+   decisión de Oscar si se corrigen los códigos o se retiran las citas.
 
 Producción al momento de escribir (`GET /api/version`):
 `commit ab39bd8` · `authEnabled: true` · **1 470 321 procesos** · **corte de datos `2026-08-07`**
@@ -265,8 +323,11 @@ máximo entre años.
   coincidir literalmente con `flag-engine.ts`.**
 - La tabla `UMBRALES` daba $10.000 para 2025 y **contradecía a la propia función**, que aplica
   $7.212,60 hasta el 6-oct-2025. **Corregida** con la fecha de corte explícita.
+  *(Superado el 11-ago-2026: el corte real es el 6-jul-2025, no el 6-oct. Ver la sección del
+  11-ago arriba.)*
 - El marco normativo decía «2019-jun 2025», dejando sin cubrir julio–octubre. **Corregido** a
   «2019 — 6 oct 2025», con el umbral de cada año publicado.
+  *(Superado el 11-ago-2026: hoy publica los tres tramos de 2025.)*
 - CC-03, CC-04 e IT-02 omitían exclusiones que el código sí aplica (catálogo electrónico, ínfima).
 - TR-02, README: detalles menores alineados (descripción vacía, endpoint inexistente).
 
@@ -402,6 +463,17 @@ conviene saberlo.
   siendo **manual**. Falta decidir cada cuánto se corre y dónde se guarda la copia.
 
 ## Lo único estructural que queda
+
+> **Esta sección quedó desmentida por mediciones posteriores del mismo 11-ago. Se conserva por el
+> historial, pero las dos cifras que la sostenían son falsas.** El volumen real está al **54%**
+> (4,69 GB totales, 2,16 GB libres), no al 93%, medido con el endpoint `/api/admin/db-size` del
+> commit `6bf2287`. Y la columna `flags` pesa **184 MB**, no «bien por encima de 1 GB»: la
+> estimación estaba diez veces por encima. El commit `8c2bee0` decidió además, explícitamente, NO
+> normalizar la escritura de `flags`, porque no libera disco (el reflag no encoge el archivo y un
+> VACUUM necesita el doble de espacio libre del que hay). El problema del respaldo sigue abierto,
+> pero por el tamaño de la base frente al volumen, no por esta columna. El punto 2 de abajo sí se
+> resolvió, y por otra vía: la rehidratación desde el catálogo (`hidratarBanderas`, commit
+> `8c2bee0`) ya hace que el texto que ve el usuario salga del catálogo vigente.
 
 **El volumen está al 93%** (base de 2,50 GB en 5 GB) y por eso el respaldo no se puede generar: el
 endpoint responde 507 con las cifras en vez de llenar el disco. Es la misma condición que en julio

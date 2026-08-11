@@ -741,16 +741,59 @@ export function rebuildConcentrationIndex(year?: number) {
   console.log(`✓ Índice de concentración reconstruido: ${anios.length} año(s), por lotes con checkpoint`);
 }
 
+// ── Ínfima por MONTO en SQL ─────────────────────────────────────────────────
+// Réplica FIEL de getInfimaThreshold() e isInfimaByAmount() de flag-engine.ts. Las dos
+// definiciones tienen que dar lo mismo para el mismo proceso, igual que MONTO_SQL y
+// montoPlausible() (regla 11): el motor decide si un proceso ES ínfima y esta consulta
+// decide cuántas ínfimas acumula el par comprador-proveedor. Si divergen, CC-01 y CC-05
+// cuentan una cosa y marcan otra. server/data-integrity.test.ts las compara sobre una
+// rejilla de fechas y montos, y falla si se separan.
+//
+// El corte del umbral es el 7 de JULIO de 2025, no el 7 de octubre. La Resolución
+// R.E-SERCOP-2025-0152 (suscrita el 26-jun-2025, R.O. Quinto Suplemento 69 de 27-jun-2025)
+// dispone en su numeral 4, textualmente, que "las contrataciones de ínfima cuantía que
+// superen el monto de siete mil doscientos doce dólares con sesenta centavos (7.212,60 USD)
+// hasta el monto de diez mil dólares (10.000,00 USD) podrán realizarse a partir del 07 de
+// julio de 2025". Esta consulta usaba el 7-oct y por eso clasificaba distinto que el motor
+// los 711 procesos de esa ventana cuyo adjudicado cae entre los dos umbrales (USD 6,1 M).
+//
+// La fecha es published_date y, si falta, award_date, igual que el motor. El año sale de la
+// FECHA y no de source_year: hoy coinciden en los 1 470 321 procesos, pero source_year es un
+// metadato de la descarga y la fecha es el hecho.
+const SQL_FECHA_INFIMA = `COALESCE(NULLIF(p.published_date,''), NULLIF(p.award_date,''))`;
+
+export const SQL_UMBRAL_INFIMA = `CASE
+    WHEN ${SQL_FECHA_INFIMA} IS NULL THEN 10000.0
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,10) NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN 10000.0
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,10) >= '2025-07-07' THEN 10000.0
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2025' THEN 7212.60
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2024' THEN 6658.78
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2023' THEN 6300.57
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2022' THEN 6779.95
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2021' THEN 6416.07
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2020' THEN 7099.68
+    WHEN SUBSTR(${SQL_FECHA_INFIMA},1,4) = '2019' THEN 7105.88
+    ELSE 10000.0
+  END`;
+
+// El catálogo electrónico no es ínfima cuantía, y no es una decisión del observatorio: el
+// Art. 50 de la LOSNCP (sustituido por el Art. 3 de la Ley de R.O. Cuarto Suplemento 140 de
+// 7-oct-2025) admite la ínfima "siempre que no consten en el Catálogo Electrónico".
+// El comodín `_` cubre la vocal acentuada en cualquier caja: UPPER() de SQLite solo convierte
+// ASCII, así que 'catálogo' pasaba a 'CATáLOGO' y el patrón anterior con Á no lo alcanzaba.
+export const SQL_NO_ES_CATALOGO = `(
+       COALESCE(p.procurement_method_details,'') NOT LIKE '%cat_logo electr_nico%'
+   AND COALESCE(p.procurement_method_details,'') NOT LIKE '%catalogo electronico%'
+   AND COALESCE(p.title,'') NOT LIKE 'ORDEN DE COMPRA CE%')`;
+
+export const SQL_ES_INFIMA_POR_MONTO = `(${SQL_NO_ES_CATALOGO}
+   AND COALESCE(p.award_amount, 0) > 0
+   AND COALESCE(p.award_amount, 0) <= ${SQL_UMBRAL_INFIMA})`;
+
 function insertarConcentracionDeAnio(anio: number) {
   const yearFilter = 'WHERE p.source_year = ?';
   const yearVal = [anio];
 
-  // Identificacion de INFIMA CUANTIA en los datos de SERCOP:
-  //   El metodo no contiene la palabra "infima". La infima aparece como:
-  //   (a) titulos con prefijo "ORDEN DE COMPRA CE" (catalogo electronico, casi siempre infimas)
-  //   (b) procesos con monto adjudicado por debajo del umbral legal del ano
-  //   (c) o ambos. Aceptamos cualquiera de los dos para no perder casos.
-  // Umbrales por ano (LOSNCP coeficientes hasta oct-2025, USD 10,000 desde reforma)
   db.prepare(`
     INSERT INTO concentration_index (buyer_id, supplier_id, supplier_name, year, contract_count, total_value, infima_count, infima_total_value)
     SELECT
@@ -760,40 +803,8 @@ function insertarConcentracionDeAnio(anio: number) {
       p.source_year as year,
       COUNT(*) as contract_count,
       SUM(COALESCE(p.award_amount, 0)) as total_value,
-      SUM(CASE
-        WHEN (UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
-           AND UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
-           AND UPPER(COALESCE(p.title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'
-           AND COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
-              CASE
-                WHEN p.published_date >= '2025-10-07' THEN 10000.0
-                WHEN p.source_year = 2024 THEN 6658.78
-                WHEN p.source_year = 2023 THEN 6300.57
-                WHEN p.source_year = 2022 THEN 6779.95
-                WHEN p.source_year = 2021 THEN 6416.07
-                WHEN p.source_year = 2020 THEN 7099.68
-                WHEN p.source_year = 2019 THEN 7105.88
-                WHEN p.source_year = 2025 THEN 7212.60
-                ELSE 10000.0
-              END)
-        THEN 1 ELSE 0 END) as infima_count,
-      SUM(CASE
-        WHEN (UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
-           AND UPPER(COALESCE(p.procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
-           AND UPPER(COALESCE(p.title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'
-           AND COALESCE(p.award_amount, 0) > 0 AND COALESCE(p.award_amount, 0) <=
-              CASE
-                WHEN p.published_date >= '2025-10-07' THEN 10000.0
-                WHEN p.source_year = 2024 THEN 6658.78
-                WHEN p.source_year = 2023 THEN 6300.57
-                WHEN p.source_year = 2022 THEN 6779.95
-                WHEN p.source_year = 2021 THEN 6416.07
-                WHEN p.source_year = 2020 THEN 7099.68
-                WHEN p.source_year = 2019 THEN 7105.88
-                WHEN p.source_year = 2025 THEN 7212.60
-                ELSE 10000.0
-              END)
-        THEN COALESCE(p.award_amount, 0) ELSE 0 END) as infima_total_value
+      SUM(CASE WHEN ${SQL_ES_INFIMA_POR_MONTO} THEN 1 ELSE 0 END) as infima_count,
+      SUM(CASE WHEN ${SQL_ES_INFIMA_POR_MONTO} THEN COALESCE(p.award_amount, 0) ELSE 0 END) as infima_total_value
     FROM procedures p, json_each(p.suppliers) s
     ${yearFilter}
     GROUP BY p.buyer_id, supplier_id, p.source_year

@@ -19,10 +19,12 @@ const UMBRALES: Record<number | string, YearThresholds> = {
   2022: { pie: 33_899_734_759.85, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_779.95, bs_menor_cuantia_max: 67_799.47 },
   2023: { pie: 31_502_865_593.76, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_300.57, bs_menor_cuantia_max: 63_005.73 },
   2024: { pie: 33_293_903_424.91, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 6_658.78, bs_menor_cuantia_max: 66_587.81 },
-  // 2025 es un año partido: hasta el 6-oct rige el coeficiente ($7.212,60) y desde el
-  // 7-oct la reforma fija $10.000. Esta fila guarda el valor del COEFICIENTE, que es el
-  // que corresponde a la mayor parte del año; la fecha exacta la resuelve
-  // getInfimaThreshold(). Antes decía 10.000 y contradecía a la propia función.
+  // 2025 es un año partido en TRES tramos: hasta el 6-jul rige el coeficiente ($7.212,60),
+  // del 7-jul al 6-oct rigen $10.000 por la Resolución R.E-SERCOP-2025-0152, y desde el
+  // 7-oct los mismos $10.000 ya con rango de ley (Art. 50 de la LOSNCP reformada). Esta fila
+  // guarda solo el valor del COEFICIENTE; los cortes por fecha los resuelve
+  // getInfimaThreshold(), que es la única fuente del umbral. Antes decía 10.000 y contradecía
+  // a la propia función.
   2025: { pie: 36_063_017_083.08, regime: 'LOSNCP_COEFICIENTES', infima_cuantia: 7_212.60 },
   2026: { pie: 46_255_572_824.33, regime: 'LOSNCP_REFORMADA', infima_cuantia: 10_000.00 },
 };
@@ -380,9 +382,14 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
   // La exclusión de ínfima cuantía ahora se evalúa POR MONTO (isInfimaByAmount), el mismo
   // criterio que usan las banderas de concentración. Antes se evaluaba por el TEXTO del
   // procedimiento, buscando la palabra "ínfima", que no aparece en ninguno de los 1.470.321
-  // procesos: la exclusión que la metodología prometía no descartaba nada, y 524 de los 2.237
-  // disparos (23%) eran compras por debajo del umbral, marcadas por ser rápidas cuando su
+  // procesos: la exclusión que la metodología prometía no descartaba nada, y 525 de los 2.237
+  // disparos (23,5%) eran compras por debajo del umbral, marcadas por ser rápidas cuando su
   // rapidez es justamente lo esperable en una ínfima cuantía.
+  //
+  // Los 525 se midieron el 2026-08-11 sobre producción: 522 con el adjudicado estrictamente
+  // bajo el umbral de su fecha y 3 exactamente en el umbral, que también son ínfima porque el
+  // Art. 50 dice "igual o inferior" y la comparación es <=. La cifra que se publicó primero,
+  // 524, se quedó corta en uno.
   if (proc.published_date && proc.award_date) {
     const days = businessDays(proc.published_date, proc.award_date);
     if (days < 3 && !isInfimaByAmount(proc)) {
@@ -551,11 +558,16 @@ function isCatalogoElectronico(proc: any): boolean {
   return m.includes('cat\u00e1logo electr\u00f3nico') || m.includes('catalogo electronico') || t.startsWith('ORDEN DE COMPRA CE');
 }
 
-// \u00cdnfima por MONTO (mismo criterio que el \u00edndice de concentraci\u00f3n en db.ts):
-// no-cat\u00e1logo y monto adjudicado positivo bajo el umbral anual. En los datos de
-// SERCOP el m\u00e9todo nunca contiene la palabra "\u00ednfima", as\u00ed que detectarla por
-// texto deja CC-01 muerta; las banderas de concentraci\u00f3n usan este criterio.
-function isInfimaByAmount(proc: ProcedureData): boolean {
+// \u00cdnfima por MONTO. Es la MISMA definici\u00f3n que SQL_ES_INFIMA_POR_MONTO en db.ts, y las dos
+// tienen que dar lo mismo para el mismo proceso (regla 11): esta funci\u00f3n decide si un proceso
+// ES \u00ednfima y aquella cuenta cu\u00e1ntas acumula el par comprador-proveedor. Se exporta para que
+// data-integrity.test.ts pueda compararlas fila por fila; si divergen, la prueba falla.
+//
+// No-cat\u00e1logo y monto adjudicado positivo bajo el umbral de la fecha. El cat\u00e1logo queda fuera
+// por norma, no por criterio del observatorio: el Art. 50 de la LOSNCP admite la \u00ednfima
+// "siempre que no consten en el Cat\u00e1logo Electr\u00f3nico". En los datos de SERCOP el m\u00e9todo nunca
+// contiene la palabra "\u00ednfima", as\u00ed que detectarla por texto deja CC-01 muerta.
+export function isInfimaByAmount(proc: ProcedureData): boolean {
   if (isCatalogoElectronico(proc)) return false;
   const value = proc.award_amount || 0;
   if (value <= 0) return false;
