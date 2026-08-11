@@ -98,18 +98,53 @@ publicada es «menos de 3». Eran unos 397, y no es una pérdida: es la regla ap
 2 contratos del par en el ranking de pares. Antes los encabezaban entidades con un solo proceso y
 un par de $53,95 salía quinto.
 
+### Tercera tanda del 11-ago: los feriados del Art. 65
+
+**Los días hábiles ya descuentan los feriados.** El calendario es el del **Art. 65 del Código del
+Trabajo**, verificado textualmente en Lexis sobre el texto vigente (Codificación 17, R.O.S 167 de
+16-dic-2005, reformado por la Ley de R.O.S 906 de 20-dic-2016), con sus reglas de traslado y las
+tres fiestas móviles calculadas desde la Pascua.
+
+Se contrastó contra lo que Ecuador observó de verdad, y esas comprobaciones quedaron como pruebas:
+1-may-2024 (miércoles) → viernes 3; 1-may-2025 (jueves) → viernes 2; 10-ago-2024 (sábado) →
+viernes 9; 9-oct-2024 (miércoles) → viernes 11; 2 y 3-nov-2024 (sábado y domingo) → viernes 1 y
+lunes 4; 24-may-2025 (sábado) → viernes 23. Carnaval 2024 el 12-13 de febrero y 2025 el 3-4 de
+marzo; viernes santo 2024 el 29 de marzo y 2025 el 18 de abril. **Los diez casos dan exacto.**
+
+Dos advertencias declaradas en la metodología publicada: el decreto ejecutivo anual puede apartarse
+del Código en un año concreto, sobre todo al armar puentes; y la excepción del 1-ene, 25-dic y
+martes de carnaval se lee aplicable solo al traslado de martes, miércoles y jueves, no al de fin
+de semana.
+
+**Verificado sobre los datos tras el recálculo.** IT-01 pasa de 55 501 a **58 541** e IT-02 de
+1 206 a **1 223**: suben, que es la dirección correcta, porque al no contar los feriados hay menos
+días hábiles y más procesos caen bajo el mínimo. Los cuatro niveles de riesgo suman 1 470 321
+exacto. Se comprobaron a mano siete procesos que solo disparan por el descuento de feriados, y los
+siete cuadran al día:
+
+| Proceso | Ventana | Feriado que se descuenta | Hábiles |
+|---|---|---|---|
+| `RE-GADMT-083-2019` | jue 31-oct → mar 5-nov 2019 | 2-nov sábado → vie 1; 3-nov domingo → lun 4 | 4 − 2 = 2 |
+| `RE-MS-1-2019` | vie 1 → mié 6 mar 2019 | carnaval lun 4 y mar 5 (Pascua 21-abr) | 4 − 2 = 2 |
+| `CDC-CBV-001-2021` | jue 4 → lun 8 nov 2021 | 3-nov miércoles → vie 5 | 3 − 1 = 2 |
+| `RE-002-GADRSJCH-2021` | jue 7 → lun 11 oct 2021 | 9-oct sábado → vie 8 | 3 − 1 = 2 |
+| `RE-001-GADPRIB-2022` | vie 29-abr → mar 3-may 2022 | 1-may domingo → lun 2 | 3 − 1 = 2 |
+| `RE-GADMH-2022-002` | vie 20 → mar 24 may 2022 | 24-may martes → lun 23 | 3 − 1 = 2 |
+| `RE-OACL-GADPRSMH-2023-002` | vie 22 → mar 26 dic 2023 | 25-dic lunes, sin traslado | 3 − 1 = 2 |
+
+Las cinco variantes de traslado quedan ejercitadas con datos reales: sábado→viernes,
+domingo→lunes, martes→lunes, miércoles→viernes y el caso sin traslado.
+
 ### Lo que sigue pendiente, y por qué
 
-1. **Los feriados en el cómputo de días hábiles.** El COA Art. 158 manda contar «a partir del día
-   hábil siguiente» y el Art. 159 excluye los feriados; hoy se cuenta el día inicial y no se
-   descuentan. Alinearlo exige fijar el calendario del Art. 65 del Código del Trabajo con sus tres
-   fiestas móviles y sus reglas de traslado. **No se hizo porque la sesión de Lexis se cerró y no
-   se pudo verificar el artículo contra la fuente**, y un calendario de feriados mal puesto es peor
-   que ninguno. Queda declarado como limitación en la metodología publicada y en el MCP.
+1. **El día inicial del cómputo (COA Art. 158).** El artículo manda contar «a partir del día hábil
+   siguiente» y aquí se cuenta el día inicial. **No se cambió a propósito**: mueve el significado
+   de los mínimos de IT-01, que están pendientes del punto 2. Las dos cosas se resuelven juntas o
+   el indicador queda a medio camino. Declarado en la metodología.
 2. **Los mínimos de plazo de IT-01** (9/13/17). Corresponden al tramo publicación→adjudicación y el
    indicador mide publicación→límite de ofertas, cuyos mínimos son 6/10/14/18; y esos mínimos
    escalonados no existían antes del 28-oct-2025. Es **decisión de Oscar**: o se aplican solo desde
-   esa fecha, o se declara el indicador como referencial. Necesita Lexis para cerrarlo.
+   esa fecha, o el indicador se declara referencial para los años anteriores.
 3. **El presupuesto referencial falta en 174 547 procesos (11,9%)** porque el SERCOP publica la
    palabra «USD» en el campo del monto. No es recuperable: `budget_currency` está en NULL en esas
    filas. Queda **declarado en la metodología publicada**. Recuperarlo exigiría volver a descargar
