@@ -55,6 +55,23 @@ test('VACUUM INTO copia TODO, incluido lo que sigue en el WAL', () => {
   leido.close(); db.close();
 });
 
+test('db.backup() (lo que usa el endpoint) tambien captura el WAL y no bloquea', async () => {
+  const { db } = baseConWalSucio('incremental.db', 2000);
+  const snap = path.join(TMP, 'snapshot-incremental.db');
+  // El endpoint usa db.backup() y NO VACUUM INTO: los dos dan la misma consistencia, pero
+  // VACUUM INTO es sincrono y sobre 1,3 GB bloquearia el unico hilo de Node medio minuto.
+  // db.backup() copia por lotes y devuelve el control al event loop entre lotes.
+  let cedioElControl = false;
+  setImmediate(() => { cedioElControl = true; });
+  await db.backup(snap);
+  assert.equal(cedioElControl, true, 'db.backup() debe ceder el control: si no, bloquea la plataforma');
+
+  const leido = new DatabaseCtor(snap, { readonly: true });
+  assert.equal((leido.prepare(`SELECT COUNT(*) AS n FROM procedures`).get() as any).n, 2000);
+  assert.equal((leido.prepare(`SELECT integrity_check FROM pragma_integrity_check`).get() as any).integrity_check, 'ok');
+  leido.close(); db.close();
+});
+
 test('copiar el archivo .db vivo PIERDE datos: es el defecto que se corrigio', () => {
   const { db, ruta } = baseConWalSucio('vivo.db', 2000);
   const copia = path.join(TMP, 'copia-cruda.db');

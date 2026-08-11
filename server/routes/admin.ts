@@ -832,11 +832,15 @@ setInterval(ck,10000);ck()
 //   2. `createReadStream` leía el archivo VIVO durante segundos o minutos. Cualquier
 //      escritura concurrente (el actualizador, el registro de accesos) podía dejar el
 //      archivo partido a mitad de una página.
-// La forma correcta en SQLite es pedirle a la propia base un snapshot consistente con
-// `VACUUM INTO`, que además sale desfragmentado y más pequeño. Después se verifica que el
-// snapshot se pueda LEER y que traiga los datos, antes de empezar a enviarlo: un respaldo
-// que no se puede verificar no es un respaldo.
-export function backupHandler(req: any, res: any) {
+// La forma correcta en SQLite es pedirle a la propia base un snapshot consistente. Se usa
+// `db.backup()` y NO `VACUUM INTO`: los dos dan la misma garantía de consistencia, pero
+// VACUUM INTO es SÍNCRONO y sobre 1,3 GB dejaría el único hilo de Node bloqueado entre 30
+// y 90 segundos, es decir, otro vector de congelamiento como el que ya tumbó la plataforma.
+// `db.backup()` implementa la API de respaldo incremental de SQLite: copia por lotes y
+// devuelve el control al event loop entre lotes, así que la web sigue respondiendo.
+// Después se verifica que el snapshot se pueda LEER y que traiga datos, antes de empezar a
+// enviarlo: un respaldo que no se puede verificar no es un respaldo.
+export async function backupHandler(req: any, res: any) {
   const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
   const snapPath = `${dbPath}.backup-${Date.now()}.tmp`;
   const limpiar = () => { try { if (existsSync(snapPath)) unlinkSync(snapPath); } catch { /* nada que hacer */ } };
@@ -861,7 +865,7 @@ export function backupHandler(req: any, res: any) {
     } catch { /* si no se puede medir, se intenta igual */ }
 
     limpiar();
-    db.prepare(`VACUUM INTO ?`).run(snapPath);
+    await db.backup(snapPath);   // incremental y asíncrono: no bloquea el event loop
 
     // Verificación antes de enviar: se adjunta el snapshot y se cuentan sus filas. Si
     // saliera vacío o ilegible, esto falla aquí y no se entrega un archivo inservible.
@@ -898,9 +902,9 @@ export function backupHandler(req: any, res: any) {
   }
 }
 
-router.get('/backup', (req, res) => {
+router.get('/backup', async (req, res) => {
   if (!checkAuth(req, res)) return;
-  backupHandler(req, res);
+  await backupHandler(req, res);
 });
 
 // ── LLAVE TEMPORAL DE ADMIN (45 min, hasheada; para restauraciones via curl) ──
