@@ -587,6 +587,17 @@ function perfilProveedorSoloMuestra(supplierIdOrName: string) {
 }
 
 // Rankings
+//
+// PISO DE VOLUMEN (11-ago-2026). Los rankings de compradores y de pares ordenan por un PROMEDIO
+// y por un PORCENTAJE, y sin un mínimo de procesos eso no es un ranking: lo encabezaban entidades
+// con UN solo proceso, cuyo "score promedio" es el score de ese proceso, y pares con un único
+// contrato y 100% de participación por definición. Un par de $53,95 llegó al puesto 5.
+//
+// El piso es de 10 procesos, que no es un número inventado: es el mismo que el motor ya exige en
+// CC-02 para no marcar como dominante a un proveedor de un comprador diminuto. Se aplica al
+// COMPRADOR, que es la unidad sobre la que se calcula el promedio y la participación.
+const PISO_PROCESOS_RANKING = 10;
+
 export function getRankings(type: string = 'buyers', year?: number) {
   const yearFilter = year ? 'AND source_year = ?' : '';
   const yearVal = year ? [year] : [];
@@ -598,7 +609,9 @@ export function getRankings(type: string = 'buyers', year?: number) {
              MAX(score) as max_score,
              SUM(CASE WHEN risk_level IN ('high','critical') THEN 1 ELSE 0 END) as high_risk_count
       FROM procedures WHERE buyer_id IS NOT NULL ${yearFilter}
-      GROUP BY buyer_id ORDER BY avg_score DESC LIMIT 50
+      GROUP BY buyer_id
+      HAVING COUNT(*) >= ${PISO_PROCESOS_RANKING}
+      ORDER BY avg_score DESC LIMIT 50
     `).all(...yearVal);
   }
 
@@ -635,11 +648,17 @@ export function getRankings(type: string = 'buyers', year?: number) {
   }
 
   if (type === 'pairs') {
+    // El total del comprador en ese año sale de una función de ventana sobre la misma tabla, no
+    // de un cruce: una sola pasada, y evita el auto-join que el tope de costo prohíbe con razón.
     return db.prepare(`
-      SELECT buyer_id, supplier_id, supplier_name, year,
-             contract_count, total_value, share_of_buyer, infima_count
-      FROM concentration_index
-      ${year ? 'WHERE year = ?' : ''}
+      SELECT * FROM (
+        SELECT buyer_id, supplier_id, supplier_name, year,
+               contract_count, total_value, share_of_buyer, infima_count,
+               SUM(contract_count) OVER (PARTITION BY buyer_id, year) AS procesos_del_comprador
+        FROM concentration_index
+        ${year ? 'WHERE year = ?' : ''}
+      )
+      WHERE procesos_del_comprador >= ${PISO_PROCESOS_RANKING} AND contract_count >= 2
       ORDER BY share_of_buyer DESC LIMIT 50
     `).all(...yearVal);
   }

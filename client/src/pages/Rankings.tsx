@@ -172,9 +172,19 @@ export default function Rankings() {
         </div>
       )}
 
-      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-700">
-        Los rankings se calculan a partir de datos OCDS procesados. Un score alto no implica irregularidad,
-        solo indica patrones que ameritan mayor escrutinio.
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-700 space-y-2">
+        <p>
+          Los rankings se calculan a partir de datos OCDS procesados. Un score alto no implica irregularidad,
+          solo indica patrones que ameritan mayor escrutinio.
+        </p>
+        <p>
+          <strong>Piso de volumen:</strong> los rankings de compradores y de pares solo incluyen
+          compradores con <strong>10 o más procesos</strong> en el período consultado, y el de pares
+          exige además 2 o más contratos del par. Sin ese piso encabezaban la tabla entidades con un
+          solo proceso, cuyo «score promedio» es el score de ese proceso, y pares con un único
+          contrato y 100% de participación por definición. Es el mismo mínimo de 10 procesos que el
+          indicador CC-02 exige para marcar a un proveedor como dominante.
+        </p>
       </div>
     </div>
   );

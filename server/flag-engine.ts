@@ -228,8 +228,29 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
 // ── Severity Weights & Scoring ──────────────────────────────
 const SEVERITY_WEIGHTS: Record<number, number> = { 0: 3, 1: 8, 2: 18, 3: 30 };
 
+/**
+ * Pares que miden el MISMO hecho: cuando los dos están activos, el segundo pondera al 50% para
+ * no cobrar dos veces por una sola observación. Formato: [a, b, factor] descuenta a `b` si `a`
+ * está activa.
+ *
+ * REPLANTEADO EL 11-AGO-2026 CON DATOS. La lista anterior tenía un par que nunca se aplicaba y
+ * le faltaba el único que de verdad importa. Medido sobre los 1.470.321 procesos:
+ *
+ *   IC-01 + IC-02:  0 co-ocurrencias en los ocho años. Y no es casualidad de los datos: es
+ *                   estructural. IC-01 exige un método COMPETITIVO y IC-02 exige
+ *                   procurement_method === 'direct'. Son mutuamente excluyentes por
+ *                   construcción, así que el descuento declarado nunca podía aplicarse.
+ *                   Se retira: publicar un descuento que no existe es peor que no tenerlo.
+ *   IC-02 + TR-03:  42.321 co-ocurrencias sobre 44.064 disparos de IC-02, el 96,0%. Los dos
+ *                   exigen que el monto supere el umbral de ínfima y los dos se activan con la
+ *                   contratación directa o el régimen especial: es UNA sola observación cobrada
+ *                   dos veces, 30 + 18 = 48 de los 100 puntos posibles. No tenía descuento.
+ *                   Se agrega, y se descuenta TR-03, que es la señal más débil de las dos.
+ *   CC-01 + CC-05:  111 co-ocurrencias. Se mantiene.
+ *   IP-01 + CC-05:  341 co-ocurrencias. Se mantiene.
+ */
 const CORRELATED_FLAGS: [string, string, number][] = [
-  ['IC-01', 'IC-02', 0.5],
+  ['IC-02', 'TR-03', 0.5],
   ['CC-01', 'CC-05', 0.5],
   ['IP-01', 'CC-05', 0.5],
 ];
@@ -344,17 +365,48 @@ interface ProcedureData {
 // mostraba "$40.328.858,64": dos formatos para la misma cifra en la misma pantalla.
 const DOS_DECIMALES = { minimumFractionDigits: 2, maximumFractionDigits: 2 } as const;
 
+/**
+ * Días hábiles entre dos fechas, ambos extremos incluidos y sin sábados ni domingos.
+ *
+ * CORREGIDO EL 11-AGO-2026. La versión anterior iteraba sobre objetos Date COMPLETOS, con hora,
+ * y usaba getDay()/setDate(), que dependen de la zona horaria del servidor. El resultado no
+ * dependía del calendario sino de la hora del día: medido sobre producción, de los procesos con
+ * exactamente UN día calendario entre publicación y adjudicación, 311 reportaban «1 día hábil» y
+ * 460 reportaban «2». El mismo intervalo, dos respuestas.
+ *
+ * Ahora se trabaja sobre la FECHA CALENDARIO en cadena ISO, igual que getInfimaThreshold(), y el
+ * conteo es aritmético en vez de iterativo: además de ser determinista, no puede quedarse en un
+ * bucle largo si la fuente publica una fecha absurda.
+ *
+ * PENDIENTE DECLARADO: siguen sin descontarse los feriados, y el cómputo incluye el día inicial.
+ * El COA Art. 158 dispone que los términos corren «a partir del día hábil siguiente» y el Art. 159
+ * excluye los feriados, así que este conteo NO es todavía el término legal. Cambiarlo exige fijar
+ * el calendario de feriados del Código del Trabajo Art. 65 con sus tres fiestas móviles y sus
+ * reglas de traslado, verificado contra la fuente. Mientras tanto la limitación se publica en la
+ * metodología en vez de esconderse.
+ */
 function businessDays(start: string, end: string): number {
-  const s = new Date(start);
-  const e = new Date(end);
-  let count = 0;
-  const current = new Date(s);
-  while (current <= e) {
-    const day = current.getDay();
-    if (day !== 0 && day !== 6) count++;
-    current.setDate(current.getDate() + 1);
+  const s = String(start || '').slice(0, 10);
+  const e = String(end || '').slice(0, 10);
+  const ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const ms = ISO.exec(s);
+  const me = ISO.exec(e);
+  if (!ms || !me) return 0;
+
+  const desde = Date.UTC(+ms[1], +ms[2] - 1, +ms[3]);
+  const hasta = Date.UTC(+me[1], +me[2] - 1, +me[3]);
+  if (hasta < desde) return 0;
+
+  const DIA = 86_400_000;
+  const dias = (hasta - desde) / DIA + 1;          // ambos extremos incluidos
+  const semanas = Math.floor(dias / 7);
+  let habiles = semanas * 5;
+  let dow = new Date(desde).getUTCDay();           // UTC: no depende del servidor
+  for (let i = 0; i < dias % 7; i++) {
+    if (dow !== 0 && dow !== 6) habiles++;
+    dow = (dow + 1) % 7;
   }
-  return count;
+  return habiles;
 }
 
 function isInfima(method?: string): boolean {

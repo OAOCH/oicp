@@ -97,10 +97,10 @@ test('calculateScore: pesos por severidad y tope 100', () => {
 });
 
 test('calculateScore: correlaciones descuentan 50% sin importar el orden', () => {
-  const ic01 = { ...FLAG_CATALOG['IC-01'], active: true };   // 18
-  const ic02 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30 -> 15 si IC-01 activa
-  assert.equal(calculateScore([ic02, ic01]), 33);
-  assert.equal(calculateScore([ic01, ic02]), 33);
+  const ic02 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30
+  const tr03 = { ...FLAG_CATALOG['TR-03'], active: true };   // 18 -> 9 si IC-02 activa
+  assert.equal(calculateScore([ic02, tr03]), 39);
+  assert.equal(calculateScore([tr03, ic02]), 39);
   const ip01 = { ...FLAG_CATALOG['IP-01'], active: true };   // 18
   const cc05 = { ...FLAG_CATALOG['CC-05'], active: true };   // 30 -> 15 si IP-01 o CC-01 activa
   assert.equal(calculateScore([ip01, cc05]), 33);

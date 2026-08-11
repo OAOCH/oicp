@@ -82,12 +82,15 @@ test('la forma adelgazada y la gorda dan el MISMO score', () => {
 });
 
 test('el descuento por correlación sigue aplicándose con la forma adelgazada', () => {
-  // IC-01 + IC-02 es un par: IC-02 (30) pondera al 50% = 15, más IC-01 (18) = 33.
+  // IC-02 + TR-03 es un par desde el 11-ago-2026: IC-02 pesa 30 y TR-03 pondera al 50% = 9,
+  // así que suman 39 en vez de 48. Antes este caso usaba IC-01 + IC-02, un par que se retiró
+  // porque tiene cero co-ocurrencias posibles: IC-01 exige método competitivo e IC-02 exige
+  // contratación directa.
   const par = [
-    { code: 'IC-01', active: true, detail: '' },
     { code: 'IC-02', active: true, detail: '' },
+    { code: 'TR-03', active: true, detail: '' },
   ];
-  assert.equal(calculateScore(par as any), 33);
+  assert.equal(calculateScore(par as any), 39);
 });
 
 // ── Códigos desconocidos: no pueden reventar la ficha ──

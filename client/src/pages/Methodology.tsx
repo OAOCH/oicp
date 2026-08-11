@@ -100,11 +100,23 @@ export default function Methodology() {
             feriado aparece con más días hábiles de los que hubo en realidad.
           </p>
           <p>
-            La cuenta se hace sobre las fechas tal como las publica el SERCOP, que incluyen la hora.
-            Cuando dos procesos tienen el mismo intervalo de fechas pero distinta hora de
-            publicación, el conteo puede diferir en un día. Es una limitación conocida de la fuente y
-            de la implementación, no una regla: <strong>al citar estos dos indicadores conviene
-            verificar las fechas en el portal oficial</strong>.
+            <strong>Corregido el 11 de agosto de 2026:</strong> hasta esa fecha la cuenta se hacía
+            sobre las fechas con su hora, así que el resultado dependía de la hora del día y no del
+            calendario. Medido sobre producción: de los procesos con exactamente <strong>un día
+            calendario</strong> entre publicación y adjudicación, 311 reportaban «1 día hábil» y 460
+            reportaban «2». Ahora la cuenta se hace sobre la fecha calendario y es independiente de
+            la zona horaria, así que el mismo intervalo da siempre el mismo número.
+          </p>
+          <p>
+            <strong>Lo que este conteo todavía NO es:</strong> el término legal. El Código Orgánico
+            Administrativo dispone en su Art. 158 que los términos corren «a partir del día hábil
+            siguiente», y en su Art. 159 que se excluyen los feriados. Aquí se cuenta el día inicial
+            y no se descuentan feriados, así que estos dos indicadores miden un intervalo de días
+            laborables, no un término administrativo. Alinearlo exige fijar el calendario de
+            feriados del Art. 65 del Código del Trabajo, con sus tres fiestas móviles y sus reglas
+            de traslado, contrastado contra el calendario oficial de cada año. Está pendiente y se
+            declara aquí en vez de esconderse: <strong>al citar IT-01 o IT-02 conviene verificar las
+            fechas en el portal oficial</strong>.
           </p>
         </div>
       </div>
@@ -114,7 +126,18 @@ export default function Methodology() {
         <h2 className="font-semibold mb-4">Sistema de Puntuación</h2>
         <p className="text-sm text-gray-600 mb-4">
           Cada bandera activa suma puntos según su severidad. El score total va de 0 a 100.
-          En banderas correlacionadas (IC-01 + IC-02, CC-01 + CC-05, IP-01 + CC-05) la segunda pondera al 50% para evitar doble conteo.
+          En banderas correlacionadas (IC-02 + TR-03, CC-01 + CC-05, IP-01 + CC-05) la segunda pondera al 50% para evitar doble conteo.
+        </p>
+        <p className="text-xs text-gray-500 mb-4">
+          <strong>Los pares se replantearon el 11 de agosto de 2026, midiendo.</strong> Hasta esa
+          fecha la lista declaraba el par IC-01 + IC-02, que tiene <strong>cero</strong>
+          co-ocurrencias en los ocho años y no puede tenerlas: IC-01 exige un método competitivo e
+          IC-02 exige contratación directa, así que son excluyentes por construcción y el descuento
+          publicado nunca se aplicaba. En cambio faltaba el par que sí importa:{' '}
+          <strong>IC-02 + TR-03 co-ocurre en 42.321 de los 44.064 disparos de IC-02, el 96,0%</strong>.
+          Los dos exigen que el monto supere el umbral de ínfima y los dos se activan con la
+          contratación directa o el régimen especial: era una sola observación cobrada dos veces,
+          30 + 18 = 48 de los 100 puntos posibles, sin ningún descuento.
         </p>
         <div className="grid grid-cols-4 gap-4 mb-4">
           {[0, 1, 2, 3].map(sev => {

@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas } from './flag-engine.js';
+import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas, calculateScore } from './flag-engine.js';
 
 const codigos = (fs: any[]) => fs.map(f => f.code);
 
@@ -169,6 +169,85 @@ test('con budget_amount como texto y sin adjudicado, el motor normalizado marca 
   const sinNormalizar = codigos(evaluateIndividualFlags(crudo as any));
   assert.ok(!sinNormalizar.includes('TR-01'),
     'sin normalizar, la cadena "USD" es truthy y TR-01 se pierde: por eso la normalización es obligatoria');
+});
+
+// ── Días hábiles: el resultado no puede depender de la hora ──
+// Antes businessDays iteraba sobre objetos Date con hora y usaba getDay()/setDate(), atados a la
+// zona horaria del servidor. Medido en producción: de los procesos con exactamente UN día
+// calendario entre publicación y adjudicación, 311 decían «1 día hábil» y 460 decían «2».
+test('el mismo intervalo de calendario da el mismo número de días hábiles, sea cual sea la hora', () => {
+  const casos: [string, string][] = [
+    ['2024-06-17T09:00:00-05:00', '2024-06-18T17:00:00-05:00'],  // mañana -> tarde
+    ['2024-06-17T17:00:00-05:00', '2024-06-18T09:00:00-05:00'],  // tarde -> mañana
+    ['2024-06-17T23:59:00-05:00', '2024-06-18T00:01:00-05:00'],  // extremos del día
+    ['2024-06-17', '2024-06-18'],                                 // sin hora
+    ['2024-06-17T00:00:00Z', '2024-06-18T23:59:59Z'],             // en UTC
+  ];
+  const resultados = casos.map(([a, b]) => {
+    const f = evaluateIndividualFlags({ id: 'x', procurement_method: 'open',
+      procurement_method_details: 'Subasta Inversa Electronica', buyer_id: 'EC-RUC-1',
+      award_amount: 400_000, published_date: a, award_date: b,
+      description: 'Adquisicion de bienes para la entidad contratante del Estado',
+      suppliers: [{ id: 'EC-RUC-9', name: 'P' }] } as any);
+    const it02 = f.find(x => x.code === 'IT-02');
+    return it02 ? it02.detail : '(sin IT-02)';
+  });
+  assert.equal(new Set(resultados).size, 1,
+    `las cinco formas de escribir el mismo intervalo dieron respuestas distintas: ${JSON.stringify(resultados)}`);
+  assert.match(String(resultados[0]), /2 días hábiles/,
+    'lunes 17 a martes 18, con ambos extremos incluidos, son 2 días hábiles');
+});
+
+test('los días hábiles saltan el fin de semana y no cuentan de más', () => {
+  const dias = (a: string, b: string) => {
+    const f = evaluateIndividualFlags({ id: 'x', procurement_method: 'open',
+      procurement_method_details: 'Subasta Inversa Electronica', buyer_id: 'EC-RUC-1',
+      award_amount: 400_000, published_date: a, award_date: b,
+      description: 'Adquisicion de bienes para la entidad contratante del Estado',
+      suppliers: [{ id: 'EC-RUC-9', name: 'P' }] } as any);
+    const it02 = f.find(x => x.code === 'IT-02');
+    return it02 ? Number(String(it02.detail).match(/en (\d+) días/)![1]) : null;
+  };
+  // 2024-06-14 es viernes y 2024-06-17 es lunes: son 2 hábiles, no 4.
+  assert.equal(dias('2024-06-14', '2024-06-17'), 2);
+  // mismo día laborable: 1, como declara la metodología publicada
+  assert.equal(dias('2024-06-17', '2024-06-17'), 1);
+  // lunes a miércoles son 3 hábiles, así que IT-02 (< 3) ya NO dispara
+  assert.equal(dias('2024-06-17', '2024-06-19'), null);
+});
+
+// ── Pares correlacionados, replanteados con datos el 11-ago-2026 ──
+// Medido sobre los 1.470.321 procesos de producción: IC-01 + IC-02 co-ocurre CERO veces en los
+// ocho años, y no puede co-ocurrir, porque IC-01 exige método competitivo e IC-02 exige
+// procurement_method === 'direct'. Publicar ese descuento era prometer algo que nunca pasaba.
+// IC-02 + TR-03, en cambio, co-ocurre en 42.321 de los 44.064 disparos de IC-02 (96,0%) y no
+// tenía descuento: 30 + 18 = 48 de los 100 puntos posibles por una sola observación.
+test('IC-01 e IC-02 ya NO se descuentan entre sí: no pueden co-ocurrir', () => {
+  const ic01 = { ...FLAG_CATALOG['IC-01'], active: true };   // 18
+  const ic02 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30
+  assert.equal(calculateScore([ic01, ic02] as any), 48,
+    'si vuelve a dar 33, alguien reintrodujo un par que en estos datos no existe');
+});
+
+test('IC-02 y TR-03 SÍ se descuentan: es el par que de verdad se solapa', () => {
+  const ic02 = { ...FLAG_CATALOG['IC-02'], active: true };   // 30
+  const tr03 = { ...FLAG_CATALOG['TR-03'], active: true };   // 18 -> 9
+  assert.equal(calculateScore([ic02, tr03] as any), 39,
+    'sin el descuento darían 48: el 96% de los IC-02 cobraría dos veces el mismo hecho');
+});
+
+test('un proceso directo sobre el umbral no puede pasar de 39 puntos por ese solo hecho', () => {
+  // El caso real más frecuente de la base: contratación directa de régimen especial por encima
+  // del umbral de ínfima. Dispara IC-02 y TR-03 a la vez y no debe sumar 48.
+  const proc = { id: 'x', procurement_method: 'direct',
+    procurement_method_details: 'Régimen Especial', buyer_id: 'EC-RUC-1',
+    award_amount: 50_000, published_date: '2024-06-15T12:00:00-05:00',
+    description: 'Contratacion directa de servicios especializados de consultoria',
+    suppliers: [{ id: 'EC-RUC-9', name: 'PROVEEDOR' }] };
+  const banderas = evaluateIndividualFlags(proc as any);
+  const cods = codigos(banderas);
+  assert.ok(cods.includes('IC-02') && cods.includes('TR-03'), 'el caso debe disparar las dos');
+  assert.equal(calculateScore(banderas), 39);
 });
 
 test('retirar una cita del catálogo la borra también de las banderas ya guardadas', () => {
