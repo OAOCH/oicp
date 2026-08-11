@@ -907,6 +907,68 @@ router.get('/backup', async (req, res) => {
   await backupHandler(req, res);
 });
 
+// ── DIAGNÓSTICO DE ESPACIO ──────────────────────────────────
+// Por qué existe: el volumen llegó al 93% y no había forma de saber QUÉ lo ocupa. Sin este
+// dato la decisión (ampliar el volumen o reconstruir algo) se toma a ciegas, y una estimación
+// a ojo ya falló por un factor de diez.
+//
+// Todas las consultas de la primera parte son INSTANTÁNEAS: `page_count`, `page_size` y
+// `freelist_count` se leen de la cabecera de la base, no recorren nada. El desglose por
+// objeto usa dbstat, que SÍ lee el archivo completo y bloquea el proceso varios segundos,
+// así que va detrás de ?detalle=1 y nunca se ejecuta por accidente.
+router.get('/db-size', (req, res) => {
+  if (!checkAuth(req, res)) return;
+  try {
+    const db = getDb();
+    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+    const pageCount = Number((db.pragma('page_count', { simple: true }) as any) || 0);
+    const pageSize = Number((db.pragma('page_size', { simple: true }) as any) || 0);
+    const freelist = Number((db.pragma('freelist_count', { simple: true }) as any) || 0);
+
+    const tam = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
+    const archivos = {
+      db_bytes: tam(dbPath),
+      wal_bytes: tam(dbPath + '-wal'),
+      shm_bytes: tam(dbPath + '-shm'),
+      sobrantes_bytes: ['.corrupt', '.incoming', '.incoming.gz']
+        .reduce((s, suf) => s + tam(dbPath + suf), 0),
+    };
+
+    let volumen: any = null;
+    try {
+      const st = statfsSync(dbPath) as any;
+      volumen = {
+        total_bytes: st.blocks * st.bsize,
+        libre_bytes: st.bavail * st.bsize,
+        usado_pct: Math.round((1 - (st.bavail / st.blocks)) * 100),
+      };
+    } catch { /* statfs no disponible en esta plataforma */ }
+
+    const salida: any = {
+      paginas: { total: pageCount, libres: freelist, tamano_pagina: pageSize },
+      // Espacio ya liberado dentro del archivo pero que SQLite no devuelve al sistema:
+      // solo un VACUUM lo recupera, y VACUUM necesita espacio libre del tamaño de la base.
+      reutilizable_bytes: freelist * pageSize,
+      reutilizable_pct: pageCount ? Math.round((freelist / pageCount) * 100) : 0,
+      archivos, volumen,
+      nota: 'Agrega ?detalle=1 para el desglose por tabla e índice. ADVERTENCIA: ese modo recorre el archivo completo y deja la plataforma sin responder varios segundos.',
+    };
+
+    if (req.query.detalle === '1') {
+      // dbstat recorre todo el archivo: es la operación cara y por eso es explícita.
+      salida.por_objeto = db.prepare(`
+        SELECT name AS objeto, SUM(pgsize) AS bytes, COUNT(*) AS paginas
+        FROM dbstat GROUP BY name ORDER BY bytes DESC LIMIT 40`).all();
+      salida.tablas_e_indices = db.prepare(`
+        SELECT type, name, tbl_name FROM sqlite_master
+        WHERE type IN ('table','index') ORDER BY type, name`).all();
+    }
+    res.json(salida);
+  } catch (e: any) {
+    res.status(500).json({ error: `No se pudo medir la base: ${e.message}` });
+  }
+});
+
 // ── LLAVE TEMPORAL DE ADMIN (45 min, hasheada; para restauraciones via curl) ──
 function ensureSettings(db: any) {
   db.exec(`CREATE TABLE IF NOT EXISTS mcp_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
