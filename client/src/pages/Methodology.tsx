@@ -57,7 +57,7 @@ const FLAGS = [
   { code: 'TR-02', category: 'transparencia', severity: 0, ocp: 'R013', name: 'Descripción Genérica',
     desc: 'La descripción del proceso tiene entre 1 y 29 caracteres.',
     legal: 'Principio de transparencia Art. 6 LOSNCP',
-    logic: '0 < longitud(description o title) < 30 — una descripción completamente vacía no dispara TR-02 sino TR-01 (información incompleta)' },
+    logic: '0 < longitud(description o title) < 30 — una descripción completamente vacía no dispara TR-02, porque la condición > 0 lo impide. Tampoco la dispara TR-01: TR-01 no evalúa la descripción, solo la ausencia de comprador, valor, proveedor o método' },
   { code: 'TR-03', category: 'transparencia', severity: 2, ocp: 'R039', name: 'Sin Justificación Régimen Especial',
     desc: 'Proceso de régimen especial, emergente o contratación directa, por un monto superior al umbral de ínfima cuantía, sin justificación documentada en los datos OCDS.',
     legal: 'Art. 38 LOSNCP reformada; Art. 116 Reglamento',

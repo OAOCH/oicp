@@ -30,7 +30,7 @@ export default function AdminAudit() {
   const actions = [
     { label: 'Reparar budget_amount', icon: DollarSign, endpoint: '/api/admin/fix-budget', desc: 'Repara montos de presupuesto guardados como "USD".', warn: '¿Reparar budget_amount? Es seguro y rápido.' },
     { label: 'Reconstruir concentración (fix-share)', icon: Wrench, endpoint: '/api/admin/fix-share', desc: 'Recalcula share_of_buyer e índice de concentración. ~1-2 min.', warn: '¿Reconstruir el índice de concentración? Toma 1-2 minutos.' },
-    { label: 'Re-normalizar banderas', icon: RefreshCw, endpoint: '/api/admin/normalize', desc: 'Re-evalúa las 15 banderas en 1.46M procesos. ~10-12 min, el sitio va lento mientras corre.', warn: '¿Re-normalizar TODAS las banderas? Toma 10-12 minutos y el sitio responderá lento. ¿Continuar?' },
+    { label: 'Re-normalizar banderas', icon: RefreshCw, endpoint: '/api/admin/normalize', desc: 'Re-evalúa las banderas en TODOS los procesos del corpus (1,47 M). ~10-12 min y el sitio va lento mientras corre; el proxy corta a los 300 s con un 502 aunque el trabajo siga bien: verifica por los logs, no por la respuesta HTTP.', warn: '¿Re-normalizar TODAS las banderas? Toma 10-12 minutos y el sitio responderá lento. ¿Continuar?' },
   ];
 
   return (
