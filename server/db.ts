@@ -652,15 +652,42 @@ export function upsertProcedure(proc: any) {
 }
 
 // Update concentration index
+// Reconstruye el índice de concentración AÑO POR AÑO, con checkpoint del WAL entre cada
+// uno (regla 2). Antes lo hacía en dos sentencias gigantes: un INSERT ... SELECT sobre las
+// 517 344 filas y un UPDATE de share sobre todas ellas, cada uno en una transacción única.
+// Un WAL sin control ya llenó el volumen de 5 GB, corrompió la base y tumbó producción
+// ~1,5 h (ver ESTADO.md), y esta es exactamente la operación que hay que correr para el
+// recálculo de metodología, así que tenía que acotarse antes de tocar las reglas.
 export function rebuildConcentrationIndex(year?: number) {
-  const yearFilter = year ? 'WHERE source_year = ?' : '';
-  const yearVal = year ? [year] : [];
+  const anios: number[] = year
+    ? [year]
+    : (db.prepare(`SELECT DISTINCT source_year AS y FROM procedures
+                   WHERE source_year IS NOT NULL ORDER BY y`).all() as any[]).map(r => r.y);
 
   if (year) {
     db.prepare('DELETE FROM concentration_index WHERE year = ?').run(year);
   } else {
     db.prepare('DELETE FROM concentration_index').run();
   }
+  db.pragma('wal_checkpoint(TRUNCATE)');
+
+  for (const anio of anios) {
+    insertarConcentracionDeAnio(anio);
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+  // El share se calcula después de insertar TODOS los años, porque el divisor es el gasto
+  // del comprador en ese año y necesita el año completo. También va por año y con
+  // checkpoint: antes era un UPDATE único sobre las 517 mil filas.
+  for (const anio of anios) {
+    recalcularShareDeAnio(anio);
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+  console.log(`✓ Índice de concentración reconstruido: ${anios.length} año(s), por lotes con checkpoint`);
+}
+
+function insertarConcentracionDeAnio(anio: number) {
+  const yearFilter = 'WHERE p.source_year = ?';
+  const yearVal = [anio];
 
   // Identificacion de INFIMA CUANTIA en los datos de SERCOP:
   //   El metodo no contiene la palabra "infima". La infima aparece como:
@@ -715,16 +742,17 @@ export function rebuildConcentrationIndex(year?: number) {
     ${yearFilter}
     GROUP BY p.buyer_id, supplier_id, p.source_year
   `).run(...yearVal);
+}
 
-  // Calculate share_of_buyer correctly:
-  // share = (valor del par buyer+supplier+year) / (gasto total del buyer en ese MISMO year) * 100
-  // El bug anterior: la subconsulta no correlacionaba buyer+year, asi que el divisor
-  // se inflaba sumando varios anios y el share salia en millones.
-  // Fix: usar una CTE con totales por buyer+year y JOIN directo.
+// share = (valor del par comprador+proveedor+año) / (gasto total del comprador en ESE
+// MISMO año) * 100. El defecto anterior: la subconsulta no correlacionaba comprador+año,
+// así que el divisor sumaba varios años y el share salía en millones. Se corrigió con una
+// CTE de totales por comprador+año.
+function recalcularShareDeAnio(anio: number) {
   db.prepare(`
     WITH totals AS (
       SELECT buyer_id, year, SUM(total_value) as buyer_year_total
-      FROM concentration_index
+      FROM concentration_index WHERE year = ?
       GROUP BY buyer_id, year
     )
     UPDATE concentration_index
@@ -738,9 +766,8 @@ export function rebuildConcentrationIndex(year?: number) {
       WHERE t.buyer_id = concentration_index.buyer_id
         AND t.year = concentration_index.year
     )
-  `).run();
-
-  console.log('✓ Concentration index rebuilt (with corrected share and infima detection)');
+    WHERE concentration_index.year = ?
+  `).run(anio, anio);
 }
 
 // Normalize procurement_method from raw text to OCDS categories

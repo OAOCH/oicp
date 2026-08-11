@@ -312,30 +312,6 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
   const ctx = buildConcentrationContext(db);
   type Change = { id: string; flags: string; score: number; rl: string;
     oldRl: string; oldFlags: string; year: number; suppliers: string; monto: number };
-  const changes: Change[] = [];
-  let scanned = 0;
-  for (const row of db.prepare(`
-    SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
-           budget_amount, award_amount, contract_amount, final_amount,
-           published_date, submission_deadline, award_date, number_of_tenderers,
-           title, description, items_classification, has_amendments, amendment_count,
-           suppliers, source_year, flags, score, risk_level
-    FROM procedures`).iterate() as any) {
-    scanned++;
-    if (scanned % 5000 === 0) await yieldLoop();
-    let suppliersArr: any[] = [];
-    try { suppliersArr = JSON.parse(row.suppliers || '[]'); } catch { /* corrupto: se evalúa sin proveedores */ }
-    const proc = { ...row, budget_amount: Number(row.budget_amount) || 0,
-      suppliers: suppliersArr, has_amendments: !!row.has_amendments };
-    const { flags, score, riskLevel } = evaluateAllFlags(proc, ctx);
-    const flagsJson = JSON.stringify(flags);
-    if (flagsJson !== row.flags || score !== row.score || riskLevel !== row.risk_level) {
-      changes.push({ id: row.id, flags: flagsJson, score, rl: riskLevel, oldRl: row.risk_level || 'low',
-        oldFlags: row.flags || '[]', year: row.source_year || 0, suppliers: row.suppliers || '[]',
-        monto: montoPlausible(row.final_amount, row.contract_amount, row.award_amount) });
-    }
-  }
-  if (!changes.length) return 0;
 
   const hasAgg = analyticsReady(db);
   const upd = db.prepare(`UPDATE procedures SET flags=?, score=?, risk_level=? WHERE id=?`);
@@ -381,11 +357,59 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
       } catch { pushErr(`flags ilegibles en ${c.id}`); }
     }
   });
-  for (let i = 0; i < changes.length; i += 5000) {
-    applyBatch(changes.slice(i, i + 5000));
-    db.pragma('wal_checkpoint(TRUNCATE)');
+  // ── Recorrido por CURSOR, no por iterador abierto ──────────────────────────
+  // Antes esta función acumulaba el conjunto COMPLETO de cambios en un array antes de
+  // escribir nada. Con un cambio de regla que toque a casi todos los procesos, ese array
+  // guarda 1,47 M objetos con el JSON de banderas nuevo, el viejo y los proveedores:
+  // medido en el orden de los GB, y el contenedor muere por memoria a mitad del trabajo.
+  //
+  // No se puede simplemente intercalar las escrituras dentro del bucle de lectura: un
+  // iterador abierto impide el `wal_checkpoint`, y un WAL sin control ya llenó el volumen
+  // y tumbó producción (ver ESTADO.md). La salida es avanzar por CURSOR sobre la clave
+  // primaria: cada lote se lee completo, el `SELECT` se cierra, se escribe, se consolida el
+  // WAL y se sigue. Memoria acotada al lote y checkpoint garantizado entre lotes.
+  //
+  // El `.all()` de abajo NO viola la regla 3: está acotado a LOTE filas, no a la tabla.
+  const LOTE = 5000;
+  const leerLote = db.prepare(`
+    SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
+           budget_amount, award_amount, contract_amount, final_amount,
+           published_date, submission_deadline, award_date, number_of_tenderers,
+           title, description, items_classification, has_amendments, amendment_count,
+           suppliers, source_year, flags, score, risk_level
+    FROM procedures WHERE id > ? ORDER BY id LIMIT ?`);
+
+  let cursor = '';
+  let totalCambios = 0;
+  for (;;) {
+    const filas = leerLote.all(cursor, LOTE) as any[];
+    if (!filas.length) break;
+    cursor = filas[filas.length - 1].id;   // el UPDATE no toca el id: el cursor no se repite
+
+    const changes: Change[] = [];
+    for (const row of filas) {
+      let suppliersArr: any[] = [];
+      try { suppliersArr = JSON.parse(row.suppliers || '[]'); } catch { /* corrupto: se evalúa sin proveedores */ }
+      const proc = { ...row, budget_amount: Number(row.budget_amount) || 0,
+        suppliers: suppliersArr, has_amendments: !!row.has_amendments };
+      const { flags, score, riskLevel } = evaluateAllFlags(proc, ctx);
+      const flagsJson = JSON.stringify(flags);
+      if (flagsJson !== row.flags || score !== row.score || riskLevel !== row.risk_level) {
+        changes.push({ id: row.id, flags: flagsJson, score, rl: riskLevel, oldRl: row.risk_level || 'low',
+          oldFlags: row.flags || '[]', year: row.source_year || 0, suppliers: row.suppliers || '[]',
+          monto: montoPlausible(row.final_amount, row.contract_amount, row.award_amount) });
+      }
+    }
+
+    if (changes.length) {
+      applyBatch(changes);
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      totalCambios += changes.length;
+    }
     await yieldLoop();
   }
+  if (!totalCambios) return 0;
+
   if (hasAgg) {
     // Poda: máximo 5 ejemplos críticos por proveedor, los de mayor score (invariante de buildAnalytics)
     db.exec(`DELETE FROM a_supplier_critical WHERE rowid NOT IN (
@@ -393,7 +417,7 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
         FROM a_supplier_critical) WHERE rn <= 5)`);
     db.pragma('wal_checkpoint(TRUNCATE)');
   }
-  return changes.length;
+  return totalCambios;
 }
 
 // ── Corrida principal ────────────────────────────────────────
