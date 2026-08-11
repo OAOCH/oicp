@@ -95,6 +95,43 @@ export interface Flag {
   detail?: string;
 }
 
+/**
+ * POLÍTICA DE CITAS A LA GUÍA DE LA OCP (revisada el 2026-08-11 contra el PDF oficial de la
+ * edición 2024, código por código, no contra un resumen).
+ *
+ * `ocp_ref` solo se pone cuando el indicador implementa DE VERDAD lo que ese código mide. Una
+ * cita falsa es peor que ninguna: un auditor la comprueba en treinta segundos y, si no cuadra,
+ * pone en duda todo lo demás. De las 13 citas que había, tres eran correctas, dos eran
+ * adaptaciones y ocho apuntaban a un código que mide otra cosa.
+ *
+ * Correcciones aplicadas:
+ *  - IP-02: R059 mide adjudicado contra CONTRATO FINAL. El indicador compara adjudicado contra
+ *    PRESUPUESTO REFERENCIAL, que es exactamente R031 ("Winning bid price very close or higher
+ *    than estimated price"). Se cambia a R031.
+ *  - CC-02: R051 es concentración de MERCADO por índice Herfindahl-Hirschman. El indicador mide
+ *    la cuota de un proveedor sobre UN comprador, que es R050 ("High market share"). Se cambia.
+ *  - CC-05: la fórmula implementada (sumar las ínfimas del par y comparar la SUMA contra el
+ *    umbral) es literalmente la de R055, no la de R011, que exige que cada compra individual
+ *    quede justo debajo del umbral y sean de la misma categoría en una ventana corta.
+ *
+ * Citas retiradas por no tener equivalente en la guía:
+ *  - IC-02 (era R055): R055 exige sumar VARIAS adjudicaciones directas del mismo par
+ *    comprador-proveedor; IC-02 evalúa un proceso aislado contra el umbral.
+ *  - CC-04 (era R070): R070 es "los oferentes perdedores son contratados como subcontratistas",
+ *    con datos de subcontratación que el SERCOP no publica. CC-04 mide reincidencia en consorcios.
+ *  - TR-01 (era R001): R001 es la ausencia de documentos de PLANIFICACIÓN. TR-01 mira cuatro
+ *    campos operativos del proceso.
+ *  - TR-02 (era R013): R013 es la proporción de métodos no competitivos de un COMPRADOR. TR-02
+ *    mide la longitud del texto de la descripción de un proceso.
+ *  - TR-03 (era R039): R039 son preguntas de oferentes sin responder. TR-03 detecta régimen
+ *    especial por el texto del procedimiento.
+ *
+ * Adaptaciones declaradas, que se conservan porque el parentesco es real pero no exacto:
+ *  - IT-02 / R061: la guía mide el intervalo CIERRE DE OFERTAS → adjudicación; aquí se mide
+ *    PUBLICACIÓN → adjudicación, porque es el par de fechas que publica el SERCOP.
+ *  - IP-01 / R011: la guía agrupa dos o más procesos del mismo comprador y categoría; aquí se
+ *    evalúa la cercanía al umbral de un proceso individual. La agregación de R011 la hace CC-05.
+ */
 export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'IC-01': {
     code: 'IC-01', category: 'competencia', name: 'Single Bidder',
@@ -105,8 +142,8 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'IC-02': {
     code: 'IC-02', category: 'competencia', name: 'High Value No Competition',
     name_es: 'Alto Valor Sin Competencia',
-    description_es: 'Adjudicación directa o ínfima cuantía por monto superior al umbral permitido.',
-    severity: 3, ocp_ref: 'R055',
+    description_es: 'Adjudicación directa por monto superior al umbral de ínfima cuantía, fuera del catálogo electrónico.',
+    severity: 3,   // sin ocp_ref: R055 exige sumar varias adjudicaciones del mismo par (ver la política arriba)
   },
   'IT-01': {
     code: 'IT-01', category: 'tiempo', name: 'Insufficient Publication Period',
@@ -130,7 +167,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
     code: 'IP-02', category: 'precio', name: 'Significant Price Difference',
     name_es: 'Adjudicación Sobre el Presupuesto Referencial',
     description_es: 'El monto adjudicado supera en más del 15% el presupuesto referencial. Adjudicar por DEBAJO del referencial no activa este indicador: es el resultado esperable de la competencia y no una señal de riesgo.',
-    severity: 2, ocp_ref: 'R059',
+    severity: 2, ocp_ref: 'R031',
   },
   'IP-03': {
     code: 'IP-03', category: 'precio', name: 'Significant Contract Amendment',
@@ -148,7 +185,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
     code: 'CC-02', category: 'concentracion', name: 'Dominant Supplier',
     name_es: 'Proveedor Dominante',
     description_es: 'Un proveedor recibe más del 40% del gasto total de un comprador en el año del proceso, en compradores con 10 o más procesos ese mismo año.',
-    severity: 3, ocp_ref: 'R051',
+    severity: 3, ocp_ref: 'R050',
   },
   'CC-03': {
     code: 'CC-03', category: 'concentracion', name: 'Historically Permanent Supplier',
@@ -160,31 +197,31 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
     code: 'CC-04', category: 'concentracion', name: 'Recurring Consortium Member',
     name_es: 'Miembro Recurrente de Consorcio',
     description_es: 'Una persona/empresa aparece como miembro de 2+ consorcios (procesos con varios proveedores) del mismo comprador.',
-    severity: 2, ocp_ref: 'R070',
+    severity: 2,   // sin ocp_ref: R070 es subcontratación de oferentes perdedores, no consorcios
   },
   'CC-05': {
     code: 'CC-05', category: 'concentracion', name: 'Possible Splitting',
     name_es: 'Posible Fraccionamiento',
     description_es: 'Un mismo comprador adjudica varias ínfimas cuantías al mismo proveedor en el año cuya suma supera el umbral anual (Art. 270 Reglamento LOSNCP).',
-    severity: 3, ocp_ref: 'R011',
+    severity: 3, ocp_ref: 'R055',
   },
   'TR-01': {
     code: 'TR-01', category: 'transparencia', name: 'Critical Missing Information',
     name_es: 'Información Incompleta Crítica',
     description_es: 'Faltan campos esenciales: comprador, valor, proveedor o método de contratación.',
-    severity: 1, ocp_ref: 'R001',
+    severity: 1,   // sin ocp_ref: R001 es la ausencia de documentos de PLANIFICACIÓN
   },
   'TR-02': {
     code: 'TR-02', category: 'transparencia', name: 'Generic Description',
     name_es: 'Descripción Genérica',
     description_es: 'La descripción del proceso tiene menos de 30 caracteres.',
-    severity: 0, ocp_ref: 'R013',
+    severity: 0,   // sin ocp_ref: R013 es la proporción de métodos no competitivos de un COMPRADOR
   },
   'TR-03': {
     code: 'TR-03', category: 'transparencia', name: 'No Special Regime Justification',
     name_es: 'Sin Justificación de Régimen Especial',
     description_es: 'Proceso de régimen especial sin justificación documentada.',
-    severity: 2, ocp_ref: 'R039',
+    severity: 2,   // sin ocp_ref: R039 son preguntas de oferentes sin responder
   },
 };
 
@@ -238,7 +275,13 @@ export function hidratarBanderas(flags: any[]): any[] {
     // que quedó escrito en la fila el día de la evaluación pisaría al corregido, y la regla 10
     // seguiría rota exactamente igual que antes. `active` y `detail` sobreviven porque el
     // catálogo no los define (son datos del proceso, no del indicador).
-    return { ...f, ...catalogo, severity: severidadDe(f) };
+    //
+    // `ocp_ref` se resuelve APARTE porque es el único campo estático que puede tener que
+    // DESAPARECER. Con el spread solo, quitar una cita del catálogo no la borraba de las filas
+    // ya guardadas: la vieja sobrevivía por no estar la clave en el objeto de encima. Al
+    // retirar el 2026-08-11 las cinco citas OCP que no correspondían, esas fichas habrían
+    // seguido publicándolas hasta el próximo recálculo.
+    return { ...f, ...catalogo, ocp_ref: catalogo.ocp_ref, severity: severidadDe(f) };
   });
 }
 

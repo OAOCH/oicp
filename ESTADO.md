@@ -50,13 +50,14 @@ commit que dice respetarla. Corregido ahora:
    `ocds-5wno2w-MCB-EPMMM--2024-002-452218` tiene presupuesto $21 655,48 y adjudicado **$659,67**,
    y se publica como si hubiera excedido el referencial. Es una contradicción visible para el
    usuario externo, y solo la cierra el recálculo.
-2. **Las citas a la guía de la OCP.** De las 13, **10 no corresponden** a lo que el indicador
-   evalúa (verificado contra el PDF oficial de 2024, no contra el resumen de nadie). Los casos más
-   claros: IP-02 cita R059, que compara adjudicado contra contrato final, cuando el código compara
-   adjudicado contra presupuesto referencial y el código correcto es **R031**; IC-02 cita R055, que
-   exige sumar varias adjudicaciones directas del mismo par comprador-proveedor, cuando el código
-   evalúa un proceso aislado; CC-05 implementa justamente la fórmula de R055 pero cita R011. Es
-   decisión de Oscar si se corrigen los códigos o se retiran las citas.
+2. ~~Las citas a la guía de la OCP.~~ **Resuelto el mismo 11-ago.** De las 13, solo 3 eran
+   correctas. Tres se corrigieron a su código real (IP-02 de R059 a **R031**, CC-02 de R051 a
+   **R050**, CC-05 de R011 a **R055**), cinco se retiraron por no tener equivalente (IC-02, CC-04,
+   TR-01, TR-02, TR-03) y dos quedan como adaptaciones declaradas en la página (IT-02/R061 e
+   IP-01/R011). Verificado contra el PDF oficial de la edición 2024, código por código, no contra
+   el resumen de nadie. La política se publica en la propia metodología y una prueba fija el mapa
+   entero. Se corrigió además un defecto de la rehidratación: quitar una cita del catálogo no la
+   borraba de las fichas ya guardadas.
 
 Producción al momento de escribir (`GET /api/version`):
 `commit ab39bd8` · `authEnabled: true` · **1 470 321 procesos** · **corte de datos `2026-08-07`**

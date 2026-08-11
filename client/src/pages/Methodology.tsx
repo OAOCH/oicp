@@ -6,8 +6,8 @@ const FLAGS = [
     desc: 'Solo un oferente participó en un proceso que debería ser competitivo.',
     legal: 'Principio de concurrencia, Art. 6 LOSNCP reformada',
     logic: 'es_competitivo(procurement_method_details) AND number_of_tenderers == 1 — es_competitivo = el texto del procedimiento contiene "licitac", "subasta", "cotizac", "concurso" o "menor cuantía"' },
-  { code: 'IC-02', category: 'competencia', severity: 3, ocp: 'R055', name: 'Alto Valor Sin Competencia',
-    desc: 'Adjudicación directa o ínfima cuantía por monto superior al umbral permitido.',
+  { code: 'IC-02', category: 'competencia', severity: 3, ocp: '', name: 'Alto Valor Sin Competencia',
+    desc: 'Adjudicación directa por monto superior al umbral de ínfima cuantía, fuera del catálogo electrónico.',
     legal: 'Art. 50 LOSNCP reformada; umbrales SERCOP por año',
     logic: 'procurement_method == "direct" AND valor > umbral_ínfima(fecha del proceso) AND NO es catálogo electrónico — valor = award_amount, o budget_amount si no hay adjudicado. CORREGIDO EL 11-AGO-2026: hasta esa fecha el indicador NO excluía el catálogo electrónico, y como el SERCOP publica esas órdenes con procurement_method "direct", 65.497 de sus 109.642 disparos (60%) eran compras de catálogo marcadas con la bandera de mayor peso del sistema por hacer algo enteramente regular. El catálogo es compra centralizada en la que el propio SERCOP precalifica proveedores y fija precios, así que la ausencia de competencia en el momento de la orden no indica direccionamiento de la entidad: la competencia ocurrió antes, al armar el catálogo. Es además el mismo criterio que el motor ya aplicaba a todas las banderas CC-*. Se eliminó también la rama que buscaba la palabra "ínfima" en el texto del procedimiento: ese texto no aparece en ningún proceso del conjunto de datos, así que aportaba 0 disparos' },
   { code: 'IT-01', category: 'tiempo', severity: 1, ocp: 'R003', name: 'Plazo de Publicación Insuficiente',
@@ -22,7 +22,7 @@ const FLAGS = [
     desc: 'El monto está entre 85% y 100% del umbral de ínfima cuantía, posible fraccionamiento.',
     legal: 'Art. 50 LOSNCP reformada (prohibición de subdividir)',
     logic: 'valor > 0 AND valor >= umbral_ínfima(fecha) * 0,85 AND valor <= umbral_ínfima(fecha)' },
-  { code: 'IP-02', category: 'precio', severity: 2, ocp: 'R059', name: 'Adjudicación Sobre el Presupuesto Referencial',
+  { code: 'IP-02', category: 'precio', severity: 2, ocp: 'R031', name: 'Adjudicación Sobre el Presupuesto Referencial',
     desc: 'El monto adjudicado SUPERA en más del 15% el presupuesto referencial. Adjudicar por debajo del referencial NO activa este indicador: es el resultado esperable de la competencia y no una señal de riesgo. En los datos del SERCOP el exceso sobre el referencial es casi inexistente, así que este indicador dispara muy poco por diseño.',
     legal: 'Principio de mejor valor por dinero, Art. 6 LOSNCP',
     logic: 'budget_amount > 0 AND award_amount > 0 AND (award_amount − budget_amount) / budget_amount > 0,15. CORREGIDO EL 11-AGO-2026: hasta esa fecha se usaba el VALOR ABSOLUTO de la diferencia, así que el indicador marcaba también las adjudicaciones por debajo del referencial. Medido sobre 2024: de los 1.704 procesos marcados, cero tenían el adjudicado por encima del presupuesto y los 1.704 estaban por debajo, es decir que el indicador señalaba a entidades que adjudicaron por menos de lo presupuestado. Aquellos disparos eran falsos positivos y desaparecen con la corrección' },
@@ -34,7 +34,7 @@ const FLAGS = [
     desc: 'Mismo proveedor gana 5+ ínfimas cuantías (detectadas por monto bajo el umbral anual, fuera de catálogo) del mismo comprador en un año.',
     legal: 'Art. 50 LOSNCP — prohibición de "contratación constante y recurrente". Art. 270 Reglamento — regla de agregación anual',
     logic: 'NO es catálogo electrónico AND ínfima_por_monto(proceso) AND ínfimas(comprador, proveedor, AÑO DEL PROCESO) >= 5' },
-  { code: 'CC-02', category: 'concentracion', severity: 3, ocp: 'R051', name: 'Proveedor Dominante',
+  { code: 'CC-02', category: 'concentracion', severity: 3, ocp: 'R050', name: 'Proveedor Dominante',
     desc: 'Un proveedor concentra más del 40% del gasto de un comprador en el año del proceso, en compradores con al menos 10 procesos ese mismo año (el piso evita falsos positivos en compradores muy pequeños). El porcentaje que muestra la bandera es siempre el del año del proceso, y el detalle lo nombra. No aplica a catálogo electrónico.',
     legal: 'Principio de concurrencia Art. 6 LOSNCP',
     logic: 'NO es catálogo electrónico AND share_of_buyer(comprador, proveedor, AÑO DEL PROCESO) > 40 AND procesos_del_comprador(AÑO DEL PROCESO) >= 10' },
@@ -42,23 +42,23 @@ const FLAGS = [
     desc: 'Un proveedor gana contratos del mismo comprador en 5 o más años distintos del período cubierto (2019 en adelante), con un monto total superior a $50,000. No hay una ventana de "últimos 7 años": se cuentan los años distintos en que contrataron juntos. No aplica a catálogo electrónico.',
     legal: 'Patrón de riesgo reconocido por OCP y OECD',
     logic: 'NO es catálogo electrónico AND años_distintos_con_ese_comprador >= 5 AND monto_acumulado_del_período > 50.000' },
-  { code: 'CC-04', category: 'concentracion', severity: 2, ocp: 'R070', name: 'Miembro Recurrente de Consorcio',
+  { code: 'CC-04', category: 'concentracion', severity: 2, ocp: '', name: 'Miembro Recurrente de Consorcio',
     desc: 'Un proveedor participa en 2+ procesos-consorcio con el mismo comprador (umbral bajado por la baja frecuencia de consorcios en los datos de SERCOP). No aplica a catálogo electrónico.',
     legal: 'Art. 25 LOSNCP reformada regula consorcios',
     logic: 'NO es catálogo electrónico AND el proceso tiene 2+ proveedores AND procesos_consorcio(comprador, proveedor) >= 2 — el conteo de procesos-consorcio también excluye el catálogo electrónico' },
-  { code: 'CC-05', category: 'concentracion', severity: 3, ocp: 'R011', name: 'Posible Fraccionamiento',
+  { code: 'CC-05', category: 'concentracion', severity: 3, ocp: 'R055', name: 'Posible Fraccionamiento',
     desc: '2+ ínfimas cuantías al mismo proveedor de un comprador cuya suma anual supera el umbral de ínfima cuantía. No aplica a catálogo electrónico.',
     legal: 'Art. 50 LOSNCP (prohibición subdivisión); Art. 270 Reglamento (regla agregación anual); Disposición General Tercera LOSNCP',
     logic: 'NO es catálogo electrónico AND ínfimas(comprador, proveedor, AÑO DEL PROCESO) >= 2 AND suma_de_ínfimas_de_ese_año > umbral_ínfima(fecha del proceso)' },
-  { code: 'TR-01', category: 'transparencia', severity: 1, ocp: 'R001', name: 'Información Incompleta Crítica',
+  { code: 'TR-01', category: 'transparencia', severity: 1, ocp: '', name: 'Información Incompleta Crítica',
     desc: 'Faltan campos esenciales: comprador, valor, proveedor o método de contratación.',
     legal: 'Art. 17 Reglamento (obligación publicar en Portal)',
     logic: 'falta buyer_id OR falta valor OR no hay proveedores OR no hay ni procurement_method ni procurement_method_details' },
-  { code: 'TR-02', category: 'transparencia', severity: 0, ocp: 'R013', name: 'Descripción Genérica',
+  { code: 'TR-02', category: 'transparencia', severity: 0, ocp: '', name: 'Descripción Genérica',
     desc: 'La descripción del proceso tiene entre 1 y 29 caracteres.',
     legal: 'Principio de transparencia Art. 6 LOSNCP',
     logic: '0 < longitud(description o title) < 30 — una descripción completamente vacía no dispara TR-02, porque la condición > 0 lo impide. Tampoco la dispara TR-01: TR-01 no evalúa la descripción, solo la ausencia de comprador, valor, proveedor o método' },
-  { code: 'TR-03', category: 'transparencia', severity: 2, ocp: 'R039', name: 'Sin Justificación Régimen Especial',
+  { code: 'TR-03', category: 'transparencia', severity: 2, ocp: '', name: 'Sin Justificación Régimen Especial',
     desc: 'Proceso de régimen especial, emergente o contratación directa, por un monto superior al umbral de ínfima cuantía, sin justificación documentada en los datos OCDS.',
     legal: 'Art. 38 LOSNCP reformada; Art. 116 Reglamento',
     logic: '(texto_procedimiento contiene "especial", "emergent" o "contratación directa" OR el OCID contiene "-RE-") AND valor > umbral_ínfima(fecha)' },
@@ -175,6 +175,46 @@ export default function Methodology() {
           del SERCOP que lo resuelva. La plataforma mantiene USD 10.000 en esa ventana por continuidad con el tramo
           anterior, y lo declara aquí en vez de esconderlo.
         </p>
+      </div>
+
+      {/* Política de citas a la guía de la OCP. Se publica porque un auditor comprueba una cita
+          en treinta segundos, y una cita falsa pone en duda todo lo demás. */}
+      <div className="bg-white rounded-xl border p-6 shadow-sm">
+        <h2 className="font-semibold mb-3">Cómo se citan las banderas de la OCP</h2>
+        <div className="text-sm text-gray-600 space-y-2">
+          <p>
+            El código <strong>R0xx</strong> que acompaña a una bandera solo aparece cuando el
+            indicador implementa de verdad lo que ese código mide en la guía. Los indicadores sin
+            código no tienen equivalente en la guía y se declaran así en vez de citar algo parecido.
+          </p>
+          <p>
+            El <strong>11 de agosto de 2026</strong> se revisaron las 13 citas que había, una por
+            una, contra el PDF oficial de la edición 2024. Tres eran correctas (IC-01/R018,
+            IT-01/R003, IP-03/R069). Tres apuntaban a un código equivocado y se corrigieron:
+            <strong> IP-02</strong> citaba R059, que compara el adjudicado contra el contrato final,
+            cuando el indicador compara el adjudicado contra el presupuesto referencial, que es
+            R031; <strong>CC-02</strong> citaba R051, que es concentración de mercado por índice
+            Herfindahl-Hirschman, cuando mide la cuota de un proveedor sobre un comprador, que es
+            R050; y <strong>CC-05</strong> citaba R011 cuando la fórmula que implementa, sumar las
+            ínfimas del par y comparar la suma contra el umbral, es literalmente la de R055.
+          </p>
+          <p>
+            Cinco citas se <strong>retiraron</strong> por no tener equivalente: IC-02 (R055 exige
+            sumar varias adjudicaciones directas del mismo par, no evaluar un proceso aislado),
+            CC-04 (R070 es la contratación de oferentes perdedores como subcontratistas, un dato que
+            el SERCOP no publica), TR-01 (R001 es la ausencia de documentos de planificación),
+            TR-02 (R013 es la proporción de métodos no competitivos de un comprador) y TR-03 (R039
+            son preguntas de oferentes sin responder).
+          </p>
+          <p>
+            Dos se conservan como <strong>adaptaciones declaradas</strong>, porque el parentesco es
+            real pero no exacto: <strong>IT-02 / R061</strong>, donde la guía mide el intervalo
+            entre el cierre de ofertas y la adjudicación y aquí se mide desde la publicación,
+            porque es el par de fechas que publica el SERCOP; y <strong>IP-01 / R011</strong>, donde
+            la guía agrupa dos o más procesos del mismo comprador y categoría y aquí se evalúa la
+            cercanía al umbral de un proceso individual. La agregación que pide R011 la hace CC-05.
+          </p>
+        </div>
       </div>
 
       {/* All Flags */}

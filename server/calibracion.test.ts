@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateIndividualFlags, getInfimaThreshold } from './flag-engine.js';
+import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas } from './flag-engine.js';
 
 const codigos = (fs: any[]) => fs.map(f => f.code);
 
@@ -108,4 +108,43 @@ test('una fecha inválida no rompe el cálculo del umbral', () => {
   assert.equal(getInfimaThreshold('no-es-fecha'), 10_000);
   assert.equal(getInfimaThreshold(''), 10_000);
   assert.equal(getInfimaThreshold(null), 10_000);
+});
+
+// ── Citas a la guía de la OCP ──
+// Revisadas el 2026-08-11 contra el PDF oficial de la edición 2024, código por código. Se fijan
+// aquí para que nadie vuelva a poner una cita sin comprobarla: una cita falsa es peor que ninguna
+// porque un auditor la verifica en treinta segundos. La política completa está en el comentario
+// de FLAG_CATALOG, y el mismo mapa se publica en client/src/pages/Methodology.tsx (regla 10).
+test('las citas OCP son exactamente las verificadas contra la guía de 2024', () => {
+  const esperado: Record<string, string | undefined> = {
+    'IC-01': 'R018',      // Single bid received
+    'IC-02': undefined,   // retirada: R055 exige sumar varias adjudicaciones del mismo par
+    'IT-01': 'R003',      // The submission period is too short
+    'IT-02': 'R061',      // adaptada: la guía mide cierre de ofertas -> adjudicación
+    'IP-01': 'R011',      // adaptada: la guía agrupa 2+ procesos; aquí se evalúa uno
+    'IP-02': 'R031',      // Winning bid price very close or higher than estimated price
+    'IP-03': 'R069',      // Contract amendments to increase price
+    'CC-01': undefined,
+    'CC-02': 'R050',      // High market share (R051 es concentración de mercado por HHI)
+    'CC-03': undefined,
+    'CC-04': undefined,   // retirada: R070 es subcontratación de oferentes perdedores
+    'CC-05': 'R055',      // Multiple direct awards above or just below competitive threshold
+    'TR-01': undefined,   // retirada: R001 es ausencia de documentos de planificación
+    'TR-02': undefined,   // retirada: R013 es proporción de métodos no competitivos del comprador
+    'TR-03': undefined,   // retirada: R039 son preguntas de oferentes sin responder
+  };
+  for (const [codigo, ocp] of Object.entries(esperado)) {
+    assert.equal(FLAG_CATALOG[codigo]?.ocp_ref, ocp,
+      `la cita OCP de ${codigo} cambió sin verificarla contra la guía`);
+  }
+  assert.equal(Object.keys(FLAG_CATALOG).length, 15, 'el catálogo dejó de tener 15 indicadores');
+});
+
+test('retirar una cita del catálogo la borra también de las banderas ya guardadas', () => {
+  // Sin esto, quitar una cita no surtía efecto hasta el próximo recálculo: el spread conservaba
+  // el ocp_ref viejo de la fila porque la clave no existía en el objeto del catálogo.
+  const guardada = [{ code: 'TR-01', active: true, detail: 'Faltan: proveedor', ocp_ref: 'R001' }];
+  const [h] = hidratarBanderas(guardada);
+  assert.equal(h.ocp_ref, undefined, 'la ficha seguiría publicando una cita ya retirada');
+  assert.equal(h.detail, 'Faltan: proveedor', 'el detalle del proceso tiene que sobrevivir');
 });
