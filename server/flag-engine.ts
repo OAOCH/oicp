@@ -114,13 +114,13 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'CC-02': {
     code: 'CC-02', category: 'concentracion', name: 'Dominant Supplier',
     name_es: 'Proveedor Dominante',
-    description_es: 'Un proveedor recibe más del 40% del gasto total de un comprador en un año (en compradores con 10 o más procesos).',
+    description_es: 'Un proveedor recibe más del 40% del gasto total de un comprador en el año del proceso, en compradores con 10 o más procesos ese mismo año.',
     severity: 3, ocp_ref: 'R051',
   },
   'CC-03': {
     code: 'CC-03', category: 'concentracion', name: 'Historically Permanent Supplier',
     name_es: 'Proveedor Histórico Permanente',
-    description_es: 'Un proveedor gana contratos del mismo comprador en 5+ de los últimos 7 años.',
+    description_es: 'Un proveedor gana contratos del mismo comprador en 5 o más años distintos del período cubierto, con un monto acumulado superior a $50.000.',
     severity: 2,
   },
   'CC-04': {
@@ -213,6 +213,9 @@ interface ProcedureData {
   has_amendments?: boolean;
   amendment_count?: number | null;
   suppliers?: { id: string; name: string }[];
+  // Año del proceso. Es la clave con la que las banderas de concentración buscan los
+  // hechos DE SU AÑO; sin él caerían al año derivado de published_date.
+  source_year?: number | null;
 }
 
 function businessDays(start: string, end: string): number {
@@ -399,9 +402,34 @@ export interface SupplierConcentration {
   buyer_total_procs: number;   // total de procesos del comprador (volumen, para el piso de CC-02)
 }
 
+/** Hechos del par comprador-proveedor EN UN AÑO concreto. */
+export interface PairYearConcentration {
+  supplier_name: string;
+  infima_count: number;
+  infima_total_value: number;
+  share_of_buyer: number;      // % del gasto del comprador EN ESE AÑO
+  buyer_total_procs: number;   // procesos del comprador EN ESE AÑO (piso de volumen de CC-02)
+}
+
+/** Hechos del par acumulados entre años (los que por definición son históricos). */
+export interface PairConcentration {
+  supplier_name: string;
+  years_active: number;        // cuántos años distintos del período contrataron juntos
+  total_value: number;         // monto acumulado en todo el período
+  consortium_count: number;    // procesos-consorcio del par (excluye catálogo electrónico)
+}
+
 export interface ConcentrationContext {
-  // "buyer_id|supplier_id" -> datos de concentración de ese par
-  bySupplier: Map<string, SupplierConcentration>;
+  // "buyer_id|supplier_id|año" -> hechos DEL AÑO DEL PROCESO. CC-01, CC-02 y CC-05 leen de
+  // aquí. Antes el contexto colapsaba los años con Math.max y ese máximo se aplicaba a
+  // TODOS los procesos del par, así que un proceso de 2019 se marcaba con el porcentaje de
+  // 2026: en producción había un proceso de marzo de 2019 con CC-02 diciendo "98.8% del
+  // gasto de este comprador" cuando su share real de 2019 fue 17,17%. Lo publicado siempre
+  // dijo "en un año", así que el defecto estaba en el código, no en el texto.
+  byPairYear: Map<string, PairYearConcentration>;
+  // "buyer_id|supplier_id" -> hechos históricos. Solo CC-03 y CC-04 leen de aquí, porque
+  // son indicadores que por definición miran todo el período.
+  byPair: Map<string, PairConcentration>;
 }
 
 function isCatalogoElectronico(proc: any): boolean {
@@ -442,52 +470,59 @@ export function evaluateConcentrationFlags(
   const isInf = isInfimaByAmount(proc);
   const isConsortium = (proc.suppliers || []).length >= 2;
 
+  // El año del proceso. Todo lo que se publica como "en un año" se mide contra ESTE año.
+  const anio = proc.source_year || (proc.published_date ? Number(String(proc.published_date).slice(0, 4)) : 0);
+
   for (const supplier of (proc.suppliers || [])) {
     if (!supplier.id) continue;
-    const key = `${proc.buyer_id}|${supplier.id}`;
-    const c = ctx.bySupplier.get(key);
-    if (!c) continue;
+    const par = `${proc.buyer_id}|${supplier.id}`;
+    const cy = ctx.byPairYear.get(`${par}|${anio}`);   // hechos del año del proceso
+    const cp = ctx.byPair.get(par);                     // hechos históricos del par
 
-    // CC-01: Proveedor recurrente en ínfima cuantía (5+ ínfimas mismo comprador en el año)
-    if (isInf && c.infima_count >= 5) {
+    // CC-01: Proveedor recurrente en ínfima cuantía: 5+ ínfimas del par EN EL AÑO DEL
+    // PROCESO. El detalle nombra el año para que la cifra sea verificable.
+    if (isInf && cy && cy.infima_count >= 5) {
       flags.push({
         ...FLAG_CATALOG['CC-01'], active: true,
-        detail: `${supplier.name} tiene ${c.infima_count} ínfimas con este comprador en el año`,
+        detail: `${supplier.name} tiene ${cy.infima_count} ínfimas con este comprador en ${anio}`,
       });
     }
 
-    // CC-02: Proveedor dominante (>40% del gasto del comprador, solo si el comprador
-    // tiene volumen suficiente: >=10 procesos. Un 100% en un comprador con 1-2 procesos no discrimina).
-    if (c.share_of_buyer > 40 && c.buyer_total_procs >= 10) {
+    // CC-02: Proveedor dominante: >40% del gasto del comprador EN EL AÑO DEL PROCESO, y
+    // solo si el comprador tuvo volumen suficiente ESE AÑO (>=10 procesos). Un 100% en un
+    // comprador con 1-2 procesos no discrimina nada.
+    if (cy && cy.share_of_buyer > 40 && cy.buyer_total_procs >= 10) {
       flags.push({
         ...FLAG_CATALOG['CC-02'], active: true,
-        detail: `${supplier.name} representa ${c.share_of_buyer.toFixed(1)}% del gasto de este comprador`,
+        detail: `${supplier.name} representa ${cy.share_of_buyer.toFixed(1)}% del gasto de este comprador en ${anio} (${cy.buyer_total_procs} procesos del comprador ese año)`,
       });
     }
 
-    // CC-03: Proveedor histórico permanente (5+ años con el mismo comprador) y con monto
-    // total significativo (>50k), para descartar recurrencia de compras menores.
-    if (c.years_active >= 5 && c.total_value > 50000) {
+    // CC-03: Proveedor histórico permanente: 5+ años DISTINTOS del período con el mismo
+    // comprador y monto acumulado > $50.000. No hay ninguna ventana de "últimos 7 años" en
+    // el código, y publicarla producía el absurdo "presente en 8 de los últimos 7 años".
+    if (cp && cp.years_active >= 5 && cp.total_value > 50000) {
       flags.push({
         ...FLAG_CATALOG['CC-03'], active: true,
-        detail: `${supplier.name} presente en ${c.years_active} de los últimos 7 años con este comprador`,
+        detail: `${supplier.name} contrató con este comprador en ${cp.years_active} años distintos del período, por $${Math.round(cp.total_value).toLocaleString()} acumulados`,
       });
     }
 
-    // CC-04: Miembro recurrente de consorcio (en 2+ procesos-consorcio del mismo comprador)
-    // Umbral bajado a 2+ porque en estos datos solo hay 41 procesos-consorcio en total.
-    if (isConsortium && c.consortium_count >= 2) {
+    // CC-04: Miembro recurrente de consorcio (2+ procesos-consorcio del par). Umbral bajo
+    // a propósito: en estos datos solo hay 41 procesos-consorcio en total.
+    if (isConsortium && cp && cp.consortium_count >= 2) {
       flags.push({
         ...FLAG_CATALOG['CC-04'], active: true,
-        detail: `${supplier.name} aparece en ${c.consortium_count} consorcios con este comprador`,
+        detail: `${supplier.name} aparece en ${cp.consortium_count} consorcios con este comprador`,
       });
     }
 
-    // CC-05: Posible fraccionamiento (suma de ínfimas mismo proveedor+comprador > umbral anual)
-    if (c.infima_count >= 2 && c.infima_total_value > threshold) {
+    // CC-05: Posible fraccionamiento: 2+ ínfimas del par EN EL AÑO cuya suma supera el
+    // umbral de ínfima de la fecha del proceso.
+    if (cy && cy.infima_count >= 2 && cy.infima_total_value > threshold) {
       flags.push({
         ...FLAG_CATALOG['CC-05'], active: true,
-        detail: `${c.infima_count} ínfimas a ${supplier.name} suman $${c.infima_total_value.toLocaleString()} (umbral anual: $${threshold.toLocaleString()})`,
+        detail: `${cy.infima_count} ínfimas a ${supplier.name} en ${anio} suman $${Math.round(cy.infima_total_value).toLocaleString()} (umbral de ínfima: $${threshold.toLocaleString()})`,
       });
     }
   }

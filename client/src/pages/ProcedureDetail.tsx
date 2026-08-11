@@ -41,16 +41,16 @@ function generateRiskSummary(proc: any, activeFlags: any[]): string {
         parts.push('El proveedor adjudicado ha recibido 5 o más contratos de ínfima cuantía del mismo comprador en el mismo año, un patrón que sugiere posible direccionamiento.');
         break;
       case 'CC-02':
-        parts.push('Un solo proveedor concentra más del 40% del gasto anual de esta entidad compradora (en entidades con 10 o más procesos).');
+        parts.push('Un solo proveedor concentra más del 40% del gasto de esta entidad compradora en el año de este proceso, y esa entidad tuvo 10 o más procesos ese mismo año. El porcentaje del detalle corresponde a ese año.');
         break;
       case 'CC-03':
-        parts.push('El proveedor ha ganado contratos de la misma entidad en 5 o más de los últimos 7 años, por un monto acumulado superior a $50.000.');
+        parts.push('El proveedor ha ganado contratos de la misma entidad en 5 o más años distintos del período cubierto, por un monto acumulado superior a $50.000.');
         break;
       case 'CC-04':
-        parts.push('Un miembro de consorcio aparece en 8 o más procesos, lo que puede indicar uso de figuras asociativas para evadir controles.');
+        parts.push('Este proceso se adjudicó a un consorcio (dos o más proveedores) y el mismo miembro ya aparece en 2 o más procesos-consorcio con esta entidad. Puede indicar uso de figuras asociativas para evadir controles.');
         break;
       case 'CC-05':
-        parts.push('Se detectaron 3 o más contratos del mismo comprador con objetos similares (mismo código CPC) en un período de 90 días, cuya suma supera el umbral de ínfima cuantía. Esto puede constituir fraccionamiento contractual prohibido por el Art. 50 de la LOSNCP.');
+        parts.push('El mismo proveedor recibió 2 o más contratos de ínfima cuantía de esta entidad en el año, y su suma supera el umbral de ínfima cuantía vigente a la fecha del proceso. Puede constituir fraccionamiento contractual, prohibido por el Art. 50 de la LOSNCP. El indicador NO compara códigos CPC ni usa ventanas de 90 días.');
         break;
       case 'TR-01':
         parts.push(`Faltan campos críticos en el registro (${flag.detail || 'datos del proveedor, montos u otros'}), lo que dificulta la verificación y el control.`);

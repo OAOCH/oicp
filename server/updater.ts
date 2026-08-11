@@ -264,45 +264,79 @@ async function reconcileOrphans(db: Database.Database): Promise<number> {
 }
 
 // ── Contexto de concentración (misma semántica que /normalize) ─
+// Construye DOS índices, y esa separación es el arreglo de fondo:
+//   - byPairYear: los hechos del par comprador-proveedor EN CADA AÑO. CC-01, CC-02 y CC-05
+//     los leen para el año del proceso que están evaluando.
+//   - byPair: solo lo que por definición es histórico (años distintos, monto acumulado,
+//     consorcios). Lo leen CC-03 y CC-04.
+// Antes había un único índice por par en el que los años se colapsaban con Math.max, y ese
+// máximo se aplicaba a TODOS los procesos del par. Efecto medido en producción: un proceso
+// de marzo de 2019 marcado con CC-02 y el detalle "98.8% del gasto de este comprador",
+// cuando el share real de 2019 fue 17,17% y el 98,85% era el de 2026. La bandera no debía
+// existir y dejaba el proceso en score 100/crítico.
 export function buildConcentrationContext(db: Database.Database) {
-  const bySupplier = new Map<string, any>();
-  const yearsByPair = new Map<string, Set<number>>();
+  const byPairYear = new Map<string, any>();
+  const byPair = new Map<string, any>();
+  const aniosPorPar = new Map<string, Set<number>>();
+
   for (const r of db.prepare(`
     SELECT buyer_id, supplier_id, supplier_name, year, contract_count, total_value,
            COALESCE(infima_count,0) AS infima_count, COALESCE(infima_total_value,0) AS infima_total_value,
            COALESCE(share_of_buyer,0) AS share_of_buyer
     FROM concentration_index WHERE supplier_id IS NOT NULL`).iterate() as any) {
-    const key = `${r.buyer_id}|${r.supplier_id}`;
-    let agg = bySupplier.get(key);
-    if (!agg) {
-      agg = { supplier_id: r.supplier_id, supplier_name: r.supplier_name, infima_count: 0,
-        infima_total_value: 0, share_of_buyer: 0, years_active: 0, consortium_count: 0, total_value: 0, buyer_total_procs: 0 };
-      bySupplier.set(key, agg);
-      yearsByPair.set(key, new Set());
+    const par = `${r.buyer_id}|${r.supplier_id}`;
+
+    byPairYear.set(`${par}|${r.year}`, {
+      supplier_name: r.supplier_name,
+      infima_count: r.infima_count,
+      infima_total_value: r.infima_total_value,
+      share_of_buyer: r.share_of_buyer,
+      buyer_total_procs: 0,          // se completa abajo, por comprador Y AÑO
+      _buyer: r.buyer_id, _year: r.year,
+    });
+
+    let hist = byPair.get(par);
+    if (!hist) {
+      hist = { supplier_name: r.supplier_name, years_active: 0, total_value: 0, consortium_count: 0 };
+      byPair.set(par, hist);
+      aniosPorPar.set(par, new Set());
     }
-    agg.infima_count = Math.max(agg.infima_count, r.infima_count);
-    agg.infima_total_value = Math.max(agg.infima_total_value, r.infima_total_value);
-    agg.share_of_buyer = Math.max(agg.share_of_buyer, r.share_of_buyer);
-    agg.total_value += (r.total_value || 0);
-    yearsByPair.get(key)!.add(r.year);
+    hist.total_value += (r.total_value || 0);
+    aniosPorPar.get(par)!.add(r.year);
   }
-  for (const [key, years] of yearsByPair) bySupplier.get(key).years_active = years.size;
-  const buyerProcs = new Map<string, number>();
-  for (const r of db.prepare(`SELECT buyer_id, SUM(contract_count) AS n FROM concentration_index
-    WHERE supplier_id IS NOT NULL GROUP BY buyer_id`).iterate() as any) {
-    buyerProcs.set(r.buyer_id, r.n || 0);
+  for (const [par, anios] of aniosPorPar) byPair.get(par).years_active = anios.size;
+
+  // Piso de volumen de CC-02: procesos del comprador EN ESE AÑO. Antes era el acumulado de
+  // todos los años (GROUP BY buyer_id sin año), así que el piso de 10 se cumplía con la
+  // suma del período aunque ese año el comprador hubiera tenido 1 solo proceso.
+  const procsCompradorAnio = new Map<string, number>();
+  for (const r of db.prepare(`SELECT buyer_id, year, SUM(contract_count) AS n FROM concentration_index
+    WHERE supplier_id IS NOT NULL GROUP BY buyer_id, year`).iterate() as any) {
+    procsCompradorAnio.set(`${r.buyer_id}|${r.year}`, r.n || 0);
   }
-  for (const [key, agg] of bySupplier) agg.buyer_total_procs = buyerProcs.get(key.split('|')[0]) || 0;
-  for (const row of db.prepare(`SELECT buyer_id, suppliers FROM procedures WHERE json_array_length(suppliers) >= 2`).iterate() as any) {
+  for (const v of byPairYear.values()) {
+    v.buyer_total_procs = procsCompradorAnio.get(`${v._buyer}|${v._year}`) || 0;
+    delete v._buyer; delete v._year;
+  }
+
+  // Consorcios: se EXCLUYE el catálogo electrónico, igual que hace la propia bandera con el
+  // proceso que evalúa. Antes el contador incluía procesos de catálogo (7 de los 41 del
+  // dataset), o sea que contaba lo que la regla publicada dice excluir.
+  for (const row of db.prepare(`
+    SELECT buyer_id, suppliers FROM procedures
+    WHERE json_array_length(suppliers) >= 2
+      AND UPPER(COALESCE(procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
+      AND UPPER(COALESCE(procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
+      AND UPPER(COALESCE(title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'`).iterate() as any) {
     let sups: any[] = [];
     try { sups = JSON.parse(row.suppliers || '[]'); } catch { continue; }
     for (const s of sups) {
       if (!s.id) continue;
-      const agg = bySupplier.get(`${row.buyer_id}|${s.id}`);
-      if (agg) agg.consortium_count++;
+      const hist = byPair.get(`${row.buyer_id}|${s.id}`);
+      if (hist) hist.consortium_count++;
     }
   }
-  return { bySupplier };
+  return { byPairYear, byPair };
 }
 
 // ── Re-evaluación global: iterate() + escritura ATÓMICA por lote

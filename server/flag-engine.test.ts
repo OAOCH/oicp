@@ -104,40 +104,106 @@ test('getRiskLevel: cortes low/moderate/high/critical (segun codigo real)', () =
   assert.equal(getRiskLevel(61), 'critical');
 });
 
+// ── Concentración: los hechos se leen DEL AÑO DEL PROCESO ──
+// El contexto tiene dos índices: byPairYear (clave "comprador|proveedor|año") para lo que
+// se publica "en un año", y byPair para lo histórico (CC-03, CC-04).
+function ctxAnio(anio: number, porAnio: any, hist: any = {}) {
+  return {
+    byPairYear: new Map([[`b|s|${anio}`, { supplier_name: 'S', infima_count: 0,
+      infima_total_value: 0, share_of_buyer: 0, buyer_total_procs: 0, ...porAnio }]]),
+    byPair: new Map([['b|s', { supplier_name: 'S', years_active: 1, total_value: 0,
+      consortium_count: 0, ...hist }]]),
+  };
+}
+
 test('Concentracion: catalogo electronico se excluye por completo', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 99999, share_of_buyer: 99, years_active: 7, consortium_count: 5, total_value: 999999, buyer_total_procs: 100 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', title: 'ORDEN DE COMPRA CE-123', procurement_method_details: 'Catálogo electrónico', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+  const ctx = ctxAnio(2024, { infima_count: 9, infima_total_value: 99999, share_of_buyer: 99, buyer_total_procs: 100 },
+    { years_active: 7, total_value: 999999, consortium_count: 5 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, title: 'ORDEN DE COMPRA CE-123', procurement_method_details: 'Catálogo electrónico', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
   assert.equal(evaluateConcentrationFlags(proc as any, ctx as any).length, 0);
 });
 
-test('CC-02: proveedor dominante (>40% y >=10 procesos del comprador)', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 0, infima_total_value: 0, share_of_buyer: 55, years_active: 1, consortium_count: 0, total_value: 200000, buyer_total_procs: 20 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
-  assert.ok(codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-02'));
+test('CC-02: proveedor dominante (>40% y >=10 procesos del comprador ese año)', () => {
+  const ctx = ctxAnio(2024, { share_of_buyer: 55, buyer_total_procs: 20 }, { total_value: 200000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+  const f = evaluateConcentrationFlags(proc as any, ctx as any);
+  assert.ok(codes(f).includes('CC-02'));
+  // El detalle debe nombrar el año: sin eso, la cifra no es verificable por quien la cita.
+  assert.match(f.find(x => x.code === 'CC-02')!.detail!, /en 2024/);
 });
 
-test('CC-02: NO dispara si el comprador tiene <10 procesos (piso de volumen)', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 0, infima_total_value: 0, share_of_buyer: 100, years_active: 1, consortium_count: 0, total_value: 5000, buyer_total_procs: 2 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+test('CC-02: NO dispara si el comprador tiene <10 procesos ESE AÑO (piso de volumen)', () => {
+  const ctx = ctxAnio(2024, { share_of_buyer: 100, buyer_total_procs: 2 }, { total_value: 5000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
   assert.ok(!codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-02'));
 });
 
-test('CC-05: posible fraccionamiento (2+ infimas que suman sobre el umbral)', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 3, infima_total_value: 25000, share_of_buyer: 10, years_active: 1, consortium_count: 0, total_value: 25000, buyer_total_procs: 12 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
-  assert.ok(codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-05'));
+// REGRESIÓN del defecto real de producción: el proceso ocds-5wno2w-RE-EPP-2017355-19-253178
+// es de marzo de 2019 y llevaba CC-02 con el detalle "98.8% del gasto de este comprador",
+// que era el share de 2026. Su share real de 2019 fue 17,17%, o sea que la bandera no debía
+// existir, y dejaba el proceso en score 100/crítico.
+test('CC-02: un proceso de 2019 NO hereda el share de 2026 (defecto real corregido)', () => {
+  const ctx = {
+    byPairYear: new Map<string, any>([
+      ['b|s|2019', { supplier_name: 'CUERPO DE INGENIEROS', infima_count: 0, infima_total_value: 0, share_of_buyer: 17.17, buyer_total_procs: 40 }],
+      ['b|s|2026', { supplier_name: 'CUERPO DE INGENIEROS', infima_count: 0, infima_total_value: 0, share_of_buyer: 98.85, buyer_total_procs: 40 }],
+    ]),
+    byPair: new Map<string, any>([['b|s', { supplier_name: 'CUERPO DE INGENIEROS', years_active: 8, total_value: 279_599_122, consortium_count: 0 }]]),
+  };
+  const de2019 = { id: 'p2019', buyer_id: 'b', source_year: 2019, procurement_method_details: 'Régimen Especial', suppliers: [{ id: 's', name: 'CUERPO DE INGENIEROS' }], published_date: '2019-03-15T12:00:00-05:00' };
+  const f2019 = evaluateConcentrationFlags(de2019 as any, ctx as any);
+  assert.ok(!codes(f2019).includes('CC-02'), 'con 17,17% en 2019 CC-02 no debe dispararse');
+
+  const de2026 = { ...de2019, id: 'p2026', source_year: 2026, published_date: '2026-01-15T12:00:00-05:00' };
+  const f2026 = evaluateConcentrationFlags(de2026 as any, ctx as any);
+  assert.ok(codes(f2026).includes('CC-02'), 'con 98,85% en 2026 sí debe dispararse');
+  assert.match(f2026.find(x => x.code === 'CC-02')!.detail!, /98\.9%|98\.8%/);
+  assert.match(f2026.find(x => x.code === 'CC-02')!.detail!, /en 2026/);
+});
+
+test('CC-03: cuenta años distintos del periodo, sin ventana inventada de 7 anios', () => {
+  const ctx = ctxAnio(2024, {}, { years_active: 8, total_value: 120000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+  const f = evaluateConcentrationFlags(proc as any, ctx as any);
+  assert.ok(codes(f).includes('CC-03'));
+  const detalle = f.find(x => x.code === 'CC-03')!.detail!;
+  assert.match(detalle, /8 años distintos/);
+  // El absurdo que se publicaba en 2.861 procesos de produccion.
+  assert.doesNotMatch(detalle, /de los últimos 7/);
+});
+
+test('CC-05: posible fraccionamiento (2+ infimas del AÑO que suman sobre el umbral)', () => {
+  const ctx = ctxAnio(2024, { infima_count: 3, infima_total_value: 25000, share_of_buyer: 10, buyer_total_procs: 12 }, { total_value: 25000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+  const f = evaluateConcentrationFlags(proc as any, ctx as any);
+  assert.ok(codes(f).includes('CC-05'));
+  assert.match(f.find(x => x.code === 'CC-05')!.detail!, /en 2024/);
+});
+
+test('CC-05: NO usa las infimas de otro año', () => {
+  const ctx = {
+    byPairYear: new Map<string, any>([
+      ['b|s|2024', { supplier_name: 'S', infima_count: 1, infima_total_value: 900, share_of_buyer: 5, buyer_total_procs: 12 }],
+      ['b|s|2022', { supplier_name: 'S', infima_count: 9, infima_total_value: 99999, share_of_buyer: 5, buyer_total_procs: 12 }],
+    ]),
+    byPair: new Map<string, any>([['b|s', { supplier_name: 'S', years_active: 2, total_value: 100899, consortium_count: 0 }]]),
+  };
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', suppliers: [{ id: 's', name: 'S' }], published_date: '2024-01-01' };
+  assert.ok(!codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-05'));
 });
 
 // ── CC-01 revivida: detecta ínfima por MONTO (no por texto inexistente) ──
-test('CC-01 (revivida): dispara con proceso ínfima por monto + par con >=5 ínfimas', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, years_active: 1, consortium_count: 0, total_value: 30000, buyer_total_procs: 12 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', procurement_method_details: 'Menor Cuantía', award_amount: 5000, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
-  assert.ok(codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-01'));
+test('CC-01 (revivida): dispara con proceso ínfima por monto + par con >=5 ínfimas en el año', () => {
+  const ctx = ctxAnio(2024, { infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, buyer_total_procs: 12 }, { total_value: 30000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, procurement_method_details: 'Menor Cuantía', award_amount: 5000, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
+  const f = evaluateConcentrationFlags(proc as any, ctx as any);
+  assert.ok(codes(f).includes('CC-01'));
+  assert.match(f.find(x => x.code === 'CC-01')!.detail!, /en 2024/);
 });
 
 test('CC-01: NO dispara en catálogo electrónico aunque el par tenga muchas ínfimas', () => {
-  const ctx = { bySupplier: new Map([['b|s', { supplier_id: 's', supplier_name: 'S', infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, years_active: 1, consortium_count: 0, total_value: 30000, buyer_total_procs: 12 }]]) };
-  const proc = { id: 'x', buyer_id: 'b', title: 'ORDEN DE COMPRA CE-9', procurement_method_details: 'Catálogo electrónico', award_amount: 500, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
+  const ctx = ctxAnio(2024, { infima_count: 9, infima_total_value: 30000, share_of_buyer: 5, buyer_total_procs: 12 }, { total_value: 30000 });
+  const proc = { id: 'x', buyer_id: 'b', source_year: 2024, title: 'ORDEN DE COMPRA CE-9', procurement_method_details: 'Catálogo electrónico', award_amount: 500, suppliers: [{ id: 's', name: 'S' }], published_date: '2024-03-01' };
   assert.ok(!codes(evaluateConcentrationFlags(proc as any, ctx as any)).includes('CC-01'));
 });
 
