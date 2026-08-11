@@ -3,7 +3,7 @@ import express from 'express';
 import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase, getDb, closeDbForReplace } from '../db.js';
 import { buildAnalytics, analyticsReady, mintMcpToken } from '../mcp-server.js';
 import { evaluateAllFlags, getRegime } from '../flag-engine.js';
-import { writeFileSync, readFileSync, createReadStream, appendFileSync, statSync } from 'fs';
+import { writeFileSync, readFileSync, createReadStream, appendFileSync, statSync, existsSync, unlinkSync, statfsSync } from 'fs';
 import { createGzip } from 'zlib';
 import { resolve } from 'path';
 import crypto from 'crypto';
@@ -821,23 +821,86 @@ setInterval(ck,10000);ck()
 </script></body></html>`);
 });
 
-// ── BACKUP (descarga el .db comprimido en streaming; superadmin/ADMIN_KEY) ──
-// Backup en caliente del archivo SQLite. Para un backup 100% consistente bajo
-// escritura intensa, correrlo cuando no haya un normalize en curso.
+// ── BACKUP (snapshot consistente, comprimido en streaming; superadmin/ADMIN_KEY) ──
+//
+// La versión anterior tenía dos formas de producir una copia incompleta que PARECÍA
+// correcta, y es la razón por la que este respaldo nunca fue de fiar:
+//   1. El `wal_checkpoint(TRUNCATE)` iba en un try/catch que descartaba el error. Si otra
+//      conexión tenía la base tomada (el actualizador, o la segunda conexión que abre
+//      buildAnalytics), el checkpoint fallaba en silencio y la copia salía sin lo que
+//      seguía viviendo en el WAL.
+//   2. `createReadStream` leía el archivo VIVO durante segundos o minutos. Cualquier
+//      escritura concurrente (el actualizador, el registro de accesos) podía dejar el
+//      archivo partido a mitad de una página.
+// La forma correcta en SQLite es pedirle a la propia base un snapshot consistente con
+// `VACUUM INTO`, que además sale desfragmentado y más pequeño. Después se verifica que el
+// snapshot se pueda LEER y que traiga los datos, antes de empezar a enviarlo: un respaldo
+// que no se puede verificar no es un respaldo.
+export function backupHandler(req: any, res: any) {
+  const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
+  const snapPath = `${dbPath}.backup-${Date.now()}.tmp`;
+  const limpiar = () => { try { if (existsSync(snapPath)) unlinkSync(snapPath); } catch { /* nada que hacer */ } };
+
+  try {
+    const db = getDb();
+
+    // El checkpoint ya no es la garantía (VACUUM INTO ve los datos confirmados de todas
+    // formas), pero libera el WAL y con él espacio en el volumen, que es de 5 GB.
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* no es crítico */ }
+
+    // Espacio libre: el snapshot ocupa aproximadamente lo mismo que la base. Si no cabe,
+    // es mejor un error claro que llenar el volumen, que ya tumbó producción una vez.
+    try {
+      const tamBase = statSync(dbPath).size;
+      const libre = (statfsSync(dbPath) as any).bavail * (statfsSync(dbPath) as any).bsize;
+      if (Number.isFinite(libre) && libre < tamBase * 1.15) {
+        return res.status(507).json({
+          error: `Espacio insuficiente para un snapshot consistente: la base ocupa ${(tamBase / 1e9).toFixed(2)} GB y quedan ${(libre / 1e9).toFixed(2)} GB libres.`,
+        });
+      }
+    } catch { /* si no se puede medir, se intenta igual */ }
+
+    limpiar();
+    db.prepare(`VACUUM INTO ?`).run(snapPath);
+
+    // Verificación antes de enviar: se adjunta el snapshot y se cuentan sus filas. Si
+    // saliera vacío o ilegible, esto falla aquí y no se entrega un archivo inservible.
+    let procesosSnapshot = 0;
+    try {
+      db.prepare(`ATTACH DATABASE ? AS snap`).run(snapPath);
+      procesosSnapshot = (db.prepare(`SELECT COUNT(*) AS n FROM snap.procedures`).get() as any).n;
+    } finally {
+      try { db.prepare(`DETACH DATABASE snap`).run(); } catch { /* ya estaba suelta */ }
+    }
+    if (!procesosSnapshot) {
+      limpiar();
+      return res.status(500).json({ error: 'El snapshot salió sin procesos: no se entrega un respaldo que no sirve.' });
+    }
+
+    const fecha = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="oicp-${fecha}.db.gz"`);
+    // Para que quien restaure pueda comprobar que le llegó completo.
+    res.setHeader('X-OICP-Backup-Procesos', String(procesosSnapshot));
+    res.setHeader('X-OICP-Backup-Bytes-Sin-Comprimir', String(statSync(snapPath).size));
+
+    const lectura = createReadStream(snapPath);
+    // Si la lectura falla con las cabeceras ya enviadas, se corta la conexión a
+    // propósito: es mejor que el cliente vea una transferencia rota que un archivo
+    // truncado con respuesta 200, que es corrupción silenciosa.
+    lectura.on('error', () => { res.destroy(); });
+    res.on('close', limpiar);
+    lectura.pipe(createGzip()).pipe(res);
+  } catch (err: any) {
+    limpiar();
+    if (!res.headersSent) res.status(500).json({ error: `Error al generar backup: ${err.message}` });
+    else res.destroy();
+  }
+}
+
 router.get('/backup', (req, res) => {
   if (!checkAuth(req, res)) return;
-  try {
-    const dbPath = resolve(process.env.DB_PATH || './data/oicp.db');
-    // Sin checkpoint, el .db en disco puede no incluir lo que aún vive en el WAL:
-    // la copia saldría desactualizada o inconsistente.
-    try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch { /* mejor esfuerzo */ }
-    const date = new Date().toISOString().slice(0, 10);
-    res.setHeader('Content-Type', 'application/gzip');
-    res.setHeader('Content-Disposition', `attachment; filename="oicp-${date}.db.gz"`);
-    createReadStream(dbPath).pipe(createGzip()).pipe(res);
-  } catch (err: any) {
-    res.status(500).json({ error: `Error al generar backup: ${err.message}` });
-  }
+  backupHandler(req, res);
 });
 
 // ── LLAVE TEMPORAL DE ADMIN (45 min, hasheada; para restauraciones via curl) ──
