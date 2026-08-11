@@ -50,8 +50,18 @@ test('IP-01: valor entre 85% y 100% del umbral de infima', () => {
   assert.ok(codes(f).includes('IP-01'));
 });
 
-test('IP-02: diferencia presupuesto vs adjudicacion > 15%', () => {
+// IP-02 cambió de criterio el 2026-08-11: solo el EXCESO sobre el presupuesto es riesgo.
+// Este test antes verificaba que adjudicar 80.000 sobre un presupuesto de 100.000 disparara la
+// bandera, y eso era justamente el defecto: marcaba a entidades que adjudicaron por debajo del
+// referencial. Medido en producción sobre 2024, los 1.704 disparos eran todos de ese tipo.
+// La batería completa del criterio nuevo está en server/calibracion.test.ts.
+test('IP-02: adjudicar POR DEBAJO del presupuesto ya no dispara', () => {
   const f = evaluateIndividualFlags({ id: 'x', budget_amount: 100000, award_amount: 80000, published_date: '2024-01-01' });
+  assert.ok(!codes(f).includes('IP-02'));
+});
+
+test('IP-02: adjudicar por ENCIMA del presupuesto en mas del 15% si dispara', () => {
+  const f = evaluateIndividualFlags({ id: 'x', budget_amount: 100000, award_amount: 130000, published_date: '2024-01-01' });
   assert.ok(codes(f).includes('IP-02'));
 });
 

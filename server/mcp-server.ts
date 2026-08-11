@@ -268,7 +268,7 @@ const METHODOLOGY = {
     'IT-01': { nombre: 'Plazo de publicación insuficiente', peso: 8, regla: 'días hábiles pub→cierre < mínimo (9/13/17 por monto) en procesos >10k' },
     'IT-02': { nombre: 'Adjudicación relámpago', peso: 18, regla: '< 3 días hábiles publicación→adjudicación (excluye ínfima)' },
     'IP-01': { nombre: 'Valor cercano al umbral de ínfima', peso: 18, regla: 'monto entre 85% y 100% del umbral' },
-    'IP-02': { nombre: 'Diferencia presupuesto vs adjudicación', peso: 18, regla: '|adjudicado−presupuesto|/presupuesto > 15%' },
+    'IP-02': { nombre: 'Adjudicación sobre el presupuesto referencial', peso: 18, regla: '(adjudicado − presupuesto) / presupuesto > 0,15 Y adjudicado > 0. Solo el EXCESO cuenta: adjudicar por debajo del referencial NO activa el indicador, porque es el resultado esperable de la competencia. Hasta el 11-ago-2026 se usaba el valor absoluto de la diferencia y el indicador marcaba a entidades que habían adjudicado por menos de lo presupuestado; en 2024 los 1.704 disparos eran todos de ese tipo. En los datos del SERCOP el exceso sobre el referencial es casi inexistente, así que este indicador dispara muy poco por diseño.' },
     'IP-03': { nombre: 'Modificación contractual significativa', peso: 30, regla: 'enmiendas +15%. INACTIVA: SERCOP no publica enmiendas (0 casos)' },
     'CC-01': { nombre: 'Proveedor recurrente en ínfima', peso: 30, regla: 'ínfima por monto y 5+ ínfimas del par comprador-proveedor en el año' },
     'CC-02': { nombre: 'Proveedor dominante', peso: 30, regla: '>40% del gasto del comprador EN EL AÑO DEL PROCESO, y solo si el comprador tuvo >=10 procesos ESE MISMO AÑO. El detalle de la bandera nombra el año, así que el porcentaje es verificable. No se evalúa en catálogo electrónico.' },

@@ -220,7 +220,13 @@ test('los umbrales de ínfima son los valores legales exactos por fecha', () => 
   const esperado: [string, number][] = [
     ['2019-06-15', 7105.88], ['2020-06-15', 7099.68], ['2021-06-15', 6416.07],
     ['2022-06-15', 6779.95], ['2023-06-15', 6300.57], ['2024-06-15', 6658.78],
-    ['2025-06-15', 7212.60], ['2025-10-06', 7212.60], ['2025-10-07', 10000.00],
+    // 2025 tiene TRES tramos. Verificado contra norma el 2026-08-11: el salto a USD 10.000
+    // ocurre el 7 de JULIO de 2025 por la Resolución R.E-SERCOP-2025-0152 (R.O. 5S 69 de
+    // 27-jun-2025), no el 7 de octubre. La versión anterior situaba el salto en octubre y
+    // dejaba tres meses de procesos evaluados con el umbral equivocado.
+    ['2025-06-15', 7212.60], ['2025-07-06', 7212.60],
+    ['2025-07-07', 10000.00], ['2025-08-15', 10000.00],
+    ['2025-10-06', 10000.00], ['2025-10-07', 10000.00],
     ['2026-06-15', 10000.00],
   ];
   for (const [fecha, valor] of esperado) {

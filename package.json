@@ -9,7 +9,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "start": "NODE_ENV=production npx tsx server/index.ts",
-    "test": "tsx --test server/flag-engine.test.ts server/mcp-guards.test.ts server/supplier-profile.test.ts server/backup.test.ts server/stats-cache.test.ts server/data-integrity.test.ts server/hidratacion.test.ts client/src/lib/ui-format.test.ts",
+    "test": "tsx --test server/flag-engine.test.ts server/mcp-guards.test.ts server/supplier-profile.test.ts server/backup.test.ts server/stats-cache.test.ts server/data-integrity.test.ts server/hidratacion.test.ts server/calibracion.test.ts client/src/lib/ui-format.test.ts",
     "db:migrate": "tsx server/migrate.ts",
     "db:seed": "tsx server/seed.ts",
     "load": "tsx server/load-data.ts",

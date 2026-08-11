@@ -31,16 +31,47 @@ export function getThreshold(year: number): YearThresholds {
   return UMBRALES[year] || UMBRALES[2026];
 }
 
+/**
+ * Umbral de ínfima cuantía por FECHA del proceso, verificado contra norma el 2026-08-11.
+ *
+ * 2025 tiene TRES tramos, no dos. La versión anterior de esta función situaba el salto a
+ * USD 10.000 el 7 de octubre de 2025, y eso dejaba tres meses de procesos evaluados con el
+ * umbral equivocado:
+ *
+ *  - Del 1 de enero al 6 de julio de 2025: coeficiente 0,0000002 del Presupuesto Inicial
+ *    del Estado (LOSNCP Art. 52.1, hoy derogado) = USD 7.212,60.
+ *  - **Del 7 de julio al 2 de octubre de 2025: USD 10.000**, por la Ley Orgánica de
+ *    Integridad Pública. La Resolución R.E-SERCOP-2025-0152 (R.O. Quinto Suplemento No. 69
+ *    de 27 de junio de 2025) dispuso expresamente que las ínfimas de más de USD 7.212,60 y
+ *    hasta USD 10.000 se pueden llevar a cabo DESDE EL 7 DE JULIO DE 2025.
+ *  - Desde el 7 de octubre de 2025: USD 10.000 por el Art. 50 de la LOSNCP reformada
+ *    (R.O. Cuarto Suplemento No. 140 de 7 de octubre de 2025).
+ *
+ * Zona gris declarada: la Corte Constitucional declaró inconstitucional la Ley de Integridad
+ * Pública en la sentencia 52-25-IN/25, publicada el 3 de octubre de 2025, con efectos hacia
+ * el futuro. Del 3 al 6 de octubre de 2025 el umbral aplicable es jurídicamente discutible y
+ * no hay pronunciamiento del SERCOP que lo resuelva. Se mantiene USD 10.000 en esa ventana
+ * por continuidad con el tramo anterior, y queda advertido en la metodología publicada.
+ *
+ * Nota de frontera: el Art. 52.1 derogado decía "inferior a" (excluyente) y el Art. 50
+ * vigente dice "igual o inferior a" USD 10.000 (incluyente). Los indicadores comparan con
+ * <= , que es lo correcto para el régimen vigente y una diferencia de un centavo para el
+ * anterior.
+ */
 export function getInfimaThreshold(dateStr: string | null): number {
   if (!dateStr) return 10_000;
-  const d = new Date(dateStr);
-  // Reforma LOSNCP (RO 4S No. 140, 7-oct-2025): ínfima cuantía fija en USD 10.000.
-  if (d >= new Date('2025-10-07')) return 10_000;
-  const year = d.getFullYear();
-  // 2025 ANTES de la reforma usa el coeficiente (0.0000002 x PGE 2025 = 7.212,60),
-  // no el 10.000 post-reforma. Los procedimientos previos al 7-oct-2025 se rigen
-  // por la normativa anterior (disposición transitoria).
-  if (year === 2025) return 7_212.60;
+  // Se compara la fecha CALENDARIO como cadena ISO, no como objeto Date. Con Date, una
+  // fecha sin hora ('2025-07-07') se interpreta en UTC y una con offset de Ecuador
+  // ('2025-07-07T00:00:00-05:00') son cinco horas distintas, así que el mismo día caía a un
+  // lado o al otro del corte según cómo viniera escrito. La comparación lexicográfica de
+  // YYYY-MM-DD es determinista y no depende de zona horaria.
+  const fecha = String(dateStr).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return 10_000;
+  // Vale tanto para el tramo de la Ley de Integridad Pública (desde el 7-jul-2025) como
+  // para la LOSNCP reformada (desde el 7-oct-2025): el monto es el mismo.
+  if (fecha >= '2025-07-07') return 10_000;
+  const year = Number(fecha.slice(0, 4));
+  if (year === 2025) return 7_212.60;   // 1-ene al 6-jul-2025: coeficiente
   return UMBRALES[year]?.infima_cuantia || 10_000;
 }
 
@@ -95,8 +126,8 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   },
   'IP-02': {
     code: 'IP-02', category: 'precio', name: 'Significant Price Difference',
-    name_es: 'Diferencia Significativa Presupuesto vs Adjudicación',
-    description_es: 'El monto adjudicado difiere más de 15% del presupuesto referencial.',
+    name_es: 'Adjudicación Sobre el Presupuesto Referencial',
+    description_es: 'El monto adjudicado supera en más del 15% el presupuesto referencial. Adjudicar por DEBAJO del referencial no activa este indicador: es el resultado esperable de la competencia y no una señal de riesgo.',
     severity: 2, ocp_ref: 'R059',
   },
   'IP-03': {
@@ -305,14 +336,25 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     flags.push({ ...FLAG_CATALOG['IC-01'], active: true, detail: `Solo 1 oferente en ${proc.procurement_method_details}` });
   }
 
-  // IC-02: High value without competition
-  if (isInfima(proc.procurement_method_details) && value > threshold) {
-    flags.push({
-      ...FLAG_CATALOG['IC-02'], active: true,
-      detail: `Valor $${value.toLocaleString('es-EC', DOS_DECIMALES)} supera umbral ínfima $${threshold.toLocaleString('es-EC', DOS_DECIMALES)}`,
-    });
-  }
-  if (proc.procurement_method === 'direct' && value > threshold) {
+  // IC-02: Alto valor sin competencia.
+  //
+  // Se EXCLUYE el catálogo electrónico, armonizando con el criterio que este mismo motor
+  // aplica a todas las banderas de concentración (ver evaluateConcentrationFlags): el
+  // catálogo es compra centralizada en la que el SERCOP precalifica proveedores y fija
+  // precios, así que la ausencia de competencia en el momento de la orden no indica
+  // direccionamiento de la entidad; la competencia ocurrió antes, al armar el catálogo.
+  // El SERCOP publica esas órdenes con procurement_method "direct", y por eso 65.497 de los
+  // 109.642 disparos de IC-02 (60%) eran compras de catálogo marcadas con la bandera de
+  // mayor peso del sistema por hacer algo enteramente regular. Mantener el catálogo aquí y
+  // excluirlo en las CC-* era una incoherencia interna sin justificación.
+  //
+  // Se eliminó también la rama que detectaba la ínfima por el TEXTO del procedimiento
+  // (`isInfima`): buscaba la palabra "ínfima", que no aparece en ninguno de los 1.470.321
+  // procesos, así que aportaba 0 disparos. Y no se puede sustituir por la detección por
+  // monto, porque son condiciones incompatibles: si el monto supera el umbral, el proceso no
+  // es ínfima por monto. Un proceso declarado ínfima con monto sobre el umbral no es
+  // detectable con los datos que publica el SERCOP.
+  if (proc.procurement_method === 'direct' && value > threshold && !isCatalogoElectronico(proc)) {
     flags.push({
       ...FLAG_CATALOG['IC-02'], active: true,
       detail: `Adjudicación directa $${value.toLocaleString('es-EC', DOS_DECIMALES)} > umbral $${threshold.toLocaleString('es-EC', DOS_DECIMALES)}`,
@@ -333,10 +375,17 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     }
   }
 
-  // IT-02: Lightning award (< 3 business days)
+  // IT-02: Adjudicación relámpago (< 3 días hábiles).
+  //
+  // La exclusión de ínfima cuantía ahora se evalúa POR MONTO (isInfimaByAmount), el mismo
+  // criterio que usan las banderas de concentración. Antes se evaluaba por el TEXTO del
+  // procedimiento, buscando la palabra "ínfima", que no aparece en ninguno de los 1.470.321
+  // procesos: la exclusión que la metodología prometía no descartaba nada, y 524 de los 2.237
+  // disparos (23%) eran compras por debajo del umbral, marcadas por ser rápidas cuando su
+  // rapidez es justamente lo esperable en una ínfima cuantía.
   if (proc.published_date && proc.award_date) {
     const days = businessDays(proc.published_date, proc.award_date);
-    if (days < 3 && !isInfima(proc.procurement_method_details)) {
+    if (days < 3 && !isInfimaByAmount(proc)) {
       flags.push({
         ...FLAG_CATALOG['IT-02'], active: true,
         detail: `Adjudicado en ${days} días hábiles desde publicación`,
@@ -353,13 +402,27 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     });
   }
 
-  // IP-02: Significant difference budget vs award (>15%)
+  // IP-02: Adjudicación POR ENCIMA del presupuesto referencial (>15%).
+  //
+  // CORRECCIÓN DE DIRECCIÓN (2026-08-11). La versión anterior usaba el valor ABSOLUTO de la
+  // diferencia, así que marcaba por igual las adjudicaciones por encima y por debajo del
+  // referencial. Medido en producción sobre 2024: de los 1.704 procesos marcados, CERO tenían
+  // el adjudicado por encima del presupuesto y los 1.704 estaban por debajo. Es decir, el
+  // indicador señalaba de forma sistemática a entidades que adjudicaron por MENOS de lo
+  // presupuestado, que es el resultado esperable de una competencia sana y no un riesgo.
+  // La guía de banderas de la Open Contracting Partnership lo dice expresamente: se espera
+  // que las ofertas caigan por debajo del precio estimado por efecto de la competencia.
+  //
+  // Ahora solo dispara cuando el Estado adjudicó por ENCIMA del referencial en más del 15%,
+  // que sí es el supuesto de riesgo (presupuesto subestimado, direccionamiento o sobreprecio).
+  // En estos datos ese caso es casi inexistente, y eso se declara en la metodología en vez de
+  // rellenar el indicador con falsos positivos para que "dispare".
   if (proc.budget_amount && proc.award_amount && proc.budget_amount > 0) {
-    const diff = Math.abs(proc.award_amount - proc.budget_amount) / proc.budget_amount;
-    if (diff > 0.15) {
+    const exceso = (proc.award_amount - proc.budget_amount) / proc.budget_amount;
+    if (exceso > 0.15) {
       flags.push({
         ...FLAG_CATALOG['IP-02'], active: true,
-        detail: `Diferencia ${(diff * 100).toFixed(1)}% entre presupuesto ($${proc.budget_amount.toLocaleString('es-EC', DOS_DECIMALES)}) y adjudicación ($${proc.award_amount.toLocaleString('es-EC', DOS_DECIMALES)})`,
+        detail: `Adjudicado ${(exceso * 100).toFixed(1)}% POR ENCIMA del presupuesto referencial: $${proc.award_amount.toLocaleString('es-EC', DOS_DECIMALES)} frente a $${proc.budget_amount.toLocaleString('es-EC', DOS_DECIMALES)}`,
       });
     }
   }

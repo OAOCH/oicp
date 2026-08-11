@@ -32,7 +32,7 @@ function generateRiskSummary(proc: any, activeFlags: any[]): string {
         parts.push('El monto se encuentra entre el 85% y 100% del umbral de contratación directa, lo que podría indicar un ajuste deliberado para evitar un proceso competitivo.');
         break;
       case 'IP-02':
-        parts.push('Existe una diferencia significativa (mayor al 15%) entre el presupuesto referencial y el monto adjudicado.');
+        parts.push('El monto adjudicado superó en más del 15% el presupuesto referencial de la propia entidad, lo que puede indicar un presupuesto subestimado o un sobreprecio. Adjudicar por debajo del referencial no activa este indicador.');
         break;
       case 'IP-03':
         parts.push('El contrato tiene enmiendas que incrementan su valor en más del 15%, lo cual puede indicar una subestimación inicial deliberada.');
