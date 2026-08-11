@@ -36,6 +36,9 @@ function construirContexto(filas) {
     });
     let hist = byPair.get(par);
     if (!hist) {
+      // consortium_count NO vive en concentration_index: updater.ts lo cuenta en una pasada
+      // aparte sobre los procesos con 2+ proveedores, excluyendo el catálogo electrónico. Se
+      // pasa por fila para poder reproducirlo aquí sin recorrer 1,47 M de procesos.
       hist = { supplier_name: r.supplier_name, years_active: 0, total_value: 0, consortium_count: r.consortium_count || 0 };
       byPair.set(par, hist);
       anios.set(par, new Set());
@@ -60,8 +63,15 @@ const discrepancias = [];
 let conCC = 0;
 
 for (const p of procesos) {
+  // MISMA normalización que hace producción antes de evaluar (updater.ts:427). Es
+  // imprescindible y no cosmética: 174.547 procesos (11,9% del corpus) guardan
+  // budget_amount como el TEXTO "USD" en vez de un número. Sin este Number(...) || 0, el
+  // valor del proceso queda como la cadena "USD", que en JavaScript es truthy, y TR-01 deja
+  // de marcar el campo "valor" como faltante. El arnés reportaba entonces una discrepancia
+  // FALSA contra un motor que estaba funcionando bien.
   const proc = {
     ...p,
+    budget_amount: Number(p.budget_amount) || 0,
     suppliers: typeof p.suppliers === 'string' ? JSON.parse(p.suppliers || '[]') : (p.suppliers || []),
     has_amendments: !!p.has_amendments,
   };

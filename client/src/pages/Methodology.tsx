@@ -61,7 +61,7 @@ const FLAGS = [
   { code: 'TR-03', category: 'transparencia', severity: 2, ocp: '', name: 'Sin Justificación Régimen Especial',
     desc: 'Proceso de régimen especial, emergente o contratación directa, por un monto superior al umbral de ínfima cuantía, sin justificación documentada en los datos OCDS.',
     legal: 'Art. 38 LOSNCP reformada; Art. 116 Reglamento',
-    logic: '(texto_procedimiento contiene "especial", "emergent" o "contratación directa" OR el OCID contiene "-RE-") AND valor > umbral_ínfima(fecha)' },
+    logic: '(texto_procedimiento contiene "especial", "emergent", "contratación directa" o "contratacion directa" sin tilde OR el identificador interno empieza por "OCDS-5WNO2W-RE-" OR el OCID contiene "-RE-") AND valor > umbral_ínfima(fecha). Las dos últimas condiciones son la misma en la práctica, porque el identificador interno se toma del OCID cuando existe, pero el motor las evalúa por separado y aquí se declaran las dos' },
 ];
 
 const WEIGHTS: Record<number, number> = { 0: 3, 1: 8, 2: 18, 3: 30 };
@@ -249,6 +249,40 @@ export default function Methodology() {
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Calidad del dato de origen. Se publica porque condiciona qué puede y qué no puede
+          medir la plataforma, y un auditor lo va a encontrar de todos modos. */}
+      <div className="bg-white rounded-xl border p-6 shadow-sm">
+        <h2 className="font-semibold mb-3">Qué no se puede medir con estos datos</h2>
+        <div className="text-sm text-gray-600 space-y-2">
+          <p>
+            <strong>El presupuesto referencial falta en 174.547 procesos (11,9% del total).</strong> En
+            esas filas el SERCOP publica la palabra «USD» en el campo del monto en vez de la cifra, y
+            el valor real no quedó en ningún otro campo, así que no es recuperable. Está presente en
+            los ocho años, entre 5.070 procesos en 2026 y 35.533 en 2022. Consecuencia directa: los
+            indicadores que dependen del presupuesto referencial, sobre todo <strong>IP-02</strong>,
+            no pueden evaluar esos procesos; y donde falta también el monto adjudicado, lo que marca
+            la plataforma es TR-01 (información incompleta), que es lo correcto.
+          </p>
+          <p>
+            <strong>El SERCOP no publica enmiendas contractuales</strong> en el OCDS de búsqueda, así
+            que IP-03 no registra ningún caso y se declara inactiva.
+          </p>
+          <p>
+            <strong>Los días hábiles no descuentan feriados.</strong> El conjunto de datos no los trae
+            y la plataforma no incorpora todavía un calendario propio, así que IT-01 e IT-02 pueden
+            contar como hábil un día que no lo fue. El cómputo incluye además ambos extremos del
+            intervalo, como se explica más arriba.
+          </p>
+          <p>
+            <strong>IP-02 dispara muy poco y eso es el resultado, no un fallo.</strong> Tras la
+            corrección del 11 de agosto de 2026 quedan 5 procesos marcados en todo el período
+            2019-2026: son los únicos donde el Estado adjudicó por encima del referencial en más del
+            15%. Se declara aquí en vez de rellenar el indicador con falsos positivos para que
+            «dispare».
+          </p>
         </div>
       </div>
 

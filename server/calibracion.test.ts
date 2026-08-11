@@ -140,6 +140,37 @@ test('las citas OCP son exactamente las verificadas contra la guía de 2024', ()
   assert.equal(Object.keys(FLAG_CATALOG).length, 15, 'el catálogo dejó de tener 15 indicadores');
 });
 
+// ── budget_amount llega como el TEXTO "USD" en 174.547 procesos (11,9% del corpus) ──
+// Es un defecto de la fuente del SERCOP, no de la plataforma, y no se puede reparar: el monto
+// real no quedó en ninguna otra columna (budget_currency está en NULL en las 174.547 filas, así
+// que la herramienta /api/admin/fix-budget no tiene de dónde recuperarlo).
+//
+// Lo que sí importa es el CONTRATO: quien llame al motor tiene que normalizar con
+// Number(...) || 0 antes, como hace updater.ts:427. Sin esa normalización el valor del proceso
+// queda como la cadena "USD", que en JavaScript es truthy, y TR-01 deja de marcar el campo
+// "valor" como faltante. Esta prueba fija las dos puntas para que nadie escriba un camino
+// nuevo hacia el motor y se salte la normalización sin que el CI lo grite.
+test('con budget_amount como texto y sin adjudicado, el motor normalizado marca TR-01', () => {
+  // Con comprador, proveedor y método presentes, el ÚNICO campo que puede faltar es el valor:
+  // así la prueba aísla el efecto de la normalización en vez de dispararse por otra causa.
+  const crudo = { id: 'x', procurement_method: 'open',
+    procurement_method_details: 'Subasta Inversa Electronica',
+    buyer_id: 'EC-RUC-0160006710001-125302',
+    budget_amount: 'USD' as any, award_amount: null,
+    published_date: '2024-03-21T17:00:00-05:00',
+    title: 'SIE-DD01D04S-2024-00003', description: 'Adquisicion de equipos informaticos para la direccion distrital',
+    suppliers: [{ id: 'EC-RUC-1', name: 'PROVEEDOR' }] };
+
+  const normalizado = { ...crudo, budget_amount: Number(crudo.budget_amount) || 0 };
+  const conNormalizar = evaluateIndividualFlags(normalizado as any).find(f => f.code === 'TR-01');
+  assert.ok(conNormalizar, 'normalizado, el proceso no tiene valor y TR-01 debe marcarlo: es lo que hace producción');
+  assert.match(conNormalizar!.detail!, /valor/, 'y el campo que debe nombrar como faltante es el valor');
+
+  const sinNormalizar = codigos(evaluateIndividualFlags(crudo as any));
+  assert.ok(!sinNormalizar.includes('TR-01'),
+    'sin normalizar, la cadena "USD" es truthy y TR-01 se pierde: por eso la normalización es obligatoria');
+});
+
 test('retirar una cita del catálogo la borra también de las banderas ya guardadas', () => {
   // Sin esto, quitar una cita no surtía efecto hasta el próximo recálculo: el spread conservaba
   // el ocp_ref viejo de la fila porque la clave no existía en el objeto del catálogo.

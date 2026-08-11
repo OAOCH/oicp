@@ -278,9 +278,10 @@ const METHODOLOGY = {
     'CC-05': { nombre: 'Posible fraccionamiento', peso: 30, regla: '2+ ínfimas cuya suma anual supera el umbral' },
     'TR-01': { nombre: 'Información incompleta crítica', peso: 8, regla: 'falta comprador, valor, proveedor o método' },
     'TR-02': { nombre: 'Descripción genérica', peso: 3, regla: '0 < longitud(description o title) < 30. La condición > 0 importa: una descripción completamente vacía NO dispara TR-02.' },
-    'TR-03': { nombre: 'Sin justificación de régimen especial', peso: 18, regla: 'el texto del procedimiento contiene "especial", "emergent" o "contratación directa", O el ocid CONTIENE "-RE-" (no es un prefijo), con monto > umbral de la fecha' },
+    'TR-03': { nombre: 'Sin justificación de régimen especial', peso: 18, regla: 'el texto del procedimiento contiene "especial", "emergent" o "contratación directa" (con y sin tilde), O el identificador interno EMPIEZA por "OCDS-5WNO2W-RE-", O el ocid CONTIENE "-RE-" (aquí sí es "contiene", no prefijo), con monto > umbral de la fecha. Las dos últimas coinciden en la práctica porque el identificador interno se toma del ocid, pero el motor las evalúa por separado' },
   },
-  exclusion_catalogo: 'Las banderas CC-* no se evalúan en catálogo electrónico (compra centralizada precalificada por SERCOP).',
+  exclusion_catalogo: 'Las banderas CC-* no se evalúan en catálogo electrónico (compra centralizada precalificada por SERCOP). IC-02 tampoco desde el 11-ago-2026.',
+  limitaciones_del_dato: 'Qué NO se puede medir con estos datos, medido el 11-ago-2026: (1) el presupuesto referencial falta en 174.547 procesos, el 11,9% del corpus, porque el SERCOP publica la palabra "USD" en el campo del monto en vez de la cifra y el valor real no quedó en ningún otro campo; afecta a los indicadores que dependen del referencial, sobre todo IP-02. (2) El SERCOP no publica enmiendas en el OCDS de búsqueda: IP-03 está inactiva, 0 casos. (3) Los días hábiles de IT-01 e IT-02 no descuentan feriados y cuentan ambos extremos del intervalo. (4) IP-02 tiene 5 disparos en todo 2019-2026 tras corregirse el 11-ago-2026: es el resultado real, no un fallo, porque adjudicar por encima del referencial es casi inexistente en estos datos.',
   disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES,
 };
 
@@ -403,7 +404,23 @@ function dataCutoff(db: Database.Database): string {
   } catch { return 'desconocido'; }
 }
 
+/**
+ * Regla 7: TODA respuesta lleva el disclaimer y el aviso de datos no confiables, también las
+ * de error. Antes solo los llevaban las respuestas exitosas, así que un modelo que solo
+ * recibiera rechazos (tope de costo, tabla de privacidad, SQL no permitido) se quedaba sin el
+ * encuadre. No es un agujero de seguridad, pero la regla dice "toda respuesta" y ahora se
+ * cumple de forma estructural: el envoltorio los añade y ninguna rama del switch puede
+ * olvidarlos.
+ */
 export function callTool(db: Database.Database, name: string, args: any): any {
+  const r = callToolInterno(db, name, args);
+  if (r && typeof r === 'object' && r.error && !r.disclaimer) {
+    return { ...r, disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES };
+  }
+  return r;
+}
+
+function callToolInterno(db: Database.Database, name: string, args: any): any {
   if (!analyticsReady(db) && name !== 'oicp_methodology') {
     return { error: 'Agregados no construidos todavía. El administrador debe ejecutar /api/admin/build-analytics.' };
   }

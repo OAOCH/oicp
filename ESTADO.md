@@ -40,16 +40,58 @@ commit que dice respetarla. Corregido ahora:
 - **La cifra «524 de los 2.237»** de IT-02 estaba corta en uno: son **525** (522 estrictamente bajo
   el umbral y 3 exactamente en él, que cuentan porque el Art. 50 dice «igual o inferior»).
 
-### Lo que sigue pendiente y es lo primero que hay que hacer
+### El recálculo SE APLICÓ el 11-ago-2026 y quedó verificado
 
-1. **El recálculo NO se ha aplicado.** Producción sigue sirviendo los 1 704 falsos positivos de
-   IP-02 en 2024 y los 65 497 disparos de catálogo de IC-02. Y hay algo peor que esperar: como la
-   ficha rehidrata el texto desde el catálogo vigente pero conserva el `detail` guardado, hoy los
-   **10 849** procesos con IP-02 muestran el título nuevo «Adjudicación **sobre** el presupuesto
-   referencial» junto a un detalle que dice lo contrario. Comprobado en producción: el proceso
-   `ocds-5wno2w-MCB-EPMMM--2024-002-452218` tiene presupuesto $21 655,48 y adjudicado **$659,67**,
-   y se publica como si hubiera excedido el referencial. Es una contradicción visible para el
-   usuario externo, y solo la cierra el recálculo.
+Corrido desde `/admin/auditoria` → «Re-normalizar banderas». Duró unos 11 minutos; el proxy cortó
+con el `upstream error` de los 300 s, como está documentado, y el trabajo siguió bien. Verificado
+por los datos, no por la respuesta HTTP.
+
+| Indicador | Antes | Después | Delta |
+|---|---|---|---|
+| IC-02 | 109 642 | **44 064** | −65 578, las órdenes de catálogo |
+| IP-02 | 10 849 | **5** | −10 844 falsos positivos |
+| IT-02 | 2 237 | **1 712** | −525, exactamente la cifra corregida |
+| TR-03 | 46 050 | 45 969 | −81, por el umbral de julio |
+| IP-01 | 16 081 | 16 140 | +59, por el umbral de julio |
+| CC-05 | 1 709 | 1 734 | +25, por el umbral de julio |
+
+Riesgo: crítico 13 259 → **12 618**, alto 47 738 → **43 997**, moderado 144 856 → **78 020**,
+bajo 1 264 468 → **1 335 686**. Los cuatro suman 1 470 321, el total exacto.
+
+Invariantes comprobados después: los **5** IP-02 que quedan tienen todos el adjudicado por encima
+del presupuesto (cero incorrectos); de los 44 064 IC-02 **ninguno** es catálogo electrónico; la
+ficha `ocds-5wno2w-MCB-EPMMM--2024-002-452218` (presupuesto $21 655,48, adjudicado $659,67) ya no
+lleva IP-02; y la portada, el MCP y los agregados dan las mismas cifras.
+
+### Verificación posterior: 100 procesos reales contra el motor real
+
+Se levantó un arnés, `server/verificar-lote.mjs`, que re-ejecuta el motor de producción contra
+procesos reales y compara bandera por bandera. Cinco lotes de 20 procesos de estratos distintos
+(riesgo crítico 2024, catálogo 2023, la ventana jul-oct 2025, presupuesto+adjudicado 2022, riesgo
+bajo 2019): **100 procesos, 0 discrepancias**. Más las 10 herramientas del MCP, los invariantes
+por año, y las nueve pantallas probadas en caliente.
+
+Un revisor crítico encontró dos fallas en esa misma verificación, y las dos se corrigieron:
+
+- **El arnés no normalizaba `budget_amount`** como sí hace `updater.ts:427` con
+  `Number(...) || 0`, así que podía reportar discrepancias FALSAS en TR-01. Corregido, con prueba.
+- **Las banderas CC-\*** no se habían ejecutado con contexto de concentración. Se verificó CC-05
+  contra `concentration_index`: los 10 pares de la muestra de 2024 cumplen la condición exacta
+  (`infima_count >= 2` y `infima_total_value > 6 658,78`), cero falsos positivos.
+
+### Lo que sigue pendiente
+
+1. **El presupuesto referencial falta en 174 547 procesos (11,9%)** porque el SERCOP publica la
+   palabra «USD» en el campo del monto. No es recuperable: `budget_currency` está en NULL en las
+   174 547 filas, así que `/api/admin/fix-budget` no tiene de dónde sacarlo. Queda **declarado en
+   la metodología publicada** en vez de escondido. Si alguna vez se quiere recuperar, habría que
+   volver a descargar esos procesos de la fuente.
+2. Los pendientes de fondo del `PROMPT-SIGUIENTE-SESION.md` que no se tocaron: los días hábiles
+   con feriados (punto 3), los mínimos de plazo de IT-01 (punto 4, necesita decisión de Oscar),
+   el respaldo (punto 8) y el descuento por correlación mal puesto (punto 9).
+3. Los rankings de compradores y de pares los encabezan entidades con **1 a 3 procesos**, y un par
+   con $53,95 aparece en el puesto 5. Un promedio sobre un solo proceso no es un ranking: hace
+   falta un piso de volumen, como el que ya tiene CC-02.
 2. ~~Las citas a la guía de la OCP.~~ **Resuelto el mismo 11-ago.** De las 13, solo 3 eran
    correctas. Tres se corrigieron a su código real (IP-02 de R059 a **R031**, CC-02 de R051 a
    **R050**, CC-05 de R011 a **R055**), cinco se retiraron por no tener equivalente (IC-02, CC-04,

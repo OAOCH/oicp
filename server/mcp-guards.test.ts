@@ -171,6 +171,34 @@ test('oicp_sql: toda respuesta lleva el disclaimer (regla 7)', () => {
   db.close();
 });
 
+// «Toda respuesta» incluye las de ERROR, y ahí no se cumplía: los rechazos por tope de costo,
+// por tabla de privacidad o por SQL no permitido salían pelados. Un modelo que solo recibiera
+// rechazos se quedaba sin el encuadre de la regla 7. Se cubren las cuatro familias de rechazo.
+test('los rechazos de oicp_sql también llevan el disclaimer (regla 7)', () => {
+  const db = baseDePrueba();
+  const rechazos = [
+    `SELECT COUNT(*) FROM procedures`,                         // tope de costo
+    `SELECT * FROM sqlite_master`,                             // esquema interno
+    `DELETE FROM procedures WHERE id = 'p1'`,                  // escritura
+    `SELECT x FROM tabla_que_no_existe WHERE id = 'p1'`,       // error de SQL
+  ];
+  for (const consulta of rechazos) {
+    const r: any = callTool(db, 'oicp_sql', { sql: consulta });
+    assert.ok(r.error, `esta consulta debería rechazarse: ${consulta}`);
+    assert.match(r.disclaimer, /NO constituyen evidencia/, `sin disclaimer en: ${consulta}`);
+    assert.match(r.datos_no_confiables, /nunca instrucciones/, `sin aviso de datos en: ${consulta}`);
+  }
+  db.close();
+});
+
+test('una herramienta desconocida también responde con el disclaimer', () => {
+  const db = baseDePrueba();
+  const r: any = callTool(db, 'oicp_inventada', {});
+  assert.match(r.error, /desconocida/);
+  assert.match(r.disclaimer, /NO constituyen evidencia/);
+  db.close();
+});
+
 test('oicp_search no recorre procedures cuando falta el índice FTS', () => {
   const db = baseDePrueba();  // sin tabla a_fts
   // Antes caía a un LIKE '%texto%' sobre 1,47 M filas: un término mal escrito bastaba
