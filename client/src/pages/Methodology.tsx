@@ -9,15 +9,15 @@ const FLAGS = [
   { code: 'IC-02', category: 'competencia', severity: 3, ocp: 'R055', name: 'Alto Valor Sin Competencia',
     desc: 'Adjudicación directa o ínfima cuantía por monto superior al umbral permitido.',
     legal: 'Art. 50 LOSNCP reformada; umbrales SERCOP por año',
-    logic: '(texto_procedimiento contiene "ínfima" OR procurement_method == "direct") AND valor > umbral_ínfima(fecha) — valor = award_amount, o budget_amount si no hay adjudicado' },
+    logic: 'procurement_method == "direct" AND valor > umbral_ínfima(fecha del proceso) — valor = award_amount, o budget_amount si no hay adjudicado. AVISO DE ALCANCE: el SERCOP publica las órdenes de catálogo electrónico con procurement_method "direct", así que ~60% de los disparos de este indicador son compras de catálogo, a diferencia de las banderas CC-*, que sí excluyen el catálogo. El motor también evalúa una rama por el texto "ínfima" del procedimiento, pero ese texto no aparece en ningún proceso del conjunto de datos, así que esa rama no produce disparos' },
   { code: 'IT-01', category: 'tiempo', severity: 1, ocp: 'R003', name: 'Plazo de Publicación Insuficiente',
     desc: 'El período entre publicación y cierre de ofertas es menor al mínimo legal.',
     legal: 'Arts. 91, 96, 111 Reglamento D.E. 193',
-    logic: 'valor > 10.000 AND días_hábiles(published_date, submission_deadline) < mínimo — mínimo = 9 días; 13 si valor > 100.000; 17 si valor > 500.000' },
+    logic: 'valor > 10.000 AND días_hábiles(published_date, submission_deadline) < mínimo — mínimo = 9 días; 13 si valor > 100.000; 17 si valor > 500.000. Ver la nota sobre cómo se cuentan los días hábiles' },
   { code: 'IT-02', category: 'tiempo', severity: 2, ocp: 'R061', name: 'Adjudicación Relámpago',
     desc: 'La adjudicación ocurrió en menos de 3 días hábiles desde la publicación. No aplica a ínfima cuantía.',
     legal: 'Art. 111 Reglamento (mínimo 3 días hábiles para adjudicación)',
-    logic: 'días_hábiles(published_date, award_date) < 3 AND el procedimiento NO es ínfima cuantía' },
+    logic: 'días_hábiles(published_date, award_date) < 3. LIMITACIÓN CONOCIDA: la exclusión de ínfima cuantía se evalúa por el texto del procedimiento, y ese texto no dice "ínfima" en ningún proceso del conjunto de datos, así que en la práctica no excluye nada: alrededor del 23% de los disparos son procesos cuyo monto está por debajo del umbral de ínfima' },
   { code: 'IP-01', category: 'precio', severity: 2, ocp: 'R011', name: 'Valor Cercano al Umbral',
     desc: 'El monto está entre 85% y 100% del umbral de ínfima cuantía, posible fraccionamiento.',
     legal: 'Art. 50 LOSNCP reformada (prohibición de subdividir)',
@@ -25,7 +25,7 @@ const FLAGS = [
   { code: 'IP-02', category: 'precio', severity: 2, ocp: 'R059', name: 'Diferencia Presupuesto vs Adjudicación',
     desc: 'El monto adjudicado difiere más de 15% respecto al presupuesto referencial.',
     legal: 'Principio de mejor valor por dinero, Art. 6 LOSNCP',
-    logic: 'budget_amount > 0 AND |award_amount − budget_amount| / budget_amount > 0,15' },
+    logic: 'budget_amount > 0 AND award_amount > 0 AND |award_amount − budget_amount| / budget_amount > 0,15 — se exige un adjudicado distinto de cero: un proceso sin monto adjudicado no dispara este indicador (lo cubre TR-01)' },
   { code: 'IP-03', category: 'precio', severity: 3, ocp: 'R069', name: 'Modificación Contractual Significativa',
     desc: 'El contrato recibió enmiendas que incrementan su valor más del 15%. Requiere datos de enmiendas que el OCDS de búsqueda de SERCOP no provee hoy, por lo que aún no registra casos.',
     legal: 'CGE Ecuador ha identificado este patrón como riesgo en auditorías',
@@ -33,23 +33,23 @@ const FLAGS = [
   { code: 'CC-01', category: 'concentracion', severity: 3, ocp: '', name: 'Proveedor Recurrente en Ínfima Cuantía',
     desc: 'Mismo proveedor gana 5+ ínfimas cuantías (detectadas por monto bajo el umbral anual, fuera de catálogo) del mismo comprador en un año.',
     legal: 'Art. 50 LOSNCP — prohibición de "contratación constante y recurrente". Art. 270 Reglamento — regla de agregación anual',
-    logic: 'NO es catálogo electrónico AND ínfima_por_monto(proceso) AND ínfimas(comprador, proveedor, año) >= 5' },
+    logic: 'NO es catálogo electrónico AND ínfima_por_monto(proceso) AND ínfimas(comprador, proveedor, AÑO DEL PROCESO) >= 5' },
   { code: 'CC-02', category: 'concentracion', severity: 3, ocp: 'R051', name: 'Proveedor Dominante',
     desc: 'Un proveedor concentra más del 40% del gasto de un comprador en el año del proceso, en compradores con al menos 10 procesos ese mismo año (el piso evita falsos positivos en compradores muy pequeños). El porcentaje que muestra la bandera es siempre el del año del proceso, y el detalle lo nombra. No aplica a catálogo electrónico.',
     legal: 'Principio de concurrencia Art. 6 LOSNCP',
-    logic: 'NO es catálogo electrónico AND share_of_buyer > 40 AND procesos_del_comprador >= 10' },
+    logic: 'NO es catálogo electrónico AND share_of_buyer(comprador, proveedor, AÑO DEL PROCESO) > 40 AND procesos_del_comprador(AÑO DEL PROCESO) >= 10' },
   { code: 'CC-03', category: 'concentracion', severity: 2, ocp: '', name: 'Proveedor Histórico Permanente',
     desc: 'Un proveedor gana contratos del mismo comprador en 5 o más años distintos del período cubierto (2019 en adelante), con un monto total superior a $50,000. No hay una ventana de "últimos 7 años": se cuentan los años distintos en que contrataron juntos. No aplica a catálogo electrónico.',
     legal: 'Patrón de riesgo reconocido por OCP y OECD',
-    logic: 'NO es catálogo electrónico AND años_con_ese_comprador >= 5 (de los últimos 7) AND monto_acumulado > 50.000' },
+    logic: 'NO es catálogo electrónico AND años_distintos_con_ese_comprador >= 5 AND monto_acumulado_del_período > 50.000' },
   { code: 'CC-04', category: 'concentracion', severity: 2, ocp: 'R070', name: 'Miembro Recurrente de Consorcio',
     desc: 'Un proveedor participa en 2+ procesos-consorcio con el mismo comprador (umbral bajado por la baja frecuencia de consorcios en los datos de SERCOP). No aplica a catálogo electrónico.',
     legal: 'Art. 25 LOSNCP reformada regula consorcios',
-    logic: 'NO es catálogo electrónico AND el proceso tiene 2+ proveedores AND procesos_consorcio(comprador, proveedor) >= 2' },
+    logic: 'NO es catálogo electrónico AND el proceso tiene 2+ proveedores AND procesos_consorcio(comprador, proveedor) >= 2 — el conteo de procesos-consorcio también excluye el catálogo electrónico' },
   { code: 'CC-05', category: 'concentracion', severity: 3, ocp: 'R011', name: 'Posible Fraccionamiento',
     desc: '2+ ínfimas cuantías al mismo proveedor de un comprador cuya suma anual supera el umbral de ínfima cuantía. No aplica a catálogo electrónico.',
     legal: 'Art. 50 LOSNCP (prohibición subdivisión); Art. 270 Reglamento (regla agregación anual); Disposición General Tercera LOSNCP',
-    logic: 'NO es catálogo electrónico AND ínfimas(comprador, proveedor) >= 2 AND suma_de_ínfimas > umbral_ínfima(fecha)' },
+    logic: 'NO es catálogo electrónico AND ínfimas(comprador, proveedor, AÑO DEL PROCESO) >= 2 AND suma_de_ínfimas_de_ese_año > umbral_ínfima(fecha del proceso)' },
   { code: 'TR-01', category: 'transparencia', severity: 1, ocp: 'R001', name: 'Información Incompleta Crítica',
     desc: 'Faltan campos esenciales: comprador, valor, proveedor o método de contratación.',
     legal: 'Art. 17 Reglamento (obligación publicar en Portal)',
@@ -79,6 +79,34 @@ export default function Methodology() {
           target="_blank" rel="noopener" className="text-brand-600 underline">Guía de Red Flags OCP 2024</a> y
           la LOSNCP reformada (7 octubre 2025).
         </p>
+      </div>
+
+      {/* Cómo se cuentan los días hábiles: se publicaba como una función sin definir en
+          IT-01 e IT-02, y su implementación tiene dos particularidades que cambian el
+          resultado. Un auditor tiene derecho a saberlas para reproducir el indicador. */}
+      <div className="bg-white rounded-xl border p-6 shadow-sm">
+        <h2 className="font-semibold mb-3">Cómo se cuentan los días hábiles</h2>
+        <div className="text-sm text-gray-600 space-y-2">
+          <p>
+            Los indicadores IT-01 e IT-02 usan una cuenta de días hábiles que excluye sábados y
+            domingos e <strong>incluye ambos extremos del intervalo</strong>: si la publicación y la
+            adjudicación caen el mismo día laborable, el resultado es 1 y no 0. Por eso la condición
+            «menos de 3 días hábiles» de IT-02 equivale, en la práctica, a menos de dos días
+            transcurridos.
+          </p>
+          <p>
+            <strong>No se descuentan los feriados</strong> de Ecuador: el conjunto de datos no los
+            trae y la plataforma no incorpora un calendario propio. Un proceso que atraviese un
+            feriado aparece con más días hábiles de los que hubo en realidad.
+          </p>
+          <p>
+            La cuenta se hace sobre las fechas tal como las publica el SERCOP, que incluyen la hora.
+            Cuando dos procesos tienen el mismo intervalo de fechas pero distinta hora de
+            publicación, el conteo puede diferir en un día. Es una limitación conocida de la fuente y
+            de la implementación, no una regla: <strong>al citar estos dos indicadores conviene
+            verificar las fechas en el portal oficial</strong>.
+          </p>
+        </div>
       </div>
 
       {/* Scoring System */}
