@@ -40,4 +40,34 @@ export function getCachedStatistics(compute: () => any): any {
 export function invalidateStatsCache(): void {
   statsCache = null;
   statsAt = 0;
+  entradas.clear();
+}
+
+// ── Caché con clave, misma política ──────────────────────────
+// Para las consultas que también recorren `procedures` en el camino de la petición y no
+// tienen agregado equivalente: los rankings (GROUP BY buyer_id con AVG y MAX sobre 1,47 M
+// filas) y las opciones de filtro (tres SELECT DISTINCT sobre la tabla completa). Sin esto,
+// cada carga de la página de Rankings o cada apertura del panel de filtros bloqueaba el
+// hilo varios segundos.
+const entradas = new Map<string, { valor: any; en: number; refrescando: boolean }>();
+
+export function getCached<T>(clave: string, compute: () => T, ttlMs = TTL_MS): T {
+  const now = Date.now();
+  const e = entradas.get(clave);
+  if (e && now - e.en < ttlMs) return e.valor;
+
+  if (e) {
+    if (!e.refrescando) {
+      e.refrescando = true;
+      setImmediate(() => {
+        try { e.valor = compute(); e.en = Date.now(); }
+        catch { /* se conserva el valor anterior */ }
+        finally { e.refrescando = false; }
+      });
+    }
+    return e.valor;
+  }
+  const valor = compute();
+  entradas.set(clave, { valor, en: now, refrescando: false });
+  return valor;
 }

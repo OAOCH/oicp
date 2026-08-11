@@ -12,7 +12,7 @@ import adminRouter from './routes/admin.js';
 import authRouter from './routes/auth.js';
 import mcpRouter from './routes/mcp.js';
 import { ensureAuthTables, requireAuth, authEnabled } from './auth.js';
-import { getCachedStatistics } from './cache.js';
+import { getCachedStatistics, getCached } from './cache.js';
 import { scheduleAutoUpdate, refreshDataCutoff, getDataCutoff } from './updater.js';
 import { accessLogger, ensureAccessLog } from './access-log.js';
 
@@ -236,14 +236,18 @@ app.get('/api/rankings', (req, res) => {
   try {
     const type = (req.query.type as string) || 'buyers';
     const year = numeroOpcional(req.query.year);
-    res.json(getRankings(type, year));
+    // El ranking de compradores agrupa 1,47 M filas con AVG y MAX: sin caché, cada carga de
+    // la página bloqueaba el hilo varios segundos. Con esta política solo lo paga la primera
+    // petición tras un arranque en frío; después nadie espera el recálculo.
+    res.json(getCached(`rankings:${type}:${year ?? 'all'}`, () => getRankings(type, year)));
   } catch (e: any) { res.status(500).json({ error: 'Error al obtener rankings' }); }
 });
 
 // Filter options
 app.get('/api/filters', (req, res) => {
   try {
-    res.json(getFilterOptions());
+    // Tres SELECT DISTINCT sobre la tabla completa: se cachean igual.
+    res.json(getCached('filtros', () => getFilterOptions()));
   } catch (e: any) { res.status(500).json({ error: 'Error al obtener filtros' }); }
 });
 

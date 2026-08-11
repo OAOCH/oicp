@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, mensajeDeError } from '../lib/api';
 import { Loading, EmptyState, ErrorState } from '../components/UI';
-import { formatCurrency } from '../lib/flags';
+import { formatCurrency, formatCount } from '../lib/flags';
 
 export default function Rankings() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -68,14 +68,14 @@ export default function Rankings() {
                         <Link to={`/comprador/${encodeURIComponent(r.buyer_id)}`}
                           className="text-brand-600 hover:underline">{r.buyer_name || r.buyer_id}</Link>
                       </td>
-                      <td className="px-4 py-3 text-right">{r.procedure_count}</td>
+                      <td className="px-4 py-3 text-right">{formatCount(r.procedure_count)}</td>
                       <td className="px-4 py-3 text-right font-mono">{formatCurrency(r.total_value)}</td>
                       <td className="px-4 py-3 text-right font-bold"
                         style={{ color: r.avg_score > 60 ? '#ef4444' : r.avg_score > 30 ? '#f97316' : '#22c55e' }}>
                         {Math.round(r.avg_score)}
                       </td>
-                      <td className="px-4 py-3 text-right">{r.max_score}</td>
-                      <td className="px-4 py-3 text-right text-red-600 font-medium">{r.high_risk_count}</td>
+                      <td className="px-4 py-3 text-right">{formatCount(r.max_score)}</td>
+                      <td className="px-4 py-3 text-right text-red-600 font-medium">{formatCount(r.high_risk_count)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -89,8 +89,15 @@ export default function Rankings() {
                   <th className="px-4 py-3 font-medium text-right">Contratos</th>
                   <th className="px-4 py-3 font-medium text-right">Valor Total</th>
                   <th className="px-4 py-3 font-medium text-right">Compradores</th>
-                  <th className="px-4 py-3 font-medium text-right">Ínfimas</th>
-                  <th className="px-4 py-3 font-medium text-right">Concentración Máx.</th>
+                  {/* Las dos últimas columnas dependen de la vista: sin filtro de año se
+                      sirven los agregados (riesgo exacto); con año, el índice de
+                      concentración (ínfimas y concentración máxima de ese año). */}
+                  <th className="px-4 py-3 font-medium text-right">
+                    {data[0]?.high_risk_count !== undefined ? 'Alto Riesgo' : 'Ínfimas'}
+                  </th>
+                  <th className="px-4 py-3 font-medium text-right">
+                    {data[0]?.high_risk_count !== undefined ? 'Años' : 'Concentración Máx.'}
+                  </th>
                 </tr></thead>
                 <tbody>
                   {data.map((r: any, i: number) => (
@@ -100,15 +107,26 @@ export default function Rankings() {
                         <Link to={`/proveedor/${encodeURIComponent(r.supplier_id)}`}
                           className="text-brand-600 hover:underline">{r.supplier_name || r.supplier_id}</Link>
                       </td>
-                      <td className="px-4 py-3 text-right">{r.total_contracts}</td>
+                      <td className="px-4 py-3 text-right">{formatCount(r.total_contracts)}</td>
                       <td className="px-4 py-3 text-right font-mono">{formatCurrency(r.total_value)}</td>
-                      <td className="px-4 py-3 text-right">{r.distinct_buyers}</td>
-                      <td className="px-4 py-3 text-right">{r.total_infimas}</td>
-                      <td className="px-4 py-3 text-right">
-                        <span className={r.max_concentration > 30 ? 'text-red-600 font-bold' : ''}>
-                          {r.max_concentration?.toFixed(1)}%
-                        </span>
-                      </td>
+                      <td className="px-4 py-3 text-right">{formatCount(r.distinct_buyers)}</td>
+                      {r.high_risk_count !== undefined ? (
+                        <>
+                          <td className="px-4 py-3 text-right text-red-600 font-medium">{formatCount(r.high_risk_count)}</td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            {r.first_year && r.last_year ? `${r.first_year}–${r.last_year}` : '—'}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-4 py-3 text-right">{formatCount(r.total_infimas)}</td>
+                          <td className="px-4 py-3 text-right">
+                            <span className={r.max_concentration > 30 ? 'text-red-600 font-bold' : ''}>
+                              {r.max_concentration != null ? `${r.max_concentration.toFixed(1)}%` : '—'}
+                            </span>
+                          </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                 </tbody>

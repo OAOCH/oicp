@@ -596,8 +596,26 @@ export function getRankings(type: string = 'buyers', year?: number) {
   }
 
   if (type === 'suppliers') {
+    // Sin año se lee de a_suppliers, que es el MISMO agregado que usa oicp_top_suppliers en
+    // el MCP y está construido con la regla de plausibilidad del monto. Antes se sumaba
+    // concentration_index.total_value, que es `award_amount` CRUDO: por eso el ranking web
+    // y el del MCP diferían en $69 millones en el primer puesto (regla 11). Además
+    // a_suppliers es pequeño y está indexado por total_usd, así que no recorre nada.
+    const hayAgregados = !!db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='a_suppliers'`).get();
+    if (!year && hayAgregados) {
+      return db.prepare(`
+        SELECT ruc10 AS supplier_id, name AS supplier_name,
+               n_procs AS total_contracts, total_usd AS total_value,
+               n_buyers AS distinct_buyers,
+               (COALESCE(n_critical,0) + COALESCE(n_high,0)) AS high_risk_count,
+               first_year, last_year
+        FROM a_suppliers ORDER BY total_usd DESC LIMIT 50`).all();
+    }
+    // Con año concreto no hay agregado por año-proveedor con monto saneado, así que se
+    // consulta el índice de concentración acotado a ese año.
     return db.prepare(`
-      SELECT ci.supplier_id, ci.supplier_name, 
+      SELECT ci.supplier_id, ci.supplier_name,
              SUM(ci.contract_count) as total_contracts,
              SUM(ci.total_value) as total_value,
              COUNT(DISTINCT ci.buyer_id) as distinct_buyers,
