@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Search, FileText, Users, Trophy } from 'lucide-react';
 import { api, mensajeDeError } from '../lib/api';
 import { StatCard, RiskBadge, Loading, ScoreGauge, ErrorState } from '../components/UI';
-import { formatCurrency, formatDate } from '../lib/flags';
+import { formatCurrency, formatDate, formatCount } from '../lib/flags';
 
 export default function Home() {
   const [stats, setStats] = useState<any>(null);
