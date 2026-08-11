@@ -95,9 +95,26 @@ export default function Methodology() {
             transcurridos.
           </p>
           <p>
-            <strong>No se descuentan los feriados</strong> de Ecuador: el conjunto de datos no los
-            trae y la plataforma no incorpora un calendario propio. Un proceso que atraviese un
-            feriado aparece con más días hábiles de los que hubo en realidad.
+            <strong>Los feriados sí se descuentan desde el 11 de agosto de 2026.</strong> El
+            calendario es el del <strong>Art. 65 del Código del Trabajo</strong> (Codificación 17,
+            R.O. Suplemento 167 de 16 dic 2005, reformado por la Ley de R.O. Suplemento 906 de 20
+            dic 2016), verificado sobre el texto vigente: 1 de enero, viernes santo, 1 y 24 de mayo,
+            10 de agosto, 9 de octubre, 2 y 3 de noviembre, 25 de diciembre, y los lunes y martes de
+            carnaval. Las tres fiestas móviles se calculan desde el domingo de Pascua. Se aplican
+            las reglas de traslado del mismo artículo: si cae martes pasa al lunes anterior, si cae
+            miércoles o jueves pasa al viernes de esa semana, y si cae sábado o domingo pasa al
+            viernes anterior o al lunes posterior; quedan exceptuados del primer traslado el 1 de
+            enero, el 25 de diciembre y el martes de carnaval. El descanso <em>se traslada</em>, no
+            se duplica: la fecha original deja de contar como feriado.
+          </p>
+          <p className="text-xs text-gray-500">
+            Dos advertencias honestas sobre ese calendario. Primera: el <strong>decreto ejecutivo
+            anual</strong> de feriados puede apartarse del Código en un año concreto, sobre todo
+            al armar puentes; lo que aquí se aplica es la regla del Código, no el decreto de cada
+            año. Segunda: la excepción del 1 de enero, el 25 de diciembre y el martes de carnaval
+            está redactada dentro del párrafo del martes, miércoles y jueves, así que aquí
+            <strong> no</strong> se extiende al traslado de sábados y domingos; es una lectura, y
+            se declara como tal.
           </p>
           <p>
             <strong>Corregido el 11 de agosto de 2026:</strong> hasta esa fecha la cuenta se hacía
@@ -294,10 +311,12 @@ export default function Methodology() {
             que IP-03 no registra ningún caso y se declara inactiva.
           </p>
           <p>
-            <strong>Los días hábiles no descuentan feriados.</strong> El conjunto de datos no los trae
-            y la plataforma no incorpora todavía un calendario propio, así que IT-01 e IT-02 pueden
-            contar como hábil un día que no lo fue. El cómputo incluye además ambos extremos del
-            intervalo, como se explica más arriba.
+            <strong>Los días hábiles todavía no son el término legal.</strong> Desde el 11 de agosto
+            de 2026 sí descuentan los feriados del Art. 65 del Código del Trabajo, pero el cómputo
+            sigue incluyendo el día inicial, mientras que el COA Art. 158 manda contar «a partir del
+            día hábil siguiente». No se cambió porque mueve el significado de los mínimos de IT-01
+            (9/13/17), que están pendientes de una decisión sobre a qué tramo del procedimiento
+            corresponden y desde qué fecha aplican. Las dos cosas se resuelven juntas.
           </p>
           <p>
             <strong>IP-02 dispara muy poco y eso es el resultado, no un fallo.</strong> Tras la

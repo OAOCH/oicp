@@ -322,12 +322,17 @@ export function buildConcentrationContext(db: Database.Database) {
   // Consorcios: se EXCLUYE el catálogo electrónico, igual que hace la propia bandera con el
   // proceso que evalúa. Antes el contador incluía procesos de catálogo (7 de los 41 del
   // dataset), o sea que contaba lo que la regla publicada dice excluir.
+  // El patrón usa el comodín de un carácter en la vocal acentuada, igual que
+  // SQL_NO_ES_CATALOGO en db.ts: UPPER() de SQLite solo convierte ASCII, así que 'catálogo'
+  // pasaba a 'CATáLOGO' y el patrón con Á no lo alcanzaba. Hoy no cambia ninguna fila (los dos
+  // patrones dan lo mismo sobre estos datos), pero era un filtro que dependía de cómo viniera
+  // escrita la tilde en la fuente.
   for (const row of db.prepare(`
     SELECT buyer_id, suppliers FROM procedures
     WHERE json_array_length(suppliers) >= 2
-      AND UPPER(COALESCE(procurement_method_details,'')) NOT LIKE '%CATÁLOGO ELECTRÓNICO%'
-      AND UPPER(COALESCE(procurement_method_details,'')) NOT LIKE '%CATALOGO ELECTRONICO%'
-      AND UPPER(COALESCE(title,'')) NOT LIKE 'ORDEN DE COMPRA CE%'`).iterate() as any) {
+      AND COALESCE(procurement_method_details,'') NOT LIKE '%cat_logo electr_nico%'
+      AND COALESCE(procurement_method_details,'') NOT LIKE '%catalogo electronico%'
+      AND COALESCE(title,'') NOT LIKE 'ORDEN DE COMPRA CE%'`).iterate() as any) {
     let sups: any[] = [];
     try { sups = JSON.parse(row.suppliers || '[]'); } catch { continue; }
     for (const s of sups) {

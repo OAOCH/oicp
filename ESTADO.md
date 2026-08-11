@@ -79,19 +79,43 @@ Un revisor crítico encontró dos fallas en esa misma verificación, y las dos s
   contra `concentration_index`: los 10 pares de la muestra de 2024 cumplen la condición exacta
   (`infima_count >= 2` y `infima_total_value > 6 658,78`), cero falsos positivos.
 
-### Lo que sigue pendiente
+### Segunda tanda del 11-ago: correlación, días hábiles y rankings
 
-1. **El presupuesto referencial falta en 174 547 procesos (11,9%)** porque el SERCOP publica la
-   palabra «USD» en el campo del monto. No es recuperable: `budget_currency` está en NULL en las
-   174 547 filas, así que `/api/admin/fix-budget` no tiene de dónde sacarlo. Queda **declarado en
-   la metodología publicada** en vez de escondido. Si alguna vez se quiere recuperar, habría que
-   volver a descargar esos procesos de la fuente.
-2. Los pendientes de fondo del `PROMPT-SIGUIENTE-SESION.md` que no se tocaron: los días hábiles
-   con feriados (punto 3), los mínimos de plazo de IT-01 (punto 4, necesita decisión de Oscar),
-   el respaldo (punto 8) y el descuento por correlación mal puesto (punto 9).
-3. Los rankings de compradores y de pares los encabezan entidades con **1 a 3 procesos**, y un par
-   con $53,95 aparece en el puesto 5. Un promedio sobre un solo proceso no es un ranking: hace
-   falta un piso de volumen, como el que ya tiene CC-02.
+**El descuento por correlación estaba mal puesto y se replanteó midiendo.** El par que la
+plataforma declaraba, IC-01 + IC-02, tiene **cero** co-ocurrencias en los ocho años y no puede
+tenerlas: IC-01 exige método competitivo e IC-02 exige `direct`, son excluyentes por construcción.
+Se retiró. El que faltaba, **IC-02 + TR-03, co-ocurre en 42 321 de los 44 064 disparos de IC-02
+(96,0%)** y no tenía descuento: 30 + 18 = 48 de los 100 puntos posibles por una sola observación.
+Ahora descuenta.
+
+**`businessDays()` dependía de la hora del servidor.** Medido: de los procesos con exactamente un
+día calendario entre publicación y adjudicación, **311 reportaban «1 día hábil» y 460 «2»**. Ahora
+se cuenta sobre la fecha calendario en cadena ISO y de forma aritmética. Efecto: los procesos con
+dos días calendario pasan a contar 3 hábiles y **dejan de disparar IT-02**, porque la regla
+publicada es «menos de 3». Eran unos 397, y no es una pérdida: es la regla aplicándose bien.
+
+**Los rankings tienen piso de volumen.** 10 procesos del comprador, el mismo mínimo que CC-02, más
+2 contratos del par en el ranking de pares. Antes los encabezaban entidades con un solo proceso y
+un par de $53,95 salía quinto.
+
+### Lo que sigue pendiente, y por qué
+
+1. **Los feriados en el cómputo de días hábiles.** El COA Art. 158 manda contar «a partir del día
+   hábil siguiente» y el Art. 159 excluye los feriados; hoy se cuenta el día inicial y no se
+   descuentan. Alinearlo exige fijar el calendario del Art. 65 del Código del Trabajo con sus tres
+   fiestas móviles y sus reglas de traslado. **No se hizo porque la sesión de Lexis se cerró y no
+   se pudo verificar el artículo contra la fuente**, y un calendario de feriados mal puesto es peor
+   que ninguno. Queda declarado como limitación en la metodología publicada y en el MCP.
+2. **Los mínimos de plazo de IT-01** (9/13/17). Corresponden al tramo publicación→adjudicación y el
+   indicador mide publicación→límite de ofertas, cuyos mínimos son 6/10/14/18; y esos mínimos
+   escalonados no existían antes del 28-oct-2025. Es **decisión de Oscar**: o se aplican solo desde
+   esa fecha, o se declara el indicador como referencial. Necesita Lexis para cerrarlo.
+3. **El presupuesto referencial falta en 174 547 procesos (11,9%)** porque el SERCOP publica la
+   palabra «USD» en el campo del monto. No es recuperable: `budget_currency` está en NULL en esas
+   filas. Queda **declarado en la metodología publicada**. Recuperarlo exigiría volver a descargar
+   esos procesos de la fuente.
+4. **El respaldo.** Sigue sin poder correr por espacio, y ampliar el volumen cuesta dinero: es
+   decisión de Oscar.
 2. ~~Las citas a la guía de la OCP.~~ **Resuelto el mismo 11-ago.** De las 13, solo 3 eran
    correctas. Tres se corrigieron a su código real (IP-02 de R059 a **R031**, CC-02 de R051 a
    **R050**, CC-05 de R011 a **R055**), cinco se retiraron por no tener equivalente (IC-02, CC-04,

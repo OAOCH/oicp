@@ -365,8 +365,104 @@ interface ProcedureData {
 // mostraba "$40.328.858,64": dos formatos para la misma cifra en la misma pantalla.
 const DOS_DECIMALES = { minimumFractionDigits: 2, maximumFractionDigits: 2 } as const;
 
+// ── Feriados nacionales del Ecuador ─────────────────────────────────────────
+//
+// Art. 65 del Código del Trabajo (Codificación 17, R.O.S 167 de 16-dic-2005, reformado por el
+// Art. 3 de la Ley de R.O. Suplemento 906 de 20-dic-2016), verificado textualmente en Lexis el
+// 2026-08-11 sobre el texto VIGENTE:
+//
+//   «Además de los sábados y domingos, son días de descanso obligatorio los siguientes: 1 de
+//   enero, viernes santo, 1 y 24 de mayo, 10 de agosto, 9 de octubre, 2 y 3 de noviembre, 25 de
+//   diciembre y los días lunes y martes de carnaval.»
+//
+//   «Cuando los días feriados de descanso obligatorio establecidos en este Código, correspondan
+//   al día martes, el descanso se trasladará al día lunes inmediato anterior, y si coinciden con
+//   los días miércoles o jueves, el descanso se pasará al día viernes de la misma semana. [...]
+//   Se exceptúan de esta disposición los días 1 de enero, 25 de diciembre y martes de carnaval.»
+//
+//   «Cuando los días feriados [...] correspondan a los días sábados o domingos, el descanso se
+//   trasladará, respectivamente, al anterior día viernes o al posterior día lunes.»
+//
+// Dos decisiones de lectura, declaradas porque el texto no las resuelve:
+//  1. La excepción del 1-ene, 25-dic y martes de carnaval está redactada dentro del párrafo del
+//     martes/miércoles/jueves, así que NO se aplica al párrafo de sábado y domingo. Un 1 de enero
+//     en sábado se traslada al viernes 31 de diciembre anterior.
+//  2. El descanso se TRASLADA, no se duplica: la fecha original deja de ser feriado.
+//
+// El decreto ejecutivo anual de feriados puede apartarse de esta regla en un año concreto (suele
+// hacerlo con los puentes). Este calendario es el del Código, y así se declara en la metodología.
+const FERIADOS_FIJOS: [number, number][] = [
+  [1, 1], [5, 1], [5, 24], [8, 10], [10, 9], [11, 2], [11, 3], [12, 25],
+];
+
+// Domingo de Pascua (gregoriano), algoritmo de Meeus/Jones/Butcher.
+function domingoDePascua(anio: number): number {
+  const a = anio % 19;
+  const b = Math.floor(anio / 100);
+  const c = anio % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const mes = Math.floor((h + l - 7 * m + 114) / 31);
+  const dia = ((h + l - 7 * m + 114) % 31) + 1;
+  return Date.UTC(anio, mes - 1, dia);
+}
+
+const DIA_MS = 86_400_000;
+const aISO = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+
+function feriadosDelAnio(anio: number): string[] {
+  const pascua = domingoDePascua(anio);
+  const martesCarnaval = pascua - 47 * DIA_MS;
+  // [timestamp, se le aplica el traslado de martes/miércoles/jueves]
+  const dias: [number, boolean][] = FERIADOS_FIJOS.map(([m, d]) => {
+    const ts = Date.UTC(anio, m - 1, d);
+    const exento = (m === 1 && d === 1) || (m === 12 && d === 25);
+    return [ts, !exento] as [number, boolean];
+  });
+  dias.push([pascua - 2 * DIA_MS, true]);        // viernes santo (ya es viernes)
+  dias.push([pascua - 48 * DIA_MS, true]);       // lunes de carnaval
+  dias.push([martesCarnaval, false]);            // martes de carnaval: exento del traslado
+
+  return dias.map(([ts, trasladable]) => {
+    const dow = new Date(ts).getUTCDay();
+    if (dow === 6) return aISO(ts - DIA_MS);                      // sábado -> viernes anterior
+    if (dow === 0) return aISO(ts + DIA_MS);                      // domingo -> lunes posterior
+    if (!trasladable) return aISO(ts);
+    if (dow === 2) return aISO(ts - DIA_MS);                      // martes -> lunes anterior
+    if (dow === 3) return aISO(ts + 2 * DIA_MS);                  // miércoles -> viernes
+    if (dow === 4) return aISO(ts + DIA_MS);                      // jueves -> viernes
+    return aISO(ts);
+  });
+}
+
+// Se cachean por año porque businessDays se llama 1,47 M veces en cada recálculo. Se incluyen el
+// año anterior y el siguiente porque un traslado puede cruzar el cambio de año (un 1 de enero en
+// sábado descansa el 31 de diciembre anterior).
+const cacheFeriados = new Map<number, Set<string>>();
+function feriados(anio: number): Set<string> {
+  let s = cacheFeriados.get(anio);
+  if (!s) {
+    s = new Set([...feriadosDelAnio(anio - 1), ...feriadosDelAnio(anio), ...feriadosDelAnio(anio + 1)]);
+    cacheFeriados.set(anio, s);
+  }
+  return s;
+}
+
+export function esFeriadoNacional(fechaISO: string): boolean {
+  const d = String(fechaISO || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  return feriados(Number(d.slice(0, 4))).has(d);
+}
+
 /**
- * Días hábiles entre dos fechas, ambos extremos incluidos y sin sábados ni domingos.
+ * Días hábiles entre dos fechas, ambos extremos incluidos y sin sábados, domingos ni feriados.
  *
  * CORREGIDO EL 11-AGO-2026. La versión anterior iteraba sobre objetos Date COMPLETOS, con hora,
  * y usaba getDay()/setDate(), que dependen de la zona horaria del servidor. El resultado no
@@ -378,12 +474,14 @@ const DOS_DECIMALES = { minimumFractionDigits: 2, maximumFractionDigits: 2 } as 
  * conteo es aritmético en vez de iterativo: además de ser determinista, no puede quedarse en un
  * bucle largo si la fuente publica una fecha absurda.
  *
- * PENDIENTE DECLARADO: siguen sin descontarse los feriados, y el cómputo incluye el día inicial.
- * El COA Art. 158 dispone que los términos corren «a partir del día hábil siguiente» y el Art. 159
- * excluye los feriados, así que este conteo NO es todavía el término legal. Cambiarlo exige fijar
- * el calendario de feriados del Código del Trabajo Art. 65 con sus tres fiestas móviles y sus
- * reglas de traslado, verificado contra la fuente. Mientras tanto la limitación se publica en la
- * metodología en vez de esconderse.
+ * FERIADOS: se descuentan desde el 11-ago-2026, con el calendario del Art. 65 del Código del
+ * Trabajo verificado en Lexis (ver arriba). El COA Art. 159 los excluye del cómputo de términos.
+ *
+ * PENDIENTE DECLARADO: el cómputo todavía INCLUYE el día inicial, mientras que el COA Art. 158
+ * dispone que los términos corren «a partir del día hábil siguiente». No se cambia aquí porque
+ * mueve el significado de los umbrales de IT-01 (9/13/17), que están pendientes de una decisión
+ * sobre a qué tramo corresponden y desde qué fecha aplican. Las dos cosas se resuelven juntas o
+ * el indicador queda a medio camino. Se declara en la metodología publicada.
  */
 function businessDays(start: string, end: string): number {
   const s = String(start || '').slice(0, 10);
@@ -397,8 +495,7 @@ function businessDays(start: string, end: string): number {
   const hasta = Date.UTC(+me[1], +me[2] - 1, +me[3]);
   if (hasta < desde) return 0;
 
-  const DIA = 86_400_000;
-  const dias = (hasta - desde) / DIA + 1;          // ambos extremos incluidos
+  const dias = (hasta - desde) / DIA_MS + 1;       // ambos extremos incluidos
   const semanas = Math.floor(dias / 7);
   let habiles = semanas * 5;
   let dow = new Date(desde).getUTCDay();           // UTC: no depende del servidor
@@ -406,7 +503,21 @@ function businessDays(start: string, end: string): number {
     if (dow !== 0 && dow !== 6) habiles++;
     dow = (dow + 1) % 7;
   }
-  return habiles;
+
+  // Se restan los feriados que caen dentro del rango Y en día laborable. Se recorre el conjunto
+  // de feriados (una decena por año), no los días del rango, para que el coste no dependa de la
+  // longitud del intervalo.
+  // Se unen en UN conjunto antes de recorrer: feriados(anio) ya incluye el año anterior y el
+  // siguiente, así que iterar dos años por separado descontaría dos veces el mismo feriado.
+  const delRango = new Set<string>();
+  for (const anio of new Set([+ms[1], +me[1]])) {
+    for (const f of feriados(anio)) if (f >= s && f <= e) delRango.add(f);
+  }
+  for (const f of delRango) {
+    const d = new Date(Date.UTC(+f.slice(0, 4), +f.slice(5, 7) - 1, +f.slice(8, 10))).getUTCDay();
+    if (d !== 0 && d !== 6) habiles--;
+  }
+  return Math.max(0, habiles);
 }
 
 function isInfima(method?: string): boolean {

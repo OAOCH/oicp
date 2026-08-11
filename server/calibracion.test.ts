@@ -6,7 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas, calculateScore } from './flag-engine.js';
+import { evaluateIndividualFlags, getInfimaThreshold, FLAG_CATALOG, hidratarBanderas, calculateScore, esFeriadoNacional } from './flag-engine.js';
 
 const codigos = (fs: any[]) => fs.map(f => f.code);
 
@@ -169,6 +169,72 @@ test('con budget_amount como texto y sin adjudicado, el motor normalizado marca 
   const sinNormalizar = codigos(evaluateIndividualFlags(crudo as any));
   assert.ok(!sinNormalizar.includes('TR-01'),
     'sin normalizar, la cadena "USD" es truthy y TR-01 se pierde: por eso la normalización es obligatoria');
+});
+
+// ── Feriados del Art. 65 del Código del Trabajo ──
+// Verificado textualmente en Lexis el 2026-08-11 sobre el texto vigente (Codificación 17, R.O.S
+// 167 de 16-dic-2005, reformado por la Ley de R.O.S 906 de 20-dic-2016). Los casos de abajo no se
+// eligieron al azar: son fechas en las que se puede contrastar el calendario generado contra el
+// que Ecuador observó de verdad ese año.
+test('el calendario de feriados reproduce el que Ecuador observó', () => {
+  const F = (d: string) => esFeriadoNacional(d);
+
+  // 2024: el 1 de mayo cayó MIÉRCOLES -> el descanso pasó al viernes 3. Así se observó.
+  assert.ok(F('2024-05-03'), 'el feriado del 1-may-2024 se trasladó al viernes 3');
+  assert.ok(!F('2024-05-01'), 'y el miércoles 1 deja de ser el día de descanso');
+
+  // 2025: el 1 de mayo cayó JUEVES -> el descanso pasó al viernes 2. Así se observó.
+  assert.ok(F('2025-05-02') && !F('2025-05-01'), 'el feriado del 1-may-2025 se trasladó al viernes 2');
+
+  // Un feriado en viernes se queda donde está: el 9 de octubre de 2026 cae viernes.
+  assert.ok(F('2026-10-09'), 'un feriado que ya cae viernes no se mueve');
+
+  // 2024: el 10 de agosto cayó SÁBADO -> el descanso pasó al viernes 9. Así se observó.
+  assert.ok(F('2024-08-09'), 'el feriado del 10-ago-2024 se trasladó al viernes 9');
+  assert.ok(!F('2024-08-10'), 'y el sábado 10 deja de ser el día de descanso');
+
+  // 2024: el 9 de octubre cayó MIÉRCOLES -> pasa al viernes 11. Así se observó.
+  assert.ok(F('2024-10-11'), 'el feriado del 9-oct-2024 se trasladó al viernes 11');
+  assert.ok(!F('2024-10-09'));
+
+  // 2024: 2 de noviembre sábado -> viernes 1; 3 de noviembre domingo -> lunes 4. Así se observó.
+  assert.ok(F('2024-11-01') && F('2024-11-04'), 'el puente de Difuntos y Cuenca de 2024');
+
+  // 2025: el 24 de mayo cayó SÁBADO -> viernes 23. Así se observó.
+  assert.ok(F('2025-05-23'), 'el feriado del 24-may-2025 se trasladó al viernes 23');
+
+  // Fiestas móviles atadas a la Pascua: 2024 fue el 31 de marzo, 2025 el 20 de abril.
+  assert.ok(F('2024-03-29'), 'viernes santo de 2024');
+  assert.ok(F('2024-02-12') && F('2024-02-13'), 'carnaval de 2024, lunes y martes');
+  assert.ok(F('2025-04-18'), 'viernes santo de 2025');
+  assert.ok(F('2025-03-03') && F('2025-03-04'), 'carnaval de 2025, lunes y martes');
+
+  // El martes de carnaval está EXCEPTUADO del traslado: se queda en martes, no pasa al lunes.
+  assert.ok(F('2024-02-13'), 'martes de carnaval sigue siendo martes');
+
+  // 1 de enero y 25 de diciembre están exceptuados del traslado de martes/miércoles/jueves.
+  assert.ok(F('2025-01-01'), '1-ene-2025 fue miércoles y NO se traslada');
+  assert.ok(F('2024-12-25'), '25-dic-2024 fue miércoles y NO se traslada');
+
+  // Un día cualquiera no es feriado
+  assert.ok(!F('2024-06-17') && !F('2025-09-15'));
+});
+
+test('los feriados se descuentan del cómputo de días hábiles', () => {
+  const dias = (a: string, b: string) => {
+    const f = evaluateIndividualFlags({ id: 'x', procurement_method: 'open',
+      procurement_method_details: 'Subasta Inversa Electronica', buyer_id: 'EC-RUC-1',
+      award_amount: 400_000, published_date: a, award_date: b,
+      description: 'Adquisicion de bienes para la entidad contratante del Estado',
+      suppliers: [{ id: 'EC-RUC-9', name: 'P' }] } as any);
+    const it02 = f.find(x => x.code === 'IT-02');
+    return it02 ? Number(String(it02.detail).match(/en (\d+) días/)![1]) : null;
+  };
+  // Jueves 8 a lunes 12 de agosto de 2024: jueves, viernes 9 (FERIADO trasladado) y lunes 12.
+  // Sin descontar el feriado serían 3 hábiles; con el descuento son 2, así que IT-02 SÍ dispara.
+  assert.equal(dias('2024-08-08', '2024-08-12'), 2);
+  // La misma ventana una semana después, sin feriado: jueves, viernes y lunes = 3, no dispara.
+  assert.equal(dias('2024-08-15', '2024-08-19'), null);
 });
 
 // ── Días hábiles: el resultado no puede depender de la hora ──
