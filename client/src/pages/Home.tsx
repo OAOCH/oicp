@@ -94,7 +94,7 @@ export default function Home() {
               <Link key={f.code} to={`/buscar?flag=${f.code}`}
                 className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-50 transition">
                 <span className="font-mono text-sm text-brand-700">{f.code}</span>
-                <span className="text-sm text-gray-500">{f.count} procedimientos</span>
+                <span className="text-sm text-gray-500">{formatCount(f.count)} procedimientos</span>
               </Link>
             ))}
           </div>
@@ -124,11 +124,14 @@ export default function Home() {
                 <tr key={p.id} className="border-b last:border-0 hover:bg-gray-50">
                   <td className="py-2 max-w-xs">
                     <Link to={`/proceso/${encodeURIComponent(p.id)}`} className="text-brand-600 hover:underline line-clamp-1">
-                      {p.title || p.id}
+                      {/* Muchos procesos traen `title` con el código y la descripción con el
+                          objeto real: se prefiere lo legible y el código queda de respaldo. */}
+                      {p.description || p.title || p.id}
                     </Link>
                   </td>
                   <td className="py-2 text-gray-600 line-clamp-1">{p.buyer_name || '—'}</td>
-                  <td className="py-2 text-right font-mono">{formatCurrency(p.award_amount)}</td>
+                  {/* monto_usd, no award_amount crudo (regla 11). */}
+                  <td className="py-2 text-right font-mono">{formatCurrency(p.monto_usd ?? p.award_amount)}</td>
                   <td className="py-2 text-center">
                     <span className="font-bold" style={{ color: `${p.score > 60 ? '#ef4444' : p.score > 30 ? '#f97316' : p.score > 10 ? '#eab308' : '#22c55e'}` }}>
                       {p.score}
@@ -153,7 +156,7 @@ export default function Home() {
         <Link to="/metodologia" className="bg-white rounded-xl border p-5 shadow-sm hover:border-brand-300 transition group">
           <FileText className="text-brand-600 mb-2" size={24} />
           <h3 className="font-semibold group-hover:text-brand-700">Metodología</h3>
-          <p className="text-sm text-gray-500">15 indicadores calibrados para Ecuador</p>
+          <p className="text-sm text-gray-500">15 indicadores calibrados para Ecuador (14 activos)</p>
         </Link>
         <a href="https://datosabiertos.compraspublicas.gob.ec" target="_blank" rel="noopener"
           className="bg-white rounded-xl border p-5 shadow-sm hover:border-brand-300 transition group">

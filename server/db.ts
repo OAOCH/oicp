@@ -262,8 +262,8 @@ export function getStatistics() {
 
   // Ambas usan índice y traen 5-10 filas: no recorren la tabla.
   const recentProcedures = db.prepare(`
-    SELECT id, title, buyer_name, award_amount, score, risk_level, published_date,
-           ${MONTO_SQL} AS monto_usd
+    SELECT id, title, substr(description, 1, 140) AS description, buyer_name, award_amount,
+           score, risk_level, published_date, ${MONTO_SQL} AS monto_usd
     FROM procedures ORDER BY published_date DESC LIMIT 5`).all();
   const byMethod = db.prepare(`
     SELECT procurement_method_details AS method, COUNT(*) AS count
@@ -289,8 +289,8 @@ function estadisticasDirectas() {
   const byYear = db.prepare(
     `SELECT source_year as year, COUNT(*) as count FROM procedures GROUP BY source_year ORDER BY source_year`).all();
   const recentProcedures = db.prepare(`
-    SELECT id, title, buyer_name, award_amount, score, risk_level, published_date,
-           ${MONTO_SQL} AS monto_usd
+    SELECT id, title, substr(description, 1, 140) AS description, buyer_name, award_amount,
+           score, risk_level, published_date, ${MONTO_SQL} AS monto_usd
     FROM procedures ORDER BY published_date DESC LIMIT 5`).all();
   return {
     totalProcedures: total.count, byRisk, byMethod: [],
