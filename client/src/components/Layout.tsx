@@ -109,7 +109,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <p>
             Datos fuente: <a href="https://datosabiertos.compraspublicas.gob.ec" target="_blank" rel="noopener" className="underline">SERCOP Datos Abiertos</a> |
             Estándar: <a href="https://standard.open-contracting.org" target="_blank" rel="noopener" className="underline">OCDS</a> |
-            Metodología basada en <a href="https://www.open-contracting.org/resources/red-flags-for-integrity-guide/" target="_blank" rel="noopener" className="underline">OCP Red Flags Guide 2024</a>
+            Metodología basada en <a href="https://www.open-contracting.org/wp-content/uploads/2024/12/OCP2024-RedFlagProcurement-1.pdf" target="_blank" rel="noopener" className="underline">Red flags in public procurement (OCP, 2024)</a>
           </p>
           <p className="text-gray-400">
             Este sistema NO es una herramienta oficial del gobierno. Los indicadores son referenciales y pueden contener errores.
