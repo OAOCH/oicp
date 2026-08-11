@@ -111,6 +111,28 @@ del periodista no aparece en ninguno; la lista negra de `oicp_sql` aguantó.
   comportamiento defectuoso y se corrigen junto con el motor, porque publicar la regla antes de
   arreglar el código sería publicar el defecto.
 
+- **`commit e9fcc20` + `f3cc9ce` — el respaldo ya es de fiar.** No solo «nunca se había probado»:
+  tenía dos formas de producir una copia incompleta que parecía correcta. El
+  `wal_checkpoint(TRUNCATE)` iba en un `try/catch` que **descartaba el error**, así que si otra
+  conexión tenía la base tomada (el actualizador, o la segunda conexión de `buildAnalytics`) la copia
+  salía sin lo que seguía en el WAL; y `createReadStream` leía el archivo **vivo** durante minutos,
+  de modo que una escritura concurrente podía dejarlo partido y el cliente recibía un 200 con un
+  archivo corrupto. Ahora se pide un snapshot consistente con **`db.backup()`** y no se entrega
+  hasta verificar que se puede leer y que trae procesos; se comprueba el espacio libre antes
+  (507 con cifras si no cabe, en vez de llenar el volumen de 5 GB); se publican las cabeceras
+  `X-OICP-Backup-Procesos` y `X-OICP-Backup-Bytes-Sin-Comprimir` para comprobar que llegó completo;
+  si la lectura falla con las cabeceras ya enviadas se corta la conexión a propósito; y el temporal
+  se borra siempre, incluso si el cliente aborta.
+  **Se usa `db.backup()` y NO `VACUUM INTO` a propósito**: los dos dan la misma consistencia, pero
+  VACUUM INTO es síncrono y sobre 1,3 GB bloquearía el único hilo de Node entre 30 y 90 s, es decir
+  otro vector de congelamiento. Hay una prueba que verifica explícitamente que el respaldo **cede el
+  control al event loop**. `server/backup.test.ts`: 6 pruebas con el WAL sucio a propósito, una de
+  ellas demuestra que copiar el archivo vivo **pierde datos**, así que si alguien vuelve a
+  «simplificar» el respaldo a una copia de archivo, el CI lo grita.
+  *Alcance de la verificación*: el mecanismo está probado contra SQLite real y corre en cada push.
+  **No** se ejecutó una corrida sobre la base de producción concreta (requiere descargar ~1,3 GB).
+  Esa corrida ahora es segura y falla de forma clara si algo no está bien.
+
 ### Contexto operativo verificado en caliente el 2026-08-10
 
 - **Usuarios con acceso: 2.** `oscar.obandoch@gmail.com` (superadmin) y
@@ -326,8 +348,8 @@ conviene saberlo.
 - `monitor.yml` no vigila que los datos avancen: la sincronización puede morir semanas en verde.
 - `index.ts:94` tras una corrupción la plataforma arranca con base vacía, el healthcheck sigue en
   verde y el pie informa el conteo viejo.
-- `admin.ts:803` el único respaldo es una copia en caliente, sin cadencia y **nunca restaurada**.
-  Es el pendiente operativo más serio que queda: si el volumen se corrompe, no hay copia probada.
+- **Cadencia del respaldo**: el mecanismo ya es correcto y está probado (ver `f3cc9ce`), pero sigue
+  siendo **manual**. Falta decidir cada cuánto se corre y dónde se guarda la copia.
 
 ## Orden recomendado para retomar
 
