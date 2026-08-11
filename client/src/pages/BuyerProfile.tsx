@@ -3,7 +3,11 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api, ApiError, mensajeDeError } from '../lib/api';
 import { StatCard, RiskBadge, Loading, EmptyState, ErrorState } from '../components/UI';
-import { formatCurrency } from '../lib/flags';
+import { formatCurrency, formatCount } from '../lib/flags';
+
+// La distribución llega en el orden que devuelve el GROUP BY, que es arbitrario: se veía
+// "Crítico, Alto, Bajo, Moderado". Se ordena por severidad para que se lea de un vistazo.
+const ORDEN_RIESGO: Record<string, number> = { critical: 0, high: 1, moderate: 2, low: 3 };
 
 export default function BuyerProfile() {
   const { id } = useParams<{ id: string }>();
@@ -35,10 +39,10 @@ export default function BuyerProfile() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Procedimientos" value={profile.total_procedures} />
+        <StatCard label="Procedimientos" value={formatCount(profile.total_procedures)} />
         <StatCard label="Valor Total" value={formatCurrency(profile.total_value)} />
-        <StatCard label="Score Promedio" value={Math.round(profile.avg_score)} />
-        <StatCard label="Score Máximo" value={profile.max_score} color="text-red-600" />
+        <StatCard label="Score Promedio" value={Math.round(profile.avg_score || 0)} />
+        <StatCard label="Score Máximo" value={formatCount(profile.max_score)} color="text-red-600" />
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
@@ -46,12 +50,14 @@ export default function BuyerProfile() {
         <div className="bg-white rounded-xl border p-5 shadow-sm">
           <h2 className="font-semibold mb-4">Distribución de Riesgo</h2>
           <div className="space-y-2">
-            {profile.riskDistribution?.map((r: any) => (
-              <div key={r.risk_level} className="flex items-center justify-between text-sm">
-                <RiskBadge level={r.risk_level} />
-                <span className="font-medium">{r.count}</span>
-              </div>
-            ))}
+            {[...(profile.riskDistribution || [])]
+              .sort((a: any, b: any) => (ORDEN_RIESGO[a.risk_level] ?? 9) - (ORDEN_RIESGO[b.risk_level] ?? 9))
+              .map((r: any) => (
+                <div key={r.risk_level} className="flex items-center justify-between text-sm">
+                  <RiskBadge level={r.risk_level} />
+                  <span className="font-medium">{formatCount(r.count)}</span>
+                </div>
+              ))}
           </div>
         </div>
 
@@ -62,7 +68,7 @@ export default function BuyerProfile() {
             {profile.flagDistribution?.slice(0, 8).map((f: any) => (
               <div key={f.code} className="flex items-center justify-between text-sm">
                 <span className="font-mono text-brand-700">{f.code}</span>
-                <span>{f.count}</span>
+                <span>{formatCount(f.count)}</span>
               </div>
             ))}
           </div>
