@@ -522,7 +522,19 @@ export function callTool(db: Database.Database, name: string, args: any): any {
           .map((f: any) => ({ code: f.code, nombre: f.name_es, severidad: f.severity,
             categoria: f.category, ocp_ref: f.ocp_ref, regla: f.description_es, detalle: f.detail }));
       } catch { /* flags como texto crudo */ }
+      // `suppliers` salía como CADENA JSON cruda: el modelo tenía que parsearla a mano para
+      // saber quién ganó el contrato, con el riesgo de equivocarse al leerla. Se entrega ya
+      // como estructura.
+      try { row.suppliers = JSON.parse(row.suppliers || '[]'); }
+      catch { row.suppliers = []; }
+      // Ruido que solo gasta contexto del modelo: metadatos internos y campos vacíos.
       delete row.created_at; delete row.updated_at;
+      delete row.raw_release; delete row.data_coverage; delete row.budget_currency;
+      // El monto que la plataforma publica, con la regla de plausibilidad (regla 11): sin
+      // esto el modelo sumaría los campos crudos y podría citar un monto absurdo de la fuente.
+      row.monto_usd = (db.prepare(`SELECT ${MONTO_SQL} AS m FROM procedures WHERE id = ?`)
+        .get(row.id) as any)?.m ?? null;
+      row.convencion = MONTO_NOTA;
       row.links = { oicp: `${PROD}/proceso/${row.id}`,
         sercop_ocds: `https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/record?ocid=${row.ocid}` };
       row.disclaimer = DISCLAIMER;
