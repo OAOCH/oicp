@@ -99,6 +99,27 @@ del periodista no aparece en ninguno; la lista negra de `oicp_sql` aguantó.
   **dejó de inventar la cobertura de datos**: tenía clavados «1.460.511 procesos» y «14 de mayo de
   2026» como valores de reserva, que se publicaban mientras cargaba `/api/version` o si fallaba.
 
+- **`commit 7c13c3b` — metodología publicada: lo que no depende del recálculo.** IC-02 publicaba
+  «umbral del año» (es por FECHA), omitía el fallback a presupuesto y presentaba como válida la rama
+  por texto «ínfima», que **no dispara nunca**; ahora también avisa de que ~60% de sus disparos son
+  órdenes de catálogo. CC-04 publicaba media regla. TR-02 en el MCP omitía la condición `> 0`.
+  TR-03 decía «prefijo RE-» siendo «contiene». El campo `verificado` presentaba una auditoría sobre
+  1 460 511 procesos como si fuera la vigente. Nuevo campo `banderas_activas`: 15 definidas, **14
+  pueden activarse**. Y `Methodology.tsx` afirmaba en falso que una descripción vacía dispara TR-01.
+  Verificado en vivo llamando `oicp_methodology` contra producción.
+  **Los textos de CC-01, CC-02, CC-03, CC-05 e IT-02 se dejaron sin tocar a propósito**: describen
+  comportamiento defectuoso y se corrigen junto con el motor, porque publicar la regla antes de
+  arreglar el código sería publicar el defecto.
+
+### Contexto operativo verificado en caliente el 2026-08-10
+
+- **Usuarios con acceso: 2.** `oscar.obandoch@gmail.com` (superadmin) y
+  **`xgonzalez14@hotmail.com`** (rol `viewer`, **nunca ha ingresado**). El periodista
+  `alejoaleph@gmail.com` **ya no está en la whitelist**: Oscar lo removió antes del 10-ago.
+  Este documento decía que el segundo usuario era el periodista; queda corregido.
+- **El registro de acciones de administración funciona**: tras `7db661d`, una llamada a
+  `/api/admin/status` aparece en `/admin/actividad`. Antes no se registraba ninguna.
+
 ### A medias — punto exacto donde quedó
 
 Pendiente un **recálculo de metodología** (una sola pasada que cubre tres correcciones entrelazadas,
