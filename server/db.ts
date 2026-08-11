@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+// flag-engine es puro (no importa db), así que no hay ciclo.
+import { hidratarBanderas } from './flag-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'oicp.db');
@@ -358,7 +360,9 @@ export function searchProcedures(params: {
   `).all(...values, pageSize, offset);
 
   return {
-    procedures: rows.map((r: any) => ({ ...r, flags: JSON.parse(r.flags || '[]') })),
+    // Los textos de las banderas se reconstruyen desde el catálogo vigente, no se sirven
+    // los que se escribieron en la base el día de la evaluación (regla 10).
+    procedures: rows.map((r: any) => ({ ...r, flags: hidratarBanderas(JSON.parse(r.flags || '[]')) })),
     total: countRow.total,
     page, pageSize,
     totalPages: Math.ceil(countRow.total / pageSize),
@@ -391,7 +395,10 @@ export function getProcedure(id: string) {
   const crudo = Number(row.final_amount) || Number(row.contract_amount) || Number(row.award_amount) || 0;
   return {
     ...row,
-    flags: JSON.parse(row.flags || '[]'),
+    // Idem: la ficha del proceso muestra el catálogo vigente. Antes servía el texto
+    // guardado, así que una corrección de metodología exigía reescribir 1,47 M de filas y
+    // hasta entonces la ficha publicaba la versión vieja de la regla.
+    flags: hidratarBanderas(JSON.parse(row.flags || '[]')),
     suppliers: JSON.parse(row.suppliers || '[]'),
     monto_implausible: crudo > 0 && Math.abs(crudo - Number(row.monto_usd || 0)) > 0.01,
   };

@@ -164,6 +164,51 @@ const CORRELATED_FLAGS: [string, string, number][] = [
   ['IP-01', 'CC-05', 0.5],
 ];
 
+/**
+ * Severidad de una bandera. Se resuelve por CÓDIGO desde el catálogo y solo se usa el valor
+ * guardado como respaldo.
+ *
+ * Importa más de lo que parece: si una bandera llega sin `severity` (porque viene de una
+ * fila guardada con otro formato), `SEVERITY_WEIGHTS[undefined]` es undefined, el score sale
+ * NaN, SQLite lo guarda como NULL y getRiskLevel(NaN) falla los tres cortes y devuelve
+ * 'critical'. Serían 1,47 M procesos marcados como críticos sin un solo error en el log.
+ */
+function severidadDe(flag: { code: string; severity?: number }): number {
+  const delCatalogo = FLAG_CATALOG[flag.code]?.severity;
+  if (typeof delCatalogo === 'number') return delCatalogo;
+  return typeof flag.severity === 'number' ? flag.severity : 0;
+}
+
+/**
+ * Completa los campos ESTÁTICOS de una bandera desde el catálogo: nombre, descripción,
+ * categoría, severidad y referencia OCP. Los campos propios del proceso (`code`, `active`,
+ * `detail`) se conservan tal como están guardados.
+ *
+ * Con esto, el texto que ve el usuario sale SIEMPRE del catálogo vigente y no de lo que se
+ * escribió en la base el día que se evaluó el proceso. Es lo que cierra la regla 10 de forma
+ * estructural: corregir una descripción surte efecto de inmediato en los 1,47 M de procesos,
+ * sin reescribir ninguna fila, y no puede quedar desincronizada.
+ *
+ * Tolera a propósito las dos formas (con y sin campos estáticos guardados), porque la base
+ * puede tener filas escritas por versiones distintas. Un código que no esté en el catálogo
+ * no revienta: se degrada al propio código.
+ */
+export function hidratarBanderas(flags: any[]): any[] {
+  if (!Array.isArray(flags)) return [];
+  return flags.map(f => {
+    const catalogo = FLAG_CATALOG[f?.code];
+    if (!catalogo) {
+      // Código desconocido (catálogo cambiado o dato corrupto): nunca acceder a undefined.
+      return { ...f, name_es: f?.name_es || f?.code || 'Indicador', severity: severidadDe(f || { code: '' }) };
+    }
+    // ORDEN IMPORTANTE: primero lo guardado, después el catálogo ENCIMA. Al revés, el texto
+    // que quedó escrito en la fila el día de la evaluación pisaría al corregido, y la regla 10
+    // seguiría rota exactamente igual que antes. `active` y `detail` sobreviven porque el
+    // catálogo no los define (son datos del proceso, no del indicador).
+    return { ...f, ...catalogo, severity: severidadDe(f) };
+  });
+}
+
 export function calculateScore(flags: Flag[]): number {
   const activeFlags = flags.filter(f => f.active);
   // El descuento por correlación es independiente del orden de evaluación:
@@ -174,7 +219,7 @@ export function calculateScore(flags: Flag[]): number {
   let score = 0;
 
   for (const flag of activeFlags) {
-    let weight = SEVERITY_WEIGHTS[flag.severity];
+    let weight = SEVERITY_WEIGHTS[severidadDe(flag)];
     if (CORRELATED_FLAGS.some(([a, b]) => flag.code === b && activeCodes.has(a))) {
       weight = Math.round(weight * 0.5);
     }

@@ -9,6 +9,7 @@
 import crypto from 'crypto';
 import DatabaseCtor from 'better-sqlite3';
 import type Database from 'better-sqlite3';
+import { hidratarBanderas } from './flag-engine.js';
 
 const PROD = 'https://oicp-production.up.railway.app';
 const DISCLAIMER = 'Los indicadores son señales analíticas basadas en datos públicos OCDS del SERCOP; NO constituyen evidencia ni acusación de irregularidad. Verificar siempre en la fuente oficial.';
@@ -250,7 +251,7 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { ocid: { type: 'string' } }, required: ['ocid'] } },
   { name: 'oicp_flag_stats', description: 'Estadísticas de banderas: disparos por indicador y distribución de riesgo, global o por año.',
     inputSchema: { type: 'object', properties: { year: { type: 'integer' } } } },
-  { name: 'oicp_sql', description: `Consulta SQL de SOLO LECTURA (SELECT/WITH). Tablas: procedures(id, ocid, title, description, buyer_id, buyer_name, procurement_method_details, budget_amount, award_amount, contract_amount, final_amount, published_date, source_year, suppliers JSON, flags JSON, score, risk_level), concentration_index(buyer_id, supplier_id, year, contract_count, total_value, infima_count, infima_total_value, share_of_buyer). Agregados: a_suppliers(ruc10,name,n_procs,total_usd,first_year,last_year,n_buyers,n_critical,n_high,n_moderate,n_low), a_supplier_buyer, a_supplier_year, a_buyers, a_flag_year(code,year,n), a_risk_year(risk,year,n,total_usd), a_supplier_critical, a_fts(FTS5). ${MONTO_NOTA} Máximo 300 filas.`,
+  { name: 'oicp_sql', description: `Consulta SQL de SOLO LECTURA (SELECT/WITH). Tablas: procedures(id, ocid, title, description, buyer_id, buyer_name, procurement_method_details, budget_amount, award_amount, contract_amount, final_amount, published_date, source_year, suppliers JSON, flags JSON, score, risk_level). La columna flags es un array cuyos objetos traen el CÓDIGO de la bandera, si está activa y su detalle; los nombres, severidades y reglas NO se consultan ahí, están en oicp_methodology. Para contar banderas usa a_flag_year, y para filtrar por una bandera compara el código: json_extract(j.value,'$.code')), concentration_index(buyer_id, supplier_id, year, contract_count, total_value, infima_count, infima_total_value, share_of_buyer). Agregados: a_suppliers(ruc10,name,n_procs,total_usd,first_year,last_year,n_buyers,n_critical,n_high,n_moderate,n_low), a_supplier_buyer, a_supplier_year, a_buyers, a_flag_year(code,year,n), a_risk_year(risk,year,n,total_usd), a_supplier_critical, a_fts(FTS5). ${MONTO_NOTA} Máximo 300 filas.`,
     inputSchema: { type: 'object', properties: { sql: { type: 'string' }, max_rows: { type: 'integer' } }, required: ['sql'] } },
 ];
 
@@ -513,7 +514,13 @@ export function callTool(db: Database.Database, name: string, args: any): any {
       const row = db.prepare(`SELECT * FROM procedures WHERE id = ? OR ocid = ?`).get(ocid, ocid) as any;
       if (!row) return { error: `Proceso no encontrado: ${ocid}` };
       try {
-        row.flags = JSON.parse(row.flags || '[]').map((f: any) => ({ code: f.code, nombre: f.name_es, severidad: f.severity, detalle: f.detail }));
+        // Los textos salen del catálogo vigente (hidratarBanderas), no de lo guardado en la
+        // fila: así una corrección de metodología llega al modelo de inmediato. Antes, si el
+        // campo faltaba, JSON.stringify eliminaba la clave y el modelo recibía {code, detalle}
+        // sin nombre ni severidad, sin ningún error que lo delatara.
+        row.flags = hidratarBanderas(JSON.parse(row.flags || '[]'))
+          .map((f: any) => ({ code: f.code, nombre: f.name_es, severidad: f.severity,
+            categoria: f.category, ocp_ref: f.ocp_ref, regla: f.description_es, detalle: f.detail }));
       } catch { /* flags como texto crudo */ }
       delete row.created_at; delete row.updated_at;
       row.links = { oicp: `${PROD}/proceso/${row.id}`,
