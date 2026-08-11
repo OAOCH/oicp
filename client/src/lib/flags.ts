@@ -24,6 +24,62 @@ export function riskColor(level: string) {
   return RISK_COLORS[level] || RISK_COLORS.low;
 }
 
+// ── Estados del proceso ──────────────────────────────────────
+// Definición ÚNICA, compartida por la búsqueda y por el perfil de proveedor. Antes cada
+// pantalla tenía su propia copia y ninguna cubría 'active' ni 'planned', así que el SERCOP
+// devolvía esos valores y la interfaz los mostraba en crudo, en inglés, mezclados con
+// "Finalizado" y "Contratado". Un valor desconocido ahora se muestra capitalizado y en su
+// propio color, nunca como un código suelto.
+export const STATUS_LABELS: Record<string, string> = {
+  planning: 'Planificación',
+  planned: 'Planificado',
+  active: 'En curso',
+  tender: 'Publicado',
+  award: 'Adjudicado',
+  contract: 'Contratado',
+  complete: 'Finalizado',
+  cancelled: 'Cancelado',
+  unsuccessful: 'Desierto',
+  withdrawn: 'Retirado',
+  unknown: 'Sin estado',
+};
+
+export const STATUS_COLORS: Record<string, string> = {
+  planning: 'bg-gray-100 text-gray-700',
+  planned: 'bg-gray-100 text-gray-700',
+  active: 'bg-sky-100 text-sky-700',
+  tender: 'bg-blue-100 text-blue-700',
+  award: 'bg-green-100 text-green-700',
+  contract: 'bg-emerald-100 text-emerald-700',
+  complete: 'bg-teal-100 text-teal-700',
+  cancelled: 'bg-red-100 text-red-700',
+  unsuccessful: 'bg-orange-100 text-orange-700',
+  withdrawn: 'bg-orange-100 text-orange-700',
+  unknown: 'bg-gray-100 text-gray-500',
+};
+
+/** Etiqueta legible de un estado. Un valor no catalogado se capitaliza en vez de mostrarse
+ *  crudo, y así nunca aparece un identificador técnico en pantalla. */
+export function statusLabel(status: string | null | undefined): string {
+  if (!status) return STATUS_LABELS.unknown;
+  const s = String(status).toLowerCase();
+  if (STATUS_LABELS[s]) return STATUS_LABELS[s];
+  return s.charAt(0).toUpperCase() + s.slice(1).replace(/[_-]+/g, ' ');
+}
+
+export function statusColor(status: string | null | undefined): string {
+  const s = String(status || 'unknown').toLowerCase();
+  return STATUS_COLORS[s] || 'bg-gray-100 text-gray-600';
+}
+
+/** Cantidad entera para mostrar. Distingue el CERO real (se imprime "0") de la ausencia de
+ *  dato (se imprime "—"). Mostrar un guion cuando el valor es cero hace leer "no se sabe"
+ *  donde en realidad dice "ninguno". */
+export function formatCount(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  return Number(n).toLocaleString('es-EC');
+}
+
 export function scoreColor(score: number): string {
   if (score <= 10) return '#22c55e';
   if (score <= 30) return '#eab308';

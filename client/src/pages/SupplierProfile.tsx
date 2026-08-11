@@ -3,29 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api, ApiError, mensajeDeError } from '../lib/api';
 import { StatCard, RiskBadge, Loading, EmptyState, ErrorState } from '../components/UI';
-import { formatCurrency, formatDate } from '../lib/flags';
-
-const STATUS_LABELS: Record<string, string> = {
-  planning: 'Planificación',
-  tender: 'Publicado',
-  award: 'Adjudicado',
-  contract: 'Contratado',
-  complete: 'Finalizado',
-  cancelled: 'Cancelado',
-  unsuccessful: 'Desierto',
-  unknown: 'Sin estado',
-};
-
-const STATUS_COLORS: Record<string, string> = {
-  planning: 'bg-gray-100 text-gray-700',
-  tender: 'bg-blue-100 text-blue-700',
-  award: 'bg-green-100 text-green-700',
-  contract: 'bg-emerald-100 text-emerald-700',
-  complete: 'bg-teal-100 text-teal-700',
-  cancelled: 'bg-red-100 text-red-700',
-  unsuccessful: 'bg-orange-100 text-orange-700',
-  unknown: 'bg-gray-100 text-gray-500',
-};
+import { formatCurrency, formatDate, statusLabel, statusColor, formatCount } from '../lib/flags';
 
 export default function SupplierProfile() {
   const { id } = useParams<{ id: string }>();
@@ -49,7 +27,13 @@ export default function SupplierProfile() {
   const filteredProcedures = statusFilter
     ? profile.procedures?.filter((p: any) => p.status === statusFilter)
     : profile.procedures;
-  const criticos = profile.riskDistribution?.find((r: any) => r.risk_level === 'critical')?.count ?? null;
+  // El desglose de riesgo omite los niveles con cero, así que la ausencia de la entrada
+  // 'critical' significa CERO críticos, no "dato desconocido". Solo cuando no hay desglose
+  // (base sin agregados) el valor es realmente desconocido.
+  const hayRiesgo = Array.isArray(profile.riskDistribution) && profile.riskDistribution.length > 0;
+  const criticos = hayRiesgo
+    ? (profile.riskDistribution.find((r: any) => r.risk_level === 'critical')?.count ?? 0)
+    : null;
   // El desglose por estado y la lista se calculan sobre la MUESTRA, no sobre el total:
   // rotularlos con el total del proveedor fue justo el defecto que se corrigió.
   const enMuestra = profile.muestraProcesos ?? profile.procedures?.length ?? 0;
@@ -68,10 +52,10 @@ export default function SupplierProfile() {
       {/* Los totales salen de los agregados: son exactos sobre todos los procesos del
           proveedor (2019-2026), no sobre la muestra que se lista más abajo. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Contratos" value={profile.totalProcedures ?? '—'} />
+        <StatCard label="Contratos" value={formatCount(profile.totalProcedures)} />
         <StatCard label="Valor Total" value={profile.totalValue == null ? '—' : formatCurrency(profile.totalValue)} />
-        <StatCard label="Procesos Críticos" value={criticos ?? '—'} />
-        <StatCard label="Compradores Distintos" value={profile.distinctBuyers ?? '—'} />
+        <StatCard label="Procesos Críticos" value={formatCount(criticos)} />
+        <StatCard label="Compradores Distintos" value={formatCount(profile.distinctBuyers)} />
       </div>
 
       {profile.agregadosNoDisponibles && (
@@ -97,18 +81,15 @@ export default function SupplierProfile() {
               }`}>
               Todos ({enMuestra})
             </button>
-            {profile.byStatus.map((s: any) => {
-              const color = STATUS_COLORS[s.status] || 'bg-gray-100 text-gray-600';
-              return (
-                <button key={s.status}
-                  onClick={() => setStatusFilter(statusFilter === s.status ? '' : s.status)}
-                  className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
-                    statusFilter === s.status ? 'bg-brand-600 text-white ring-2 ring-brand-300' : `${color} hover:opacity-80`
-                  }`}>
-                  {STATUS_LABELS[s.status] || s.status} ({s.count})
-                </button>
-              );
-            })}
+            {profile.byStatus.map((s: any) => (
+              <button key={s.status}
+                onClick={() => setStatusFilter(statusFilter === s.status ? '' : s.status)}
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
+                  statusFilter === s.status ? 'bg-brand-600 text-white ring-2 ring-brand-300' : `${statusColor(s.status)} hover:opacity-80`
+                }`}>
+                {statusLabel(s.status)} ({s.count})
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -173,7 +154,7 @@ export default function SupplierProfile() {
       <div className="bg-white rounded-xl border p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">
-            Procedimientos {statusFilter ? `— ${STATUS_LABELS[statusFilter] || statusFilter}` : ''}
+            Procedimientos {statusFilter ? `— ${statusLabel(statusFilter)}` : ''}
             <span className="text-sm font-normal text-gray-400 ml-2">({filteredProcedures?.length || 0})</span>
           </h2>
         </div>
@@ -191,8 +172,8 @@ export default function SupplierProfile() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
                   {p.status && (
-                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[p.status] || 'bg-gray-100 text-gray-600'}`}>
-                      {STATUS_LABELS[p.status] || p.status}
+                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${statusColor(p.status)}`}>
+                      {statusLabel(p.status)}
                     </span>
                   )}
                   <p className="text-sm font-medium text-brand-700 line-clamp-1">{p.title || p.id}</p>

@@ -54,8 +54,11 @@ export default function Home() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Procedimientos" value={stats.totalProcedures.toLocaleString()} sub="Total en base de datos" />
         <StatCard label="Banderas Detectadas" value={stats.totalFlags.toLocaleString()} color="text-orange-600" sub="Indicadores de riesgo activos" />
-        <StatCard label="Score Promedio" value={stats.averageScore} sub={`Máximo: ${stats.maxScore}`} />
-        <StatCard label="Riesgo Alto/Crítico" value={(riskMap.high || 0) + (riskMap.critical || 0)} color="text-red-600" sub="Procedimientos que requieren atención" />
+        {/* El promedio se deriva de los niveles de riesgo: se rotula como aproximado en vez
+            de presentar como exacta una cifra que no lo es. */}
+        <StatCard label="Score Promedio" value={stats.averageScore}
+          sub={stats.averageScoreAproximado ? `Aproximado · Máximo: ${stats.maxScore}` : `Máximo: ${stats.maxScore}`} />
+        <StatCard label="Riesgo Alto/Crítico" value={((riskMap.high || 0) + (riskMap.critical || 0)).toLocaleString()} color="text-red-600" sub="Procedimientos que requieren atención" />
       </div>
 
       {/* Risk Distribution */}
@@ -72,7 +75,7 @@ export default function Home() {
                 <div key={level}>
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium">{labels[level]}</span>
-                    <span className="text-gray-500">{count} ({pct.toFixed(1)}%)</span>
+                    <span className="text-gray-500">{count.toLocaleString()} ({pct.toFixed(1)}%)</span>
                   </div>
                   <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                     <div className={`h-full ${colors[level]} rounded-full transition-all`} style={{ width: `${pct}%` }} />

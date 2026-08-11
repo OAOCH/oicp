@@ -3,34 +3,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search as SearchIcon, Filter, ChevronLeft, ChevronRight, ExternalLink, X } from 'lucide-react';
 import { api, mensajeDeError } from '../lib/api';
 import { RiskBadge, FlagBadge, Loading, EmptyState, ErrorState } from '../components/UI';
-import { formatCurrency, formatDate } from '../lib/flags';
-
-const STATUS_LABELS: Record<string, string> = {
-  planning: 'Planificación',
-  tender: 'Publicado',
-  award: 'Adjudicado',
-  contract: 'Contratado',
-  complete: 'Finalizado',
-  cancelled: 'Cancelado',
-  unsuccessful: 'Desierto',
-  unknown: 'Sin estado',
-};
-
-const STATUS_COLORS: Record<string, string> = {
-  planning: 'bg-gray-100 text-gray-700',
-  tender: 'bg-blue-100 text-blue-700',
-  award: 'bg-green-100 text-green-700',
-  contract: 'bg-emerald-100 text-emerald-700',
-  complete: 'bg-teal-100 text-teal-700',
-  cancelled: 'bg-red-100 text-red-700',
-  unsuccessful: 'bg-orange-100 text-orange-700',
-  unknown: 'bg-gray-100 text-gray-500',
-};
+import { formatCurrency, formatDate, statusLabel, statusColor } from '../lib/flags';
 
 function StatusBadge({ status }: { status: string }) {
-  const label = STATUS_LABELS[status] || status;
-  const color = STATUS_COLORS[status] || 'bg-gray-100 text-gray-600';
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${color}`}>{label}</span>;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(status)}`}>{statusLabel(status)}</span>;
 }
 
 export default function Search() {
@@ -160,7 +136,7 @@ export default function Search() {
           )}
           {status && (
             <button onClick={() => updateParam('status', '')} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-medium hover:bg-brand-100 transition">
-              {STATUS_LABELS[status] || status} <X size={12} />
+              {statusLabel(status)} <X size={12} />
             </button>
           )}
           {risk && (
@@ -199,7 +175,7 @@ export default function Search() {
               <option value="">Todos</option>
               {filters?.statuses?.map((s: any) => (
                 <option key={s.value} value={s.value}>
-                  {STATUS_LABELS[s.value] || s.value} ({s.count?.toLocaleString()})
+                  {statusLabel(s.value)} ({s.count?.toLocaleString()})
                 </option>
               ))}
             </select>

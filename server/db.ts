@@ -224,48 +224,79 @@ function migrateInternal() {
 // ── Queries ─────────────────────────────────────────────────
 
 // Stats
+//
+// Se leen los agregados precalculados a_risk_year y a_flag_year en vez de recorrer
+// `procedures`. La versión anterior costaba entre 8 y 131 segundos de hilo BLOQUEADO
+// (better-sqlite3 es síncrono), y el peor tramo era `FROM procedures, json_each(flags)`,
+// que expande y parsea el JSON de banderas de 1,47 M de filas. Mientras corría, la
+// plataforma entera dejaba de responder, incluido /api/health.
+//
+// Los agregados se mantienen sincronizados con `procedures` en la misma transacción
+// (regla 5), así que las cifras son las mismas. Si aún no están construidos, se cae al
+// cálculo directo para no dejar la portada en blanco.
 export function getStatistics() {
-  const total = db.prepare('SELECT COUNT(*) as count FROM procedures').get() as any;
-  const byRisk = db.prepare(`
-    SELECT risk_level, COUNT(*) as count FROM procedures GROUP BY risk_level
-  `).all();
-  const byMethod = db.prepare(`
-    SELECT procurement_method_details as method, COUNT(*) as count 
-    FROM procedures WHERE procurement_method_details IS NOT NULL
-    GROUP BY procurement_method_details ORDER BY count DESC LIMIT 10
-  `).all();
-  const avgScore = db.prepare('SELECT AVG(score) as avg, MAX(score) as max FROM procedures').get() as any;
-  const totalFlags = db.prepare(`
-    SELECT SUM(json_array_length(flags)) as count FROM procedures
-  `).get() as any;
-  const byYear = db.prepare(`
-    SELECT source_year as year, COUNT(*) as count, AVG(score) as avg_score
-    FROM procedures GROUP BY source_year ORDER BY source_year
-  `).all();
-  const topFlags = db.prepare(`
-    SELECT 
-      json_extract(j.value, '$.code') as code,
-      COUNT(*) as count
-    FROM procedures, json_each(procedures.flags) as j
-    WHERE json_extract(j.value, '$.active') IN (1, 'true')
-       OR json_extract(j.value, '$.active') = 1
-    GROUP BY code ORDER BY count DESC LIMIT 15
-  `).all();
+  const hayAgregados = !!db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='a_risk_year'`).get();
+  if (!hayAgregados) return estadisticasDirectas();
+
+  const byRisk = db.prepare(
+    `SELECT risk AS risk_level, SUM(n) AS count FROM a_risk_year GROUP BY risk`).all() as any[];
+  const byYear = db.prepare(
+    `SELECT year, SUM(n) AS count FROM a_risk_year GROUP BY year ORDER BY year`).all() as any[];
+  const topFlags = db.prepare(
+    `SELECT code, SUM(n) AS count FROM a_flag_year GROUP BY code ORDER BY count DESC LIMIT 15`).all() as any[];
+  const totalFlags = (db.prepare(`SELECT SUM(n) AS n FROM a_flag_year`).get() as any)?.n || 0;
+  const totalProcedures = byRisk.reduce((s, r) => s + (r.count || 0), 0);
+
+  // MAX(score) sobre idx_proc_score es una sola búsqueda en el índice, no un recorrido.
+  const maxScore = (db.prepare(`SELECT MAX(score) AS max FROM procedures`).get() as any)?.max || 0;
+
+  // Score promedio derivado de los niveles de riesgo, cuyos cortes son los del motor
+  // (low 0-10, moderate 11-30, high 31-60, critical 61-100). Es una APROXIMACIÓN por
+  // punto medio de cada tramo, y la portada la rotula como tal: calcular el promedio
+  // exacto exige recorrer las 1,47 M filas, que es justo lo que se eliminó.
+  const PUNTO_MEDIO: Record<string, number> = { low: 5, moderate: 20, high: 45, critical: 80 };
+  let suma = 0;
+  for (const r of byRisk) suma += (PUNTO_MEDIO[r.risk_level] ?? 0) * (r.count || 0);
+  const averageScore = totalProcedures ? Math.round(suma / totalProcedures) : 0;
+
+  // Ambas usan índice y traen 5-10 filas: no recorren la tabla.
   const recentProcedures = db.prepare(`
-    SELECT id, title, buyer_name, award_amount, score, risk_level, published_date
-    FROM procedures ORDER BY published_date DESC LIMIT 5
-  `).all();
+    SELECT id, title, buyer_name, award_amount, score, risk_level, published_date,
+           ${MONTO_SQL} AS monto_usd
+    FROM procedures ORDER BY published_date DESC LIMIT 5`).all();
+  const byMethod = db.prepare(`
+    SELECT procurement_method_details AS method, COUNT(*) AS count
+    FROM procedures WHERE source_year = (SELECT MAX(year) FROM a_risk_year)
+      AND procurement_method_details IS NOT NULL
+    GROUP BY procurement_method_details ORDER BY count DESC LIMIT 10`).all();
 
   return {
-    totalProcedures: total.count,
-    byRisk,
-    byMethod,
-    averageScore: Math.round(avgScore.avg || 0),
-    maxScore: avgScore.max || 0,
-    totalFlags: totalFlags.count || 0,
-    byYear,
-    topFlags,
-    recentProcedures,
+    totalProcedures, byRisk, byMethod,
+    averageScore, averageScoreAproximado: true,
+    maxScore, totalFlags, byYear, topFlags, recentProcedures,
+    byMethodSoloUltimoAnio: true,
+  };
+}
+
+// Camino de respaldo para bases sin agregados construidos. Recorre `procedures`, así que
+// es LENTO y bloquea: solo debe alcanzarse justo después de restaurar una base.
+function estadisticasDirectas() {
+  const total = db.prepare('SELECT COUNT(*) as count FROM procedures').get() as any;
+  const byRisk = db.prepare(
+    `SELECT risk_level, COUNT(*) as count FROM procedures GROUP BY risk_level`).all();
+  const avgScore = db.prepare('SELECT AVG(score) as avg, MAX(score) as max FROM procedures').get() as any;
+  const byYear = db.prepare(
+    `SELECT source_year as year, COUNT(*) as count FROM procedures GROUP BY source_year ORDER BY source_year`).all();
+  const recentProcedures = db.prepare(`
+    SELECT id, title, buyer_name, award_amount, score, risk_level, published_date,
+           ${MONTO_SQL} AS monto_usd
+    FROM procedures ORDER BY published_date DESC LIMIT 5`).all();
+  return {
+    totalProcedures: total.count, byRisk, byMethod: [],
+    averageScore: Math.round(avgScore.avg || 0), averageScoreAproximado: false,
+    maxScore: avgScore.max || 0, totalFlags: 0, byYear, topFlags: [], recentProcedures,
+    agregadosNoDisponibles: true,
   };
 }
 
