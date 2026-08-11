@@ -599,7 +599,17 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
       //    consulta que ya trae su propio LIMIT es inocuo. Los saltos de línea son
       //    necesarios: sin ellos, una consulta terminada en "--" comentaría el
       //    paréntesis de cierre.
-      const sqlAcotado = `SELECT * FROM (\n${sql.replace(/;\s*$/, '')}\n) LIMIT ${maxRows}`;
+      // Se pide UNA fila de más de las que se van a devolver. Es la única forma de saber si
+      // había más sin volver a consultar: si el motor entrega maxRows + 1, sobran resultados.
+      //
+      // Antes el LIMIT era exactamente maxRows, así que el iterador NUNCA podía entregar una
+      // fila de más y la condición `out.length >= maxRows` del bucle no se cumplía jamás:
+      // `truncado` salía SIEMPRE false, incluso devolviendo 300 filas de 11.430 reales. Es el
+      // peor tipo de defecto para esta plataforma, porque un modelo o un auditor que confíe en
+      // ese false saca conclusiones sobre el 3% de los datos creyendo que tiene el 100%.
+      // La prueba que lo cubría se llamaba «avisa cuando trunca» pero solo comprobaba el largo
+      // de la respuesta, nunca el aviso.
+      const sqlAcotado = `SELECT * FROM (\n${sql.replace(/;\s*$/, '')}\n) LIMIT ${maxRows + 1}`;
       let stmt;
       try { stmt = db.prepare(sqlAcotado); } catch (e: any) { return { error: `SQL error: ${e.message}` }; }
       if (!stmt.reader || !stmt.readonly) return { error: 'La consulta debe ser de solo lectura y devolver filas.' };
@@ -614,7 +624,11 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
         if (out.length >= maxRows) { truncated = true; break; }
         out.push(row);
       }
-      return { filas: out.length, truncado: truncated, data: out, disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES };
+      return {
+        filas: out.length, truncado: truncated, data: out,
+        ...(truncated ? { aviso_truncado: `Hay MÁS filas de las ${maxRows} devueltas. No saques conclusiones de este resultado como si fuera completo: acota la consulta o pide un COUNT(*) filtrado por una columna indexada para saber cuántas hay.` } : {}),
+        disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES,
+      };
     }
     default:
       return { error: `Herramienta desconocida: ${name}` };

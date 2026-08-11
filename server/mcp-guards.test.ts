@@ -154,12 +154,44 @@ test('oicp_sql: una consulta que termina en comentario de línea no rompe el env
   db.close();
 });
 
-test('oicp_sql: respeta max_rows y avisa cuando trunca', () => {
+// Esta prueba se llamaba «avisa cuando trunca» y comprobaba el LARGO, nunca el aviso. Por eso
+// sobrevivió un defecto en el que `truncado` salía SIEMPRE false: el LIMIT impuesto era
+// exactamente max_rows, así que el iterador jamás recibía la fila de más que activaba la
+// bandera. En producción devolvía 300 filas de 11.430 diciendo «truncado: false».
+test('oicp_sql: respeta max_rows y AVISA de verdad cuando trunca', () => {
   const db = baseDePrueba();
   const r: any = callTool(db, 'oicp_sql',
     { sql: `SELECT id FROM procedures WHERE source_year = 2020`, max_rows: 2 });
   assert.equal(r.error, undefined);
-  assert.equal(r.data.length, 2);
+  assert.equal(r.data.length, 2, 'devuelve exactamente max_rows, ni una más');
+  assert.equal(r.filas, 2);
+  assert.equal(r.truncado, true, 'hay más filas de las devueltas: truncado TIENE que ser true');
+  assert.match(r.aviso_truncado, /M[ÁA]S filas/, 'y el aviso tiene que ser explícito');
+  db.close();
+});
+
+test('oicp_sql: NO dice truncado cuando el resultado cabe entero', () => {
+  const db = baseDePrueba();
+  const r: any = callTool(db, 'oicp_sql',
+    { sql: `SELECT id FROM procedures WHERE id = 'p1'`, max_rows: 50 });
+  assert.equal(r.error, undefined);
+  assert.equal(r.truncado, false, 'una fila de un tope de 50 no está truncada');
+  assert.equal(r.aviso_truncado, undefined, 'y no debe aparecer el aviso');
+  db.close();
+});
+
+// El caso exacto que se midió en producción: el conteo devuelto coincide con el tope pedido.
+// Es donde el defecto era invisible, porque «300 filas» parecía un resultado completo.
+test('oicp_sql: avisa aunque las filas devueltas coincidan justo con el tope pedido', () => {
+  const db = baseDePrueba();
+  const total: any = callTool(db, 'oicp_sql',
+    { sql: `SELECT COUNT(*) AS n FROM procedures WHERE source_year = 2020`, max_rows: 5 });
+  const n = total.data?.[0]?.n ?? 0;
+  assert.ok(n >= 3, 'el conjunto de prueba necesita al menos 3 filas de 2020 para este caso');
+  const r: any = callTool(db, 'oicp_sql',
+    { sql: `SELECT id FROM procedures WHERE source_year = 2020`, max_rows: n - 1 });
+  assert.equal(r.data.length, n - 1);
+  assert.equal(r.truncado, true, `devolvió ${n - 1} de ${n} y dijo que no estaba truncado`);
   db.close();
 });
 
