@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url';
 // llega al SERCOP: seguía guardando el texto "USD" y `enquiry_deadline` en nulo.
 // `ocds-proc.ts` no toca base de datos ni red, así que se puede importar desde este script.
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
+import { crearLimitador } from './limitador.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -66,16 +67,27 @@ const TERMS = [
 function log(msg: string) { console.log(`[sync ${new Date().toISOString()}] ${msg}`); }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-let lastReq = 0;
+// ── Limitador de emisión: como mucho UNA petición cada 350 ms, HAYA LOS HILOS QUE HAYA ──
+// Antes esto era `if (Date.now() - lastReq < 350) esperar`, que funciona en serie y se rompe en
+// paralelo: los N hilos leen el mismo `lastReq`, duermen lo mismo y despiertan a la vez, así que
+// se emiten N peticiones de golpe cada 350 ms. Con 12 hilos son ~34 por segundo, y ~8 por segundo
+// es exactamente lo que ya provocó 21 respuestas 429 seguidas en las pruebas.
+//
+// La forma correcta es RESERVAR el turno: cada llamada se apunta el siguiente hueco libre y lo
+// adelanta antes de dormir. Como JavaScript no interrumpe entre dos líneas sin `await`, la
+// reserva es atómica y la emisión queda garantizada por debajo de ~2,9 por segundo.
+// Vive en `limitador.ts` con sus pruebas: la versión en línea que había aquí se rompía en
+// paralelo y no había forma de probarla sin arrancar el barrido entero.
+const limitador = crearLimitador(350);
+
 async function sercopFetch(url: string, retries = 6): Promise<any | null> {
   for (let a = 1; a <= retries; a++) {
-    const gap = 350 - (Date.now() - lastReq);
-    if (gap > 0) await sleep(gap);
-    lastReq = Date.now();
+    await limitador.turno();
     try {
       const res = await fetch(url, { headers: { 'User-Agent': 'OICP-sync' }, signal: AbortSignal.timeout(45000) });
       if (res.status === 429) {
         const ra = Number(res.headers.get('retry-after')) || Math.min(60, 4 * 2 ** (a - 1));
+        limitador.frenar(ra);   // el límite es del servidor: frena a TODOS los hilos
         await sleep(ra * 1000 + Math.random() * 1500);
         continue;
       }
@@ -142,9 +154,10 @@ function guardarEstado(e: EstadoReparacion) {
   writeFileSync(REPAIR_CURSOR, JSON.stringify(e, null, 2));
 }
 
-async function reparar(budgetMin: number, soloCriterio?: string) {
+async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 12) {
   const t0 = Date.now();
   const budgetMs = budgetMin * 60_000;
+  let ritmo = 0;
   const estado = leerEstado();
   if (soloCriterio) {
     if (!CRITERIOS.includes(soloCriterio as Criterio)) {
@@ -199,25 +212,48 @@ async function reparar(budgetMin: number, soloCriterio?: string) {
     // exactamente el defecto que ya dejó huecos en el barrido por términos. Por eso el cursor
     // sigue al último ocid REALMENTE consumido; los ids vienen ordenados, así que avanza de
     // forma monótona y nunca retrocede.
+    // ── Por qué esto va en paralelo ─────────────────────────────────────────────
+    // Medido contra la fuente: `record?ocid=` tarda de 7 a 18 s por petición (p50 12 s), y esa
+    // lentitud NO es límite de tasa (con 12 minutos de reposo previo sigue igual, y no devuelve
+    // ni un 429). Es latencia por petición. En serie eso da 0,08 req/s, o sea ~25 días para los
+    // 174 547. Con 3 en vuelo sube a 0,25 req/s, también con CERO 429: el paralelismo multiplica.
+    //
+    // El guardián sigue siendo `sercopFetch`, que impone 350 ms entre INICIOS de petición: por
+    // muchos hilos que haya, nunca se emiten más de ~2,9 por segundo. Lo que provocó los 429 en
+    // las pruebas fue emitir a ~8 por segundo, muy por encima de ese techo. Así que la
+    // concurrencia sube el rendimiento sin acercarse al límite que ya conocemos.
     let ultimoProcesado = '';
-    for (const ocid of ids) {
-      if (Date.now() - t0 > budgetMs) { sinTiempo = true; break; }
-      const recData = await sercopFetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
-      const release = recData ? releaseFrom(recData) : null;
-      estado.pedidos++;
-      ultimoProcesado = ocid;
-      // Un fallo de red deja la fila cumpliendo el criterio: la recoge la segunda pasada.
-      if (!release) { estado.errores++; continue; }
-      try {
-        // MISMO mapeo que la ingesta (regla 11): así el presupuesto se lee de los lotes y la
-        // fecha de preguntas se toma de enquiryPeriod, sin una segunda interpretación.
-        // El año solo alimenta `source_year` y `regime`, y ninguno de los dos se envía en la
-        // reparación (que escribe exclusivamente presupuesto y fecha de preguntas).
-        const proc = releaseToProc(release, null, new Date().getFullYear());
-        buffer.push({ id: ocid, budget_amount: proc.budget_amount, enquiry_deadline: proc.enquiry_deadline });
-        if (buffer.length >= 500) await empujar();
-      } catch (e: any) { estado.errores++; log(`  mapeo ${ocid}: ${e.message}`); }
-    }
+    let corte = false;
+    const cola = [...ids];
+    const traer = async () => {
+      for (;;) {
+        if (corte || Date.now() - t0 > budgetMs) { corte = true; sinTiempo = true; return; }
+        const ocid = cola.shift();
+        if (!ocid) return;
+        const recData = await sercopFetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
+        const release = recData ? releaseFrom(recData) : null;
+        estado.pedidos++;
+        // Los ids vienen ordenados y la cola se consume en orden, pero con varios hilos pueden
+        // terminar desordenados: el cursor se queda en el MAYOR ya consumido, nunca retrocede.
+        if (ocid > ultimoProcesado) ultimoProcesado = ocid;
+        // Un fallo de red deja la fila cumpliendo el criterio: la recoge la segunda pasada.
+        if (!release) { estado.errores++; continue; }
+        try {
+          // MISMO mapeo que la ingesta (regla 11): así el presupuesto se lee de los lotes y la
+          // fecha de preguntas se toma de enquiryPeriod, sin una segunda interpretación.
+          // El año solo alimenta `source_year` y `regime`, y ninguno de los dos se envía en la
+          // reparación (que escribe exclusivamente presupuesto y fecha de preguntas).
+          const proc = releaseToProc(release, null, new Date().getFullYear());
+          buffer.push({ id: ocid, budget_amount: proc.budget_amount, enquiry_deadline: proc.enquiry_deadline });
+        } catch (e: any) { estado.errores++; log(`  mapeo ${ocid}: ${e.message}`); }
+      }
+    };
+    const tPagina = Date.now();
+    const antes = estado.pedidos;
+    await Promise.all(Array.from({ length: concurrencia }, traer));
+    const seg = (Date.now() - tPagina) / 1000;
+    const hechos = estado.pedidos - antes;
+    if (seg > 0 && hechos > 0) ritmo = hechos / seg;
 
     // Empujar ANTES de mover el cursor: si el proceso muere entre medias, la próxima corrida
     // repite ese tramo, que es idempotente, en vez de saltárselo.
@@ -226,7 +262,7 @@ async function reparar(budgetMin: number, soloCriterio?: string) {
     estado.desde = ultimoProcesado;
     guardarEstado(estado);
     const mins = ((Date.now() - t0) / 60000).toFixed(1);
-    log(`  [${estado.criterio}] pedidos ${estado.pedidos} · reparados ${estado.reparados} · sin cambio ${estado.sinCambio} · fallos ${estado.errores} · ${mins} min`);
+    log(`  [${estado.criterio}] pedidos ${estado.pedidos} · reparados ${estado.reparados} · sin cambio ${estado.sinCambio} · fallos ${estado.errores} · ${mins} min · ${ritmo.toFixed(2)} proc/s`);
   }
 
   await empujar();
@@ -277,7 +313,10 @@ async function main() {
   // Modo rellenado: no barre novedades, repara lo ya ingerido pidiéndolo otra vez a la fuente.
   // Es un trabajo de fondo de varias horas, así que trae su propio presupuesto de tiempo.
   if (args.includes('--reparar')) {
-    await reparar(Number(argOf('--budget-min')) || 600, argOf('--criterio'));
+    // La concurrencia sube el rendimiento sin tocar el techo de emisión de sercopFetch
+    // (350 ms entre inicios). Ajustable por si la fuente cambia de comportamiento.
+    const conc = Math.min(Math.max(Number(argOf('--conc')) || 12, 1), 32);
+    await reparar(Number(argOf('--budget-min')) || 600, argOf('--criterio'), conc);
     return;
   }
 
