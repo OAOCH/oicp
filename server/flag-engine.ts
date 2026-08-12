@@ -146,9 +146,9 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
     severity: 3,   // sin ocp_ref: R055 exige sumar varias adjudicaciones del mismo par (ver la política arriba)
   },
   'IT-01': {
-    code: 'IT-01', category: 'tiempo', name: 'Insufficient Publication Period',
-    name_es: 'Plazo de Publicación Insuficiente',
-    description_es: 'El período entre publicación y cierre de ofertas es menor al mínimo legal.',
+    code: 'IT-01', category: 'tiempo', name: 'Insufficient Tender Period',
+    name_es: 'Plazo Insuficiente para Entregar Ofertas',
+    description_es: 'El plazo para entregar ofertas es menor al mínimo. Desde el 28-oct-2025, y cuando se conocen las dos fechas reales, se aplica el término del Art. 96 del Reglamento; en el resto es una señal referencial que NO reproduce ese término.',
     severity: 1, ocp_ref: 'R003',
   },
   'IT-02': {
