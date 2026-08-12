@@ -193,11 +193,20 @@ async function reparar(budgetMin: number, soloCriterio?: string) {
       continue;
     }
 
+    // El cursor NO puede saltar al final de la página si la página no se terminó de procesar.
+    // Si se acaba el tiempo a mitad y aun así se avanza, esos procesos no se vuelven a pedir
+    // nunca y el rellenado se da por completo faltando datos: un HUECO SILENCIOSO, que es
+    // exactamente el defecto que ya dejó huecos en el barrido por términos. Por eso el cursor
+    // sigue al último ocid REALMENTE consumido; los ids vienen ordenados, así que avanza de
+    // forma monótona y nunca retrocede.
+    let ultimoProcesado = '';
     for (const ocid of ids) {
       if (Date.now() - t0 > budgetMs) { sinTiempo = true; break; }
       const recData = await sercopFetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
       const release = recData ? releaseFrom(recData) : null;
       estado.pedidos++;
+      ultimoProcesado = ocid;
+      // Un fallo de red deja la fila cumpliendo el criterio: la recoge la segunda pasada.
       if (!release) { estado.errores++; continue; }
       try {
         // MISMO mapeo que la ingesta (regla 11): así el presupuesto se lee de los lotes y la
@@ -210,10 +219,11 @@ async function reparar(budgetMin: number, soloCriterio?: string) {
       } catch (e: any) { estado.errores++; log(`  mapeo ${ocid}: ${e.message}`); }
     }
 
+    // Empujar ANTES de mover el cursor: si el proceso muere entre medias, la próxima corrida
+    // repite ese tramo, que es idempotente, en vez de saltárselo.
     await empujar();
-    // El cursor avanza SOLO después de empujar el lote: si el proceso muere entre medias, la
-    // próxima corrida repite ese tramo, que es idempotente, en vez de saltárselo.
-    estado.desde = ids[ids.length - 1];
+    if (!ultimoProcesado) break;     // no cupo ni uno en el tiempo que quedaba
+    estado.desde = ultimoProcesado;
     guardarEstado(estado);
     const mins = ((Date.now() - t0) / 60000).toFixed(1);
     log(`  [${estado.criterio}] pedidos ${estado.pedidos} · reparados ${estado.reparados} · sin cambio ${estado.sinCambio} · fallos ${estado.errores} · ${mins} min`);

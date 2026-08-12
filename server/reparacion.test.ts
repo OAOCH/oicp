@@ -140,6 +140,25 @@ test('ocidsAReparar pagina con cursor estable por id y no repite ni salta filas'
   assert.deepEqual([...vistos].sort(), vistos, 'y en orden de id, para que el cursor sea estable');
 });
 
+test('reanudar a mitad de página no deja huecos: el cursor va al último procesado, no al último de la página', () => {
+  // El barrido puede quedarse sin tiempo a mitad de una página. Si el cursor saltara al último
+  // id de la página, los que no se alcanzaron a procesar NUNCA se volverían a pedir y el
+  // rellenado se daría por completo faltando datos. Este es el contrato que lo impide.
+  const pagina = ocidsAReparar('presupuesto', 10, '');
+  assert.ok(pagina.length >= 6, 'hacen falta al menos 6 pendientes para esta prueba');
+
+  const procesados = pagina.slice(0, 4);          // solo se alcanzaron los cuatro primeros
+  const noProcesados = pagina.slice(4);
+  const siguiente = ocidsAReparar('presupuesto', 500, procesados[procesados.length - 1]);
+
+  for (const id of noProcesados) {
+    assert.ok(siguiente.includes(id), `${id} se perdió: el cursor lo saltó sin procesarlo`);
+  }
+  for (const id of procesados) {
+    assert.ok(!siguiente.includes(id), `${id} se repetiría: el cursor no avanzó`);
+  }
+});
+
 test('el criterio "enquiry" solo trae los de la ventana del Art. 96 (desde el 28-oct-2025)', () => {
   const ids = ocidsAReparar('enquiry', 500, '');
   assert.ok(ids.includes('p901'), 'p901 es de nov-2025 y le falta enquiry_deadline');
