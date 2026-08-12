@@ -261,6 +261,23 @@ export async function sendMagicLinkEmail(email: string, url: string): Promise<{ 
   }
 }
 
+/**
+ * Mensaje que ve el usuario del login segun como termino el envio del magic link.
+ * delivered:false tiene DOS causas que piden acciones distintas: via 'log' es el
+ * modo bootstrap (falta RESEND_API_KEY, el link vive en los logs) y via 'error'
+ * es Resend rechazando el envio (p. ej. destinatario invalido); mostrarle
+ * bootstrap a la segunda hacia creer que faltaba configurar el email.
+ */
+export function mensajeEnvioMagicLink(result: { delivered: boolean; via: string }): string {
+  if (result.delivered) {
+    return `Te enviamos un enlace de acceso a tu correo. Revisa tu bandeja (valido ${TOKEN_TTL_MIN} minutos).`;
+  }
+  if (result.via === 'log') {
+    return 'Enlace generado. El administrador del servidor debe revisar los logs para obtenerlo (modo bootstrap sin email).';
+  }
+  return 'No se pudo entregar el correo a esa direccion. Verifica que sea valida o intenta de nuevo en unos minutos.';
+}
+
 function magicEmailHtml(url: string): string {
   return `<!DOCTYPE html><html lang="es"><body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f9fafb;padding:32px">
   <div style="max-width:480px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:32px">

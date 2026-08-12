@@ -19,7 +19,7 @@ import rateLimit from 'express-rate-limit';
 import { getDb } from '../db.js';
 import {
   authEnabled, ensureAuthTables, isAllowed, createMagicToken, consumeMagicToken,
-  sendMagicLinkEmail, issueSession, setSessionCookie, clearSessionCookie, sessionFromRequest,
+  sendMagicLinkEmail, mensajeEnvioMagicLink, issueSession, setSessionCookie, clearSessionCookie, sessionFromRequest,
   requireSuperadmin, listUsers, addUser, setRole, removeUser, normalizeEmail, isValidEmail,
   type AuthedRequest,
 } from '../auth.js';
@@ -65,9 +65,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       sent: true,
       delivered: result.delivered,
       // En modo bootstrap (sin Resend) NO exponemos el link al cliente por seguridad; queda solo en los logs del server.
-      message: result.delivered
-        ? 'Te enviamos un enlace de acceso a tu correo. Revisa tu bandeja (valido 15 minutos).'
-        : 'Enlace generado. El administrador del servidor debe revisar los logs para obtenerlo (modo bootstrap sin email).',
+      message: mensajeEnvioMagicLink(result),
     });
   } catch (e: any) {
     return res.status(500).json({ error: 'Error procesando el acceso.' });
