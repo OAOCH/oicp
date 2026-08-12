@@ -27,7 +27,7 @@
  * primer nivel en cuanto se cierra. Memoria acotada al objeto más grande, no al fichero.
  */
 import zlib from 'zlib';
-import { Readable, Transform } from 'stream';
+import { Readable, Transform, pipeline } from 'stream';
 
 export const BULK_URL = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/download';
 export const TOTALS_URL = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/get-totals';
@@ -91,9 +91,12 @@ function desempaquetar(entrada: Readable): Readable {
   });
 
   const inflate = zlib.createInflateRaw();
-  entrada.on('error', (e) => quitarCabecera.destroy(e));
-  quitarCabecera.on('error', (e) => inflate.destroy(e));
-  entrada.pipe(quitarCabecera).pipe(inflate);
+  // pipeline() y no pipe() + reenvio manual de errores: destruir inflate "a mano" emite
+  // 'error' en un tick donde el for await consumidor puede no estar enganchado todavia, y un
+  // 'error' sin listener tumba el proceso entero (uncaughtException; en Node 22 mataba el
+  // runner de tests del CI). pipeline consume ese evento y deja el stream marcado como
+  // errado, asi que el iterador recibe el mismo error sin depender del orden de los ticks.
+  pipeline(entrada, quitarCabecera, inflate, () => { /* el error ya viaja en inflate */ });
   return inflate;
 }
 
