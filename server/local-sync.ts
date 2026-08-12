@@ -503,6 +503,16 @@ async function indiceSoce(desde: number, hasta: number, budgetMin: number) {
   await empujar();
   writeFileSync(SOCE_CURSOR, JSON.stringify({ cursor, desde, hasta, leidas, conFicha, conFechas, aplicados, actualizado: new Date().toISOString() }, null, 2));
   log(`ÍNDICE SOCE: leídas ${leidas}, con ficha ${conFicha}, con las dos fechas ${conFechas}, aplicadas ${aplicados}, sin testigo ${sinTestigo}, sin proceso en la base ${sinProceso}`);
+
+  // RE-EVALUAR AL TERMINAR, igual que hace el rellenado. Sin esto, cada corrida escribía las dos
+  // fechas del Art. 96 y NADIE recalculaba: la plataforma seguía publicando el IT-01 viejo sobre
+  // procesos cuyas fechas reales ya estaban en la base, y la diferencia se acumulaba día tras día.
+  // Lo cazó la boleta por año, que es exactamente para lo que sirve.
+  if (aplicados > 0) {
+    log('re-evaluando banderas en producción (un corte del proxy a los 300 s NO significa que falló)…');
+    try { log(`re-evaluación: ${JSON.stringify(await prod('/api/admin/reparar-finalize', {}, 1))}`); }
+    catch (e: any) { log(`la respuesta HTTP se cortó (${e.message}); el servidor sigue trabajando.`); }
+  }
   log('OK');
 }
 
