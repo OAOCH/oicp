@@ -199,7 +199,16 @@ async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 
         continue;
       }
       const i = CRITERIOS.indexOf(estado.criterio);
-      if (soloCriterio || i === CRITERIOS.length - 1) { log(`  criterio "${estado.criterio}" COMPLETO`); break; }
+      if (soloCriterio || i === CRITERIOS.length - 1) {
+        log(`  criterio "${estado.criterio}" COMPLETO`);
+        // El cursor vuelve al inicio para la PRÓXIMA corrida. Si se dejara al final, un proceso
+        // que entrara mañana con el defecto quedaría por detrás del cursor y no se volvería a
+        // mirar nunca. Una pasada sobre algo ya reparado no cuesta nada: la consulta devuelve
+        // vacío enseguida y el barrido termina sin pedirle nada a la fuente.
+        estado.desde = '';
+        guardarEstado(estado);
+        break;
+      }
       log(`  criterio "${estado.criterio}" COMPLETO; sigo con "${CRITERIOS[i + 1]}"`);
       Object.assign(estado, { criterio: CRITERIOS[i + 1], desde: '', pase: 1, errores: 0 });
       guardarEstado(estado);
@@ -282,7 +291,9 @@ async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 
       log(`la respuesta HTTP se cortó (${e.message}). Es lo esperado si pasó de 300 s; el servidor sigue trabajando.`);
     }
   }
-  const fin = await prod('/api/admin/avance-reparacion', {}, 2).catch(() => null);
+  // `fresco: true`: el informe final NO puede salir del caché, o mostraría las cifras de antes
+  // de reparar y parecería que no pasó nada.
+  const fin = await prod('/api/admin/avance-reparacion', { fresco: true }, 2).catch(() => null);
   if (fin) log(`estado final en producción: ${JSON.stringify(fin)}`);
   log('OK');
   process.exit(0);

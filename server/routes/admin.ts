@@ -611,7 +611,11 @@ const AVANCE_TTL_MS = 5 * 60_000;
 router.all('/avance-reparacion', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {
-    if (avanceCache && Date.now() - avanceCache.at < AVANCE_TTL_MS) {
+    // `fresco` salta el caché. Existe porque el informe FINAL del rellenado salía cacheado y
+    // mostraba las cifras de antes de reparar: justo el momento en que hay que verificar por los
+    // datos, el operador veía un número que no se había movido y podía concluir que falló.
+    const fresco = req.body?.fresco === true || req.query?.fresco === '1';
+    if (!fresco && avanceCache && Date.now() - avanceCache.at < AVANCE_TTL_MS) {
       return res.json({ ...avanceCache.valor, medido_hace_seg: Math.round((Date.now() - avanceCache.at) / 1000) });
     }
     const db = getDb();
