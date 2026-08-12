@@ -88,19 +88,37 @@ test('las llaves dentro de una cadena no cuentan como estructura', async () => {
   assert.match(salidos[0].tender.title, /AMPLIACIÓN/);
 });
 
-test('un objeto con llaves balanceadas pero JSON inválido se salta y NO tumba el barrido', async () => {
-  // Alcance real de la recuperación: el recorrido delimita objetos CONTANDO LLAVES, así que se
-  // recupera de un objeto que no es JSON válido pero está bien cerrado. De un fichero con llaves
-  // descuadradas no puede recuperarse nadie que no reparse el documento entero, y no hace falta:
-  // estos volcados los genera una máquina y el error real que se vio (un paquete perdido de
-  // 7.472) venía de partir por líneas, no de llaves rotas.
-  const bueno = JSON.stringify({ releases: [{ ocid: 'ok' }] });
-  const texto = `[${bueno},{"releases": , "roto": },${bueno.replace('ok', 'ok2')}]`;
+test('UNA COMILLA SIN ESCAPAR no se come el resto del fichero', async () => {
+  // Es el defecto REAL del volcado de 2020: tras 4 MB el recorrido por llaves quedaba dentro de
+  // una cadena y ya no cerraba nada más, o sea que un solo texto mal escrito de la fuente hacía
+  // perder el año entero. Con delimitación por líneas se pierde SOLO el paquete malo.
+  const bueno = (n: number) => JSON.stringify({ releases: [{ ocid: `P-${n}` }] });
+  const malo = '{"releases": [{"ocid": "X", "titulo": "OBRA "SIN" ESCAPAR"}]}';
+  const texto = ['[', bueno(1) + ',', malo + ',', bueno(2) + ',', bueno(3), ']'].join('\n');
   const salidos: any[] = [];
-  // Aquí se prueba el recorrido del JSON directamente, así que el flujo va SIN comprimir.
-  for await (const o of objetosDeArray(Readable.from([Buffer.from(texto, 'utf8')]))) salidos.push(o);
-  const ocids = salidos.flatMap(p => (p.releases || []).map((r: any) => r.ocid));
-  assert.deepEqual(ocids, ['ok', 'ok2'], `salieron: ${ocids.join(',')}`);
+  for await (const r of releasesDelVolcado(flujoDe(zipDeTexto('r.json', texto), 11))) salidos.push(r);
+  assert.deepEqual(salidos.map(r => r.ocid), ['P-1', 'P-2', 'P-3'],
+    'el paquete roto tiene que costar solo ese paquete');
+});
+
+test('LÍMITE DECLARADO: el lector exige un paquete por línea, y si no lo hay no inventa nada', async () => {
+  // El contrato es el formato real de estos volcados: array con formato bonito, un paquete de
+  // primer nivel por línea, empezando en la columna cero. Si algún día la fuente lo entregara todo
+  // en una sola línea, este lector devolvería CERO paquetes en vez de devolver datos a medias.
+  // Eso es deliberado: `repararMasivo` compara lo leído contra lo que declara `get-totals` y avisa
+  // de que el volcado está incompleto, así que un cambio de formato se nota en vez de pasar por
+  // bueno con la mitad de los procesos.
+  const bueno = JSON.stringify({ releases: [{ ocid: 'ok' }] });
+  const todoEnUnaLinea = `[${bueno},${bueno.replace('ok', 'ok2')}]`;
+  const salidos: any[] = [];
+  for await (const o of objetosDeArray(Readable.from([Buffer.from(todoEnUnaLinea, 'utf8')]))) salidos.push(o);
+  assert.equal(salidos.length, 0, 'sin un paquete por línea no debe devolver datos a medias');
+
+  // Y con el formato real sí salen los dos.
+  const bienFormado = `[\n${bueno},\n${bueno.replace('ok', 'ok2')}\n]`;
+  const ok: any[] = [];
+  for await (const o of objetosDeArray(Readable.from([Buffer.from(bienFormado, 'utf8')]))) ok.push(o);
+  assert.deepEqual(ok.flatMap(p => p.releases.map((r: any) => r.ocid)), ['ok', 'ok2']);
 });
 
 test('un ZIP que no es un ZIP falla con un error claro, no con basura', async () => {

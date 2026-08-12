@@ -16,6 +16,7 @@ import cron from 'node-cron';
 import type Database from 'better-sqlite3';
 import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
 import { releaseFrom, releaseToProc, limpiarNombre, nombreVisible } from './ocds-proc.js';
+import { cruceConfiable } from './soce-ficha.js';
 import { evaluateAllFlags, getRegime } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
@@ -682,6 +683,56 @@ export function repararProcs(procs: any[]): {
   // Checkpoint entre lotes: un WAL sin control ya llenó el volumen y corrompió la base (regla 2).
   db.pragma('wal_checkpoint(TRUNCATE)');
   return { reparados, sin_cambio: sinCambio, ausentes, invalidos };
+}
+
+/**
+ * Aplica el cronograma leído de la ficha pública del SOCE.
+ *
+ * Guarda `answer_deadline` (la fecha límite para RESPONDER, que es de donde arranca el término del
+ * Art. 96 y que los datos abiertos NO publican) y rellena `submission_deadline` donde falta, que
+ * es en el 93% de los procesos.
+ *
+ * EL CRUCE SE VALIDA, no se asume. El enganche entre nuestro ocid y la ficha es el CÓDIGO del
+ * proceso, y dos entidades podrían llegar a repetir uno. Por eso solo se acepta si la fecha límite
+ * de PREGUNTAS que publica el portal coincide, al minuto, con el `enquiry_deadline` que ya tenemos
+ * de los datos abiertos: es un dato que las dos fuentes publican por separado y sirve de testigo.
+ * Sin testigo no se escribe nada, y se cuenta aparte para poder medir cuánto se descarta.
+ *
+ * La búsqueda va por RANGO sobre la clave primaria (`id >= 'ocds-5wno2w-<cod>-'` y menor que su
+ * sucesor), no con LIKE: así usa el índice y no recorre 1,47 M de filas por cada ficha.
+ */
+export function aplicarCronograma(fichas: any[]): {
+  aplicados: number; sin_testigo: number; sin_proceso: number; invalidos: number;
+} {
+  const db = getDb();
+  const buscar = db.prepare(
+    `SELECT id, enquiry_deadline, submission_deadline, answer_deadline
+     FROM procedures WHERE id >= ? AND id < ? ORDER BY id LIMIT 50`);
+  const upd = db.prepare(
+    `UPDATE procedures SET answer_deadline=?, submission_deadline=COALESCE(submission_deadline,?),
+     updated_at=datetime('now') WHERE id=?`);
+  let aplicados = 0, sinTestigo = 0, sinProceso = 0, invalidos = 0;
+
+  const tx = db.transaction((lote: any[]) => {
+    for (const f of lote) {
+      const cod = typeof f?.codigo === 'string' ? f.codigo.trim() : '';
+      if (!cod || !f?.respuestas) { invalidos++; continue; }
+      const desde = `ocds-5wno2w-${cod}-`;
+      const hasta = `ocds-5wno2w-${cod}-￿`;
+      const filas = buscar.all(desde, hasta) as any[];
+      if (!filas.length) { sinProceso++; continue; }
+      let alguno = false;
+      for (const fila of filas) {
+        if (!cruceConfiable(f.preguntas ?? null, fila.enquiry_deadline ?? null)) continue;
+        upd.run(f.respuestas, f.ofertas ?? null, fila.id);
+        aplicados++; alguno = true;
+      }
+      if (!alguno) sinTestigo++;
+    }
+  });
+  tx(fichas);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  return { aplicados, sin_testigo: sinTestigo, sin_proceso: sinProceso, invalidos };
 }
 
 /**

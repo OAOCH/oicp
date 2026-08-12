@@ -98,6 +98,20 @@ function desempaquetar(entrada: Readable): Readable {
  * Cuenta llaves ignorando las que van dentro de una cadena y respetando los escapes.
  */
 export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
+  // ── Por qué NO se cuentan llaves ──────────────────────────────────────────────────────────
+  // El primer intento delimitaba los objetos contando `{` y `}` fuera de cadena. Funcionó con el
+  // volcado de 2019 (275.055 releases, exactamente los que declara la fuente) y se descuadró en el
+  // de 2020: medido, tras 4 MB el recorrido quedaba DENTRO de una cadena, o sea que el fichero
+  // trae una comilla sin escapar dentro de un texto. Es JSON inválido de origen, y contra eso el
+  // conteo de llaves no tiene defensa: una vez desincronizado, ya no vuelve a cerrar nada y se
+  // come el fichero entero.
+  //
+  // La delimitación robusta para ESTE formato es por líneas, y descansa en una garantía del
+  // propio JSON: un salto de línea CRUDO no puede aparecer dentro de una cadena (tiene que ir
+  // escapado como \n). Así que un `{` a principio de línea, sin sangría, siempre es el comienzo
+  // de un paquete de primer nivel; los objetos anidados van sangrados. Si un paquete resulta
+  // ilegible se pierde SOLO ese, porque la siguiente línea que empiece por `{` resincroniza.
+  const BLOQUE = /^\{/;
   // `StringDecoder` y no `trozo.toString('utf8')`: los trozos del flujo cortan por bytes, no por
   // caracteres, así que una tilde o una eñe partida entre dos trozos se convertía en el carácter
   // de reemplazo y CORROMPÍA el texto. Con 111 MB de castellano eso pasa muchas veces, y basta
@@ -109,46 +123,43 @@ export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
   // Si la profundidad no vuelve a cero, algo está mal en el fichero o en este recorrido: mejor
   // fallar con un mensaje claro que consumir memoria hasta reventar.
   const TOPE_OBJETO = 128 * 1024 * 1024;
-  let acumulado = '';
-  // `pos` es hasta dónde se ha escaneado YA. Sin él, al llegar un trozo nuevo se volvía a
-  // recorrer el texto desde el principio y las llaves ya contadas se contaban otra vez, así que
-  // la profundidad nunca volvía a cero y no salía ni un objeto. Era el defecto de fondo.
-  let pos = 0;
-  let profundidad = 0, inicio = -1, enCadena = false, escapado = false;
+  let resto = '';           // último trozo de línea, aún incompleto
+  let pendiente: string[] = [];   // líneas del paquete que se está armando
+
+  const emitir = function* (): Generator<any> {
+    if (!pendiente.length) return;
+    const crudoBruto = pendiente.join('\n');
+    pendiente = [];
+    // Se recorta al objeto: desde la primera `{` hasta la ÚLTIMA `}`. Así se quitan de un golpe
+    // el `[` de apertura, la coma separadora y el `]` de cierre, que se pegaba al último paquete
+    // del fichero y hacía que se perdiera justo ese (49 de 50 en la prueba).
+    const ini = crudoBruto.indexOf('{');
+    const fin = crudoBruto.lastIndexOf('}');
+    if (ini < 0 || fin < ini) return;
+    const crudo = crudoBruto.slice(ini, fin + 1);
+    try { yield JSON.parse(crudo); } catch { /* paquete ilegible: se pierde SOLO este */ }
+  };
 
   for await (const trozo of flujo) {
-    acumulado += decodificador.write(Buffer.isBuffer(trozo) ? trozo : Buffer.from(trozo));
-    if (acumulado.length > TOPE_OBJETO) {
-      throw new Error(`objeto JSON de más de ${TOPE_OBJETO} bytes sin cerrar: el volcado no tiene la forma esperada`);
-    }
-    while (pos < acumulado.length) {
-      const c = acumulado[pos];
-      if (enCadena) {
-        if (escapado) escapado = false;
-        else if (c === '\\') escapado = true;
-        else if (c === '"') enCadena = false;
-        pos++; continue;
+    resto += decodificador.write(Buffer.isBuffer(trozo) ? trozo : Buffer.from(trozo));
+    const lineas = resto.split('\n');
+    resto = lineas.pop() ?? '';       // la última puede estar cortada
+    for (const linea of lineas) {
+      if (BLOQUE.test(linea) && pendiente.length) yield* emitir();
+      // El `[` de apertura del array no pertenece a ningún paquete.
+      if (linea.trim() === '[') continue;
+      pendiente.push(linea);
+      if (pendiente.reduce((n, l) => n + l.length, 0) > TOPE_OBJETO) {
+        throw new Error(`paquete JSON de más de ${TOPE_OBJETO} bytes: el volcado no tiene la forma esperada`);
       }
-      if (c === '"') { enCadena = true; pos++; continue; }
-      if (c === '{') { if (profundidad === 0) inicio = pos; profundidad++; pos++; continue; }
-      if (c === '}') {
-        profundidad--;
-        if (profundidad === 0 && inicio >= 0) {
-          const crudo = acumulado.slice(inicio, pos + 1);
-          try { yield JSON.parse(crudo); } catch { /* objeto ilegible: se salta, no tumba el barrido */ }
-          // Se descarta lo ya consumido para que la memoria no crezca con el fichero.
-          acumulado = acumulado.slice(pos + 1);
-          pos = 0; inicio = -1;
-          continue;
-        }
-        pos++; continue;
-      }
-      pos++;
     }
-    // Entre objetos solo quedan separadores: soltarlos mantiene la memoria acotada al objeto
-    // más grande, no al fichero (el volcado de 2024 son 1,54 GB en claro).
-    if (profundidad === 0 && !enCadena) { acumulado = ''; pos = 0; }
   }
+  resto += decodificador.end();
+  if (resto) {
+    if (BLOQUE.test(resto) && pendiente.length) yield* emitir();
+    pendiente.push(resto);
+  }
+  yield* emitir();
 }
 
 /** Todos los releases de un volcado, uno a uno. `origen` es una URL o un fichero local. */

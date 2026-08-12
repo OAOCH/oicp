@@ -579,6 +579,21 @@ router.post('/reparar-nombres', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Cronograma leído de la ficha pública del SOCE: la fecha límite para RESPONDER (inicio del
+// término del Art. 96, que los datos abiertos no publican) y la de entrega de ofertas.
+router.post('/cronograma', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const fichas = req.body?.fichas;
+  if (!Array.isArray(fichas) || !fichas.length || fichas.length > 500) {
+    return res.status(400).json({ error: 'fichas[] requerido (1 a 500 por lote)' });
+  }
+  try {
+    const { aplicarCronograma, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(aplicarCronograma(fichas));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/reparar-regimen', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {

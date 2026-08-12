@@ -118,6 +118,11 @@ function healSchema() {
       // respuestas y aclaraciones"), así que sin ella IT-01 no puede reproducir el plazo legal.
       // El SERCOP SÍ la publica, en tender.enquiryPeriod.endDate; la plataforma no la leía.
       ['enquiry_deadline', 'TEXT'],
+      // CORRECCIÓN del 12-ago-2026: `enquiry_deadline` es la fecha límite para PREGUNTAR, y el
+      // Art. 96 cuenta desde que fenece la fecha límite para RESPONDER, que va de 2 a 6 días
+      // después (Art. 91). Esa segunda fecha NO está en los datos abiertos: sale de la ficha
+      // pública del SOCE (ver server/soce-ficha.ts). Es el inicio real del término.
+      ['answer_deadline', 'TEXT'],
     ];
     for (const [name, type] of needed) {
       if (!cols.has(name)) {
@@ -156,7 +161,8 @@ function migrateInternal() {
       -- Dates
       published_date TEXT,                    -- tender.tenderPeriod.startDate
       submission_deadline TEXT,               -- tender.tenderPeriod.endDate
-      enquiry_deadline TEXT,                  -- tender.enquiryPeriod.endDate (Art. 96 Reglamento)
+      enquiry_deadline TEXT,                  -- tender.enquiryPeriod.endDate: límite para PREGUNTAR
+      answer_deadline TEXT,                   -- límite para RESPONDER: inicio del término Art. 96
       award_date TEXT,
       contract_date TEXT,
       
