@@ -24,6 +24,7 @@ import { fileURLToPath } from 'url';
 // `ocds-proc.ts` no toca base de datos ni red, así que se puede importar desde este script.
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
 import { crearLimitador } from './limitador.js';
+import { abrirVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -299,6 +300,95 @@ async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 
   process.exit(0);
 }
 
+// ── RELLENADO MASIVO (`--reparar-masivo`) ────────────────────────────────────
+// El SERCOP publica volcados por año que su propia documentación no menciona. Medido:
+// releer los 174.547 uno por uno son ~54 horas y 174.547 peticiones; por volcados son unos
+// 20 minutos y 8 peticiones. Ver server/bulk-sercop.ts.
+//
+// Esta vía NO sustituye a `--reparar`: aquella sigue sirviendo para reparar unos pocos procesos
+// sueltos sin bajarse un año entero, y para los que el volcado no traiga.
+async function repararMasivo(desdeAnio: number, hastaAnio: number) {
+  const t0 = Date.now();
+  log(`RELLENADO MASIVO: años ${desdeAnio} a ${hastaAnio}`);
+  const antes = await prod('/api/admin/avance-reparacion', { fresco: true }, 2).catch(() => null);
+  if (antes) log(`  estado inicial: ${JSON.stringify(antes)}`);
+
+  // 1. La lista de lo que hay que reparar. Se pide entera y se guarda en memoria: son ~240 mil
+  //    cadenas, unos 20 MB, y evita preguntar por cada uno de los 1,47 millones de releases.
+  const pendientes = new Set<string>();
+  for (const criterio of ['presupuesto', 'enquiry']) {
+    let desde = '', pagina = 0;
+    for (;;) {
+      const { ids } = await prod('/api/admin/ocids-a-reparar', { criterio, limite: 2000, desde });
+      if (!ids.length) break;
+      for (const id of ids) pendientes.add(id);
+      desde = ids[ids.length - 1];
+      if (++pagina % 20 === 0) log(`  [${criterio}] ${pendientes.size} pendientes listados…`);
+    }
+    log(`  criterio "${criterio}": lista completa, ${pendientes.size} acumulados`);
+  }
+  if (!pendientes.size) { log('no hay nada que reparar'); return; }
+
+  // 2. Un volcado por año, en flujo. Nunca se carga el fichero entero: el de 2024 son 1,54 GB
+  //    en claro y una sola cadena de ese tamaño revienta el límite de Node.
+  let buffer: any[] = [];
+  let reparados = 0, sinCambio = 0, vistos = 0, encontrados = 0;
+  const empujar = async () => {
+    if (!buffer.length) return;
+    const r = await prod('/api/admin/reparar', { procs: buffer });
+    reparados += r.reparados || 0;
+    sinCambio += r.sin_cambio || 0;
+    buffer = [];
+  };
+
+  for (let anio = desdeAnio; anio <= hastaAnio; anio++) {
+    const declarado = await totalDeclarado(anio);
+    const tAnio = Date.now();
+    let delAnio = 0, coincidencias = 0;
+    let flujo;
+    try { flujo = await abrirVolcado(anio); }
+    catch (e: any) { log(`  ${anio}: no se pudo abrir el volcado (${e.message}); se salta`); continue; }
+
+    for await (const rel of releasesDelVolcado(flujo)) {
+      delAnio++; vistos++;
+      const ocid = rel?.ocid;
+      if (!ocid || !pendientes.has(ocid)) continue;
+      coincidencias++; encontrados++;
+      try {
+        // MISMO mapeo que la ingesta (regla 11).
+        const proc = releaseToProc(rel, null, anio);
+        buffer.push({ id: ocid, budget_amount: proc.budget_amount, enquiry_deadline: proc.enquiry_deadline });
+        if (buffer.length >= 500) await empujar();
+      } catch (e: any) { log(`  mapeo ${ocid}: ${e.message}`); }
+    }
+    await empujar();
+    const seg = ((Date.now() - tAnio) / 1000).toFixed(1);
+    // Comprobación de completitud ANTES de dar el año por bueno: si el volcado llegó cortado,
+    // los procesos que faltan quedarían sin reparar y nada lo diría.
+    const falta = declarado !== null ? declarado - delAnio : null;
+    const aviso = falta !== null && Math.abs(falta) > Math.max(10, declarado! * 0.001)
+      ? `  ⚠ el volcado parece INCOMPLETO: la fuente declara ${declarado} y se leyeron ${delAnio}` : '';
+    log(`  ${anio}: ${delAnio} releases (declarados ${declarado ?? '?'}) · ${coincidencias} de la lista · ${seg}s${aviso}`);
+  }
+
+  log(`RELLENADO MASIVO terminado: ${vistos} releases recorridos, ${encontrados} de la lista, ` +
+      `${reparados} reparados, ${sinCambio} sin cambio, en ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+  const noEncontrados = pendientes.size - encontrados;
+  if (noEncontrados > 0) {
+    log(`  ${noEncontrados} de los ${pendientes.size} pendientes no aparecieron en ningún volcado; ` +
+        `esos hay que pedirlos uno por uno con --reparar`);
+  }
+
+  if (reparados > 0) {
+    log('re-evaluando banderas en producción (5 a 11 min; un corte del proxy NO significa que falló)…');
+    try { log(`re-evaluación: ${JSON.stringify(await prod('/api/admin/reparar-finalize', {}, 1))}`); }
+    catch (e: any) { log(`la respuesta HTTP se cortó (${e.message}); el servidor sigue trabajando.`); }
+  }
+  const fin = await prod('/api/admin/avance-reparacion', { fresco: true }, 2).catch(() => null);
+  if (fin) log(`estado final en producción: ${JSON.stringify(fin)}`);
+  log('OK');
+}
+
 function readCursor(year: number): { termIdx: number; page: number } {
   try {
     const c = JSON.parse(readFileSync(CURSOR_FILE, 'utf-8'));
@@ -323,6 +413,13 @@ async function main() {
 
   // Modo rellenado: no barre novedades, repara lo ya ingerido pidiéndolo otra vez a la fuente.
   // Es un trabajo de fondo de varias horas, así que trae su propio presupuesto de tiempo.
+  // Rellenado MASIVO: los volcados por año del SERCOP. Es ~160 veces más rápido que pedir
+  // proceso por proceso y baja la carga sobre la fuente de 174.547 peticiones a 8.
+  if (args.includes('--reparar-masivo')) {
+    await repararMasivo(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
+    process.exit(0);
+  }
+
   if (args.includes('--reparar')) {
     // La concurrencia sube el rendimiento sin tocar el techo de emisión de sercopFetch
     // (350 ms entre inicios). Ajustable por si la fuente cambia de comportamiento.
