@@ -67,12 +67,11 @@ se evalúan contra el término legal y su detalle empieza por «Art. 96:». Capt
 `oicp_flag_stats` antes de cada recálculo y comprueba después que los cuatro niveles de riesgo
 siguen sumando 1 470 321 exacto.
 
-## 2. IT-01: decisión de Oscar, pendiente
+## 2. IT-01: DECIDIDO, implementado, y activándose solo
 
-**La tabla del Art. 96 ya está verificada en fuente primaria** (Registro Oficial Noveno Suplemento
-153 de 28-oct-2025, página 69, extraída del PDF oficial y contrastada con una copia independiente y
-con Lexis). El Decreto Ejecutivo 461 **no** la reformó, ni la fe de erratas, ni los decretos 295 y
-356:
+**La tabla del Art. 96 está verificada en fuente primaria** (Registro Oficial Noveno Suplemento 153
+de 28-oct-2025, página 69, extraída del PDF oficial y contrastada con una copia independiente y con
+Lexis). Ni el Decreto Ejecutivo 461, ni la fe de erratas, ni los decretos 295 y 356 la reformaron:
 
 | Presupuesto referencial (USD) | Término mínimo |
 |---|---|
@@ -82,27 +81,27 @@ con Lexis). El Decreto Ejecutivo 461 **no** la reformó, ni la fe de erratas, ni
 | 1´000.000 en adelante | No menor a 10 días |
 
 Son **términos** (días hábiles). La tabla **empieza en «superior a 10.000»**: por debajo no hay
-término asignado.
+término asignado y esos procedimientos no se evalúan por este criterio.
 
-**El problema, medido:** el término legal **no es reproducible con los datos abiertos**.
+**Decisiones de Oscar del 12-ago-2026, ya implementadas, no hay que volver a preguntarlas:**
+(a) hacer el barrido completo del índice del SOCE; (b) en Régimen Especial, la «Audiencia de
+Preguntas y Aclaraciones» **sí cuenta** como el hito del Art. 96.
 
-- Arranca «al fenecer la fecha límite para contestar respuestas y aclaraciones». La API publica
-  `tender.enquiryPeriod.endDate`, que es la fecha límite para **preguntar**, no para responder;
-  entre una y otra median de 2 a 6 días (Art. 91).
-- El otro extremo tampoco: `tender.tenderPeriod.endDate` **viene vacío en el 93%** de los procesos.
-- Por eso IT-01 solo evalúa **106 249 de 1 470 321 procesos (7,2%)** y dentro de ese universo marca
-  **58 541, el 55,1%**, con mínimos de 9/13/17 días que no salen de ninguna norma.
+El motor ya tiene los dos regímenes y **el (A) se activa solo** según el índice se llena:
 
-Las opciones que se le plantearon a Oscar están en el historial de la sesión del 12-ago. **No
-apliques ninguna sin su decisión.** Y ojo: el Art. 96 usa el **presupuesto referencial**, así que
-cualquier opción depende del rellenado del punto 1.
+- **(A) término legal**, solo desde el 28-oct-2025 y solo con `answer_deadline` y
+  `submission_deadline`. Días hábiles desde el día SIGUIENTE al cierre de respuestas (COA Art. 158)
+  y sin feriados (Art. 159). Su detalle empieza por «Art. 96:».
+- **(B) referencial** en el resto: publicación → cierre de ofertas contra 9/13/17, mínimos que no
+  salen de ninguna norma, y **el detalle lo dice expresamente**.
 
-## 3. El día inicial del cómputo (COA Art. 158)
+## 3. El día inicial del cómputo (COA Art. 158): resuelto donde importa
 
-`businessDays()` cuenta el día inicial y el COA manda contar «a partir del día hábil siguiente», así
-que **sobreestima el término en un día**. Está así **a propósito**: cambiarlo mueve el significado
-de los mínimos de IT-01, así que se resuelve junto con el punto 2, no antes. Los feriados del
-Art. 65 **ya se descuentan** desde el 11-ago-2026 y eso está verificado; no lo rehagas.
+En el **término legal del Art. 96** ya se cuenta desde el día hábil siguiente, como manda el COA
+Art. 158, con `terminoEnDiasHabiles()`. En la **regla referencial** se sigue contando el día inicial
+a propósito, porque sus mínimos de 9/13/17 se calibraron así y cambiarlo movería su significado sin
+ganar nada: esa regla ya se publica declarando que no reproduce ningún término legal. Los feriados
+del Art. 65 se descuentan en las dos desde el 11-ago-2026; no lo rehagas.
 
 ## 4. Ampliar el volumen de Railway
 
@@ -121,27 +120,40 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
 3. **Un limitador de tasa del tipo «espera desde la última petición» se rompe con concurrencia.**
    Medido: 12 emisiones en 50 ms donde el correcto tarda 449 ms. Usa `server/limitador.ts`, que
    RESERVA el turno, y recuerda que un 429 tiene que frenar a TODOS los hilos.
-4. **La API del SERCOP es LENTA (p50 7-12 s) pero eso no es límite de tasa.** La concurrencia
-   multiplica el rendimiento. **No existe descarga masiva usable**: `/api/records` ignora el filtro
-   por año y fija `per_page` en 15 (184 930 peticiones, ~95 GB). Ya está comprobado, no lo repitas.
-5. **El panel de administración tiene un `confirm()` nativo que la automatización descarta sola.**
+4. **SÍ existe descarga masiva, y no está documentada.** `/PLATAFORMA/download?type=json&year=YYYY&month=0&method=all`
+   entrega el año entero en un ZIP, y `/PLATAFORMA/get-totals` dice cuántos releases debería traer,
+   que es la comprobación de completitud. Medido: **todo el corpus en ~28 minutos y 8 peticiones**,
+   contra ~54 horas y 174 547 peticiones yendo uno por uno. Esa ruta **no devolvió ni un 429**.
+   Lo que NO sirve es `/api/records`, que ignora el filtro por año y fija `per_page` en 15
+   (184 930 peticiones, ~95 GB): ya está comprobado, no lo repitas.
+   Leer esos ficheros tiene **cuatro trampas, todas con prueba en `bulk-sercop.test.ts`**: no se
+   puede `JSON.parse` el contenido (1,54 GB en claro), no se puede partir por líneas (hay años en
+   una sola línea), no se puede usar `toString('utf8')` por trozo (parte los caracteres) y no se
+   puede contar llaves a secas (el volcado de 2020 trae una comilla sin escapar). Y el lector
+   necesita control de flujo real: sin él muere solo cuando el consumidor se detiene a empujar.
+5. **La API `record?ocid=` es LENTA (p50 7-12 s) y eso NO es límite de tasa.** La concurrencia
+   multiplica el rendimiento; el límite es de EMISIÓN. Sirve para reparar unos pocos procesos
+   sueltos, no para barridos grandes.
+6. **El panel de administración tiene un `confirm()` nativo que la automatización descarta sola.**
    Hay que ejecutar `window.confirm = () => true` con `javascript_tool` y luego invocar el handler.
    **No selecciones la tarjeta por texto**: un selector por `textContent` agarra el contenedor de
    las TRES tarjetas y su primer botón es «Reparar budget_amount». Filtra los botones cuyo texto sea
    exactamente `Ejecutar`, sube al ancestro que contenga UNA sola vez esa palabra, y **verifica el
    rótulo antes de hacer clic**. El índice 2 es el bueno.
-6. **El recálculo corta con `upstream error` a los 300 s y el trabajo SIGUE.** Nunca concluyas por
+7. **El recálculo corta con `upstream error` a los 300 s y el trabajo SIGUE.** Nunca concluyas por
    la respuesta HTTP. Señal real: `/api/version` vuelve a responder rápido y las cifras de
    `a_flag_year` dejan de moverse.
-7. **`oicp_sql` tiene un tope de 300 filas, se pagina con `LIMIT ... OFFSET`, y el campo `truncado`
+8. **`oicp_sql` tiene un tope de 300 filas, se pagina con `LIMIT ... OFFSET`, y el campo `truncado`
    dice la verdad.** El tope de costo rechaza recorridos completos y auto-joins: filtra por columna
    indexada (`id`, `buyer_id`, `source_year`, `risk_level`, `score`, `published_date`, `status`,
    `procurement_method_details`) o usa los agregados `a_*`. Para cruzar una tabla consigo misma, usa
    una función de ventana.
-8. **Mientras queden procesos con el TEXTO `"USD"` en `budget_amount`**, todo código que evalúe
-   banderas tiene que normalizar con `Number(...) || 0` antes. Sin eso la cadena es *truthy* y TR-01
-   deja de marcar el valor como faltante.
-9. **Lexis**: el buscador es de palabras, no de códigos. La pestaña **Art** tiene campo de número de
+9. **Ya no queda ningún proceso con el TEXTO `"USD"` en `budget_amount`** (verificado: 0 en los ocho
+   años), pero **no quites la normalización con `Number(...) || 0`** de `updater.ts` ni del arnés
+   `verificar-lote.mjs`. Es lo que impide que una cadena vuelva a colarse como monto: en JavaScript
+   una cadena es *truthy*, así que sin eso TR-01 dejaría de marcar el valor como faltante y nadie
+   se daría cuenta.
+10. **Lexis**: el buscador es de palabras, no de códigos. La pestaña **Art** tiene campo de número de
    artículo y la pestaña **Afectación** trae el historial de reformas. Lexis **no indexa las
    resoluciones del SERCOP** ni renderiza los anexos con tablas: esas van del PDF oficial del
    Registro Oficial, extraído con Node (y si el PDF es un escaneo con máscara CCITTFax, con PDFium).
@@ -173,8 +185,12 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
 
 # Qué está verificado y qué no
 
-**Verificado ejecutando algo y leyendo la salida**: el rellenado de punta a punta (119 pedidos, 119
-reparados, 0 fallos, y el tramo procesado sin un solo `"USD"`) · **CC-01 con el motor real, 103
+**Verificado ejecutando algo y leyendo la salida**: el rellenado COMPLETO (173 250 procesos
+reparados en 27,7 min, `con_texto_usd` en 0 en los ocho años, `enquiry_deadline` de 0 a 154 682, el
+reflag moviendo 92 506 procesos y los cuatro niveles de riesgo sumando 1 470 321 exacto) · los ocho
+volcados cuadrando contra `get-totals` · la cadena completa en un proceso con nombre
+(`SIE-CELECEP-2024-04422`: presupuesto 536 037,63, régimen corregido, y TR-01 pasando de «Faltan:
+valor, proveedor» a «Faltan: proveedor») · **CC-01 con el motor real, 103
 procesos y 0 discrepancias, con control positivo y negativo** · la tabla del Art. 96 contra el PDF
 oficial del Registro Oficial · que el DE 461 no la reformó, rastreando las cuatro afectaciones
 posteriores · el régimen recomputado (627 834 filas, 2025 partido en 142 464 / 30 746 en el corte
@@ -182,9 +198,11 @@ exacto) · 0 proveedores sin nombre útil · las 10 herramientas del MCP, con la
 sumando su total al centavo · 174 pruebas en verde · el limitador contra la reproducción literal del
 código roto.
 
-**NO verificado, y no lo des por bueno**: el comportamiento de la plataforma DESPUÉS de que el
-rellenado termine (hay que volver a medirlo todo) · los 60 disparos de CC-01 que quedaron fuera de
-la muestra · si existe una vía pública y automatizable para las dos fechas del Art. 96.
+**NO verificado, y no lo des por bueno**: los 60 disparos de CC-01 que quedaron fuera de la
+muestra · la cobertura que alcanzará el índice del SOCE, que solo se sabrá corriéndolo · el efecto
+de IT-01 en régimen (A) sobre las cifras publicadas, que no se puede medir hasta que haya
+`answer_deadline` en un número apreciable de procesos · los ~500 procesos de la lista de reparación
+que no aparecieron en ningún volcado.
 
 Empieza por leer `ESTADO.md`, mira el avance del rellenado, dime en pocas líneas qué encontraste y
 cuál es tu plan.
