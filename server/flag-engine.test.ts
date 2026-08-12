@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   evaluateIndividualFlags, evaluateConcentrationFlags, getInfimaThreshold,
   getRegime, calculateScore, getRiskLevel, evaluateAllFlags, FLAG_CATALOG,
+  terminoArt96, terminoEnDiasHabiles, ART96_VIGENCIA,
 } from './flag-engine.js';
 
 function codes(flags: any[]): string[] { return flags.map((f) => f.code); }
@@ -234,4 +235,78 @@ test('evaluateAllFlags devuelve estructura {flags, score, riskLevel}', () => {
   assert.ok(Array.isArray(r.flags));
   assert.equal(typeof r.score, 'number');
   assert.ok(['low', 'moderate', 'high', 'critical'].includes(r.riskLevel));
+});
+
+// ── IT-01 y el término del Art. 96 ──────────────────────────────────────────────────────────
+// La tabla está verificada en el Registro Oficial Noveno Suplemento 153 de 28-oct-2025, pág. 69.
+// Estas pruebas la fijan por escrito para que nadie la "recuerde" mal al tocar el motor.
+
+const it01 = (p: any) => evaluateIndividualFlags({ id: 'x', buyer_id: 'b', suppliers: [{ id: 's', name: 'S' }],
+  description: 'descripcion suficientemente larga del objeto', ...p })
+  .filter(f => f.code === 'IT-01');
+
+test('la tabla de términos del Art. 96 es la del Registro Oficial, tramo por tramo', () => {
+  assert.equal(terminoArt96(10_000), null, 'la tabla empieza en «superior a 10.000»');
+  assert.equal(terminoArt96(10_000.01), 2);
+  assert.equal(terminoArt96(100_000), 2, 'hasta 100.000 inclusive');
+  assert.equal(terminoArt96(100_000.01), 4);
+  assert.equal(terminoArt96(500_000), 4);
+  assert.equal(terminoArt96(500_000.01), 6);
+  assert.equal(terminoArt96(1_000_000), 6);
+  assert.equal(terminoArt96(1_000_000.01), 10);
+  assert.equal(terminoArt96(0), null);
+});
+
+test('el término se cuenta desde el día hábil SIGUIENTE (COA Art. 158)', () => {
+  // Del jueves 13-nov-2025 al lunes 17-nov: contando desde el día siguiente son 14 (vie) y
+  // 17 (lun) = 2. Si se contara el día inicial darían 3, que es sobreestimar el término.
+  assert.equal(terminoEnDiasHabiles('2025-11-13', '2025-11-17'), 2);
+  // Un fin de semana en medio no suma.
+  assert.equal(terminoEnDiasHabiles('2025-11-14', '2025-11-17'), 1);
+  // Fecha ilegible no inventa un término.
+  assert.equal(terminoEnDiasHabiles('', '2025-11-17'), 0);
+});
+
+test('con las dos fechas reales, IT-01 aplica el término legal y lo dice en el detalle', () => {
+  // Caso real: IGM cierra respuestas el 03-nov-2025 y ofertas el 04-nov. Presupuesto 76.225,20,
+  // o sea mínimo de 2 días. Del día siguiente (04-nov) al 04-nov hay 1: incumple.
+  const f = it01({ published_date: '2025-11-02T14:00:00-05:00', budget_amount: 76225.20,
+    answer_deadline: '2025-11-03 17:00:00', submission_deadline: '2025-11-04 12:00:00' });
+  assert.equal(f.length, 1, 'tenía que marcar');
+  assert.match(f[0].detail!, /Art\. 96/);
+  assert.match(f[0].detail!, /mínimo 2/);
+});
+
+test('un proceso que SÍ cumple el término del Art. 96 no se marca', () => {
+  // Caso real: CCFFAA cierra respuestas el 12-nov y ofertas el 17-nov. Presupuesto 77.800,35
+  // (mínimo 2). Del 13 al 17 hay 3 días hábiles: cumple.
+  const f = it01({ published_date: '2025-11-05T11:00:00-05:00', budget_amount: 77800.35,
+    answer_deadline: '2025-11-12 16:00:00', submission_deadline: '2025-11-17 16:00:00' });
+  assert.equal(f.length, 0, `no debía marcar; marcó: ${f[0]?.detail}`);
+});
+
+test('el término del Art. 96 NO se aplica a procesos anteriores a su vigencia', () => {
+  // Aplicar mínimos de octubre de 2025 a un proceso de 2022 es un anacronismo que un auditor
+  // marcaría. Con esas fechas cae a la regla referencial, que dice expresamente que lo es.
+  const f = it01({ published_date: '2022-06-01T10:00:00-05:00', budget_amount: 76225.20,
+    answer_deadline: '2022-06-02 17:00:00', submission_deadline: '2022-06-03 12:00:00' });
+  assert.equal(f.length, 1);
+  assert.match(f[0].detail!, /Referencial/);
+  assert.match(f[0].detail!, /no reproduce el término del Art\. 96/);
+  assert.equal(ART96_VIGENCIA, '2025-10-28');
+});
+
+test('sin la fecha de respuestas se usa la regla referencial, y el detalle lo declara', () => {
+  // Es el estado de casi todo el corpus mientras el índice del SOCE se construye.
+  const f = it01({ published_date: '2026-01-05T10:00:00-05:00', budget_amount: 200000,
+    award_amount: 200000, submission_deadline: '2026-01-07T10:00:00-05:00' });
+  assert.equal(f.length, 1);
+  assert.match(f[0].detail!, /Referencial/);
+  assert.ok(!/Art\. 96:/.test(f[0].detail!), 'no puede presentarse como el término legal');
+});
+
+test('por debajo de 10.000 el Art. 96 no asigna término y no se evalúa por ese criterio', () => {
+  const f = it01({ published_date: '2025-11-02T14:00:00-05:00', budget_amount: 9000,
+    answer_deadline: '2025-11-03 17:00:00', submission_deadline: '2025-11-04 12:00:00' });
+  assert.equal(f.length, 0, 'la tabla del Art. 96 empieza en «superior a 10.000»');
 });

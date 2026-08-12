@@ -347,6 +347,9 @@ interface ProcedureData {
   final_amount?: number | null;
   published_date?: string | null;
   submission_deadline?: string | null;
+  /** Fecha límite para que la entidad CONTESTE preguntas: de aquí arranca el término del Art. 96.
+   *  No está en los datos abiertos; sale de la ficha pública del SOCE. */
+  answer_deadline?: string | null;
   award_date?: string | null;
   number_of_tenderers?: number | null;
   title?: string;
@@ -520,6 +523,44 @@ function businessDays(start: string, end: string): number {
   return Math.max(0, habiles);
 }
 
+// ── Término del Art. 96 del Reglamento ───────────────────────────────────────────────────────
+// «Art. 96.- Términos para la entrega de ofertas.- De conformidad al presupuesto referencial del
+// procedimiento, la entidad contratante, para establecer la fecha límite de entrega de ofertas
+// técnicas, observará los términos previstos a continuación, contados a partir de fenecer la fecha
+// límite para contestar respuestas y aclaraciones».
+//
+// Tabla verificada en el Registro Oficial Noveno Suplemento 153 de 28-oct-2025, página 69,
+// extraída del PDF oficial y contrastada con una copia independiente y con Lexis. El Decreto
+// Ejecutivo 461 (R.O. 3S 337, 30-jul-2026) NO reformó este artículo, ni la fe de erratas
+// (R.O. 7S 155) ni los decretos 295 y 356.
+//
+// La tabla EMPIEZA en «superior a 10.000»: por debajo de ese monto no hay término asignado, así
+// que esos procedimientos no se evalúan por este criterio.
+export const ART96_VIGENCIA = '2025-10-28';
+
+export function terminoArt96(presupuesto: number): number | null {
+  if (!(presupuesto > 10_000)) return null;
+  if (presupuesto <= 100_000) return 2;
+  if (presupuesto <= 500_000) return 4;
+  if (presupuesto <= 1_000_000) return 6;
+  return 10;
+}
+
+/**
+ * Días hábiles de un término administrativo: se cuenta DESDE EL DÍA HÁBIL SIGUIENTE al hecho,
+ * como manda el COA Art. 158, y sin los feriados, como manda el Art. 159.
+ *
+ * `businessDays()` incluye ambos extremos, que es lo que sigue usando la regla referencial de
+ * IT-01 por compatibilidad con sus umbrales. Aquí NO se puede: el término legal empieza al día
+ * siguiente, y contar el día inicial lo sobreestima en uno.
+ */
+export function terminoEnDiasHabiles(desde: string, hasta: string): number {
+  const d = String(desde || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return 0;
+  const siguiente = new Date(Date.parse(`${d}T00:00:00Z`) + DIA_MS).toISOString().slice(0, 10);
+  return businessDays(siguiente, hasta);
+}
+
 function isInfima(method?: string): boolean {
   if (!method) return false;
   const m = method.toLowerCase();
@@ -569,8 +610,34 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     });
   }
 
-  // IT-01: Insufficient publication period
-  if (proc.published_date && proc.submission_deadline && value > 10_000) {
+  // ── IT-01: plazo para entregar ofertas ─────────────────────────────────────────────────────
+  // Dos regímenes, y el que se aplica depende de qué datos tenga el proceso:
+  //
+  // (A) TÉRMINO LEGAL del Art. 96. Exige las DOS fechas reales: la fecha límite para RESPONDER
+  //     (de donde arranca el término) y la de entrega de ofertas. Ninguna de las dos está en los
+  //     datos abiertos del SERCOP: la primera no se publica y la segunda viene vacía en el 93% de
+  //     los procesos. Se obtienen de la ficha pública del SOCE (ver server/soce-ficha.ts) y se
+  //     guardan en `answer_deadline` y `submission_deadline`. Solo aplica desde el 28-oct-2025,
+  //     porque antes esos mínimos escalonados no existían: aplicarlos a 2019-2025 sería un
+  //     anacronismo. Se cuenta desde el día hábil SIGUIENTE (COA Art. 158) y sin feriados (159).
+  //
+  // (B) REFERENCIAL, mientras no se tengan esas fechas: publicación → cierre de ofertas contra
+  //     9/13/17 días. Esos mínimos NO salen de ninguna norma y el detalle lo dice, para que nadie
+  //     cite el indicador como si reprodujera el Art. 96.
+  const fechaProc = proc.published_date || proc.award_date || '';
+  const presupuesto = Number(proc.budget_amount) || 0;
+  const minLegal = terminoArt96(presupuesto);
+  if (proc.answer_deadline && proc.submission_deadline && minLegal !== null &&
+      String(fechaProc).slice(0, 10) >= ART96_VIGENCIA) {
+    const dias = terminoEnDiasHabiles(proc.answer_deadline, proc.submission_deadline);
+    if (dias < minLegal) {
+      flags.push({
+        ...FLAG_CATALOG['IT-01'], active: true,
+        detail: `Art. 96: ${dias} días de término (mínimo ${minLegal} para un presupuesto de ` +
+          `$${presupuesto.toLocaleString('es-EC', DOS_DECIMALES)}), contados desde el cierre de respuestas`,
+      });
+    }
+  } else if (proc.published_date && proc.submission_deadline && value > 10_000) {
     const days = businessDays(proc.published_date, proc.submission_deadline);
     let minDays = 9;
     if (value > 500_000) minDays = 17;
@@ -578,7 +645,9 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
     if (days < minDays) {
       flags.push({
         ...FLAG_CATALOG['IT-01'], active: true,
-        detail: `${days} días hábiles (mínimo: ${minDays} para $${value.toLocaleString('es-EC', DOS_DECIMALES)})`,
+        detail: `Referencial: ${days} días hábiles entre publicación y cierre de ofertas ` +
+          `(mínimo de referencia ${minDays} para $${value.toLocaleString('es-EC', DOS_DECIMALES)}); ` +
+          `no reproduce el término del Art. 96`,
       });
     }
   }

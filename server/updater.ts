@@ -378,7 +378,7 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
   const leerLote = db.prepare(`
     SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
            budget_amount, award_amount, contract_amount, final_amount,
-           published_date, submission_deadline, award_date, number_of_tenderers,
+           published_date, submission_deadline, answer_deadline, award_date, number_of_tenderers,
            title, description, items_classification, has_amendments, amendment_count,
            suppliers, source_year, flags, score, risk_level
     FROM procedures WHERE id > ? ORDER BY id LIMIT ?`);
