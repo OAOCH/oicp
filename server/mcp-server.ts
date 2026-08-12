@@ -258,6 +258,37 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { sql: { type: 'string' }, max_rows: { type: 'integer' } }, required: ['sql'] } },
 ];
 
+/**
+ * Texto de la limitación del presupuesto referencial, MEDIDO al momento de responder.
+ *
+ * Antes esta frase llevaba «falta HOY en 174.547 procesos, el 11,9% del corpus» escrito a mano.
+ * El rellenado desde la fuente hace bajar ese número cada hora, así que una cifra clavada aquí
+ * se convierte en una afirmación falsa publicada en la metodología, que es exactamente lo que la
+ * regla 4 prohíbe. Se cuenta con los agregados de tipo, que son baratos, y se cachea 5 minutos.
+ */
+let cachePendiente: { at: number; texto: string } | null = null;
+function limitacionPresupuesto(db: Database.Database): string {
+  if (cachePendiente && Date.now() - cachePendiente.at < 300_000) return cachePendiente.texto;
+  let texto: string;
+  try {
+    // Misma consulta que `estadoPresupuesto()` de db.ts, pero contra la conexión que recibe el
+    // MCP (que puede ser una copia de solo lectura), por eso no se reutiliza aquella.
+    const r = db.prepare(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN typeof(budget_amount)='text' THEN 1 ELSE 0 END) AS pendientes,
+        SUM(CASE WHEN budget_amount IS NULL THEN 1 ELSE 0 END) AS sin_dato
+      FROM procedures`).get() as any;
+    const pend = Number(r?.pendientes || 0), sin = Number(r?.sin_dato || 0), tot = Number(r?.total || 1);
+    const pct = (n: number) => (n * 100 / tot).toFixed(1).replace('.', ',');
+    texto = pend > 0
+      ? `el presupuesto referencial todavía falta en ${pend.toLocaleString('es-EC')} procesos (${pct(pend)}% del corpus), y es un defecto de la plataforma, no de la fuente: la ingesta lo leía de tender.value, que el SERCOP publica vacío en esos procesos, cuando el monto vive en tender.lots[].value. La lectura se corrigió el 11-ago-2026 y el rellenado desde la fuente está EN CURSO, así que esta cifra baja sola; se mide al responder, no está clavada. Otros ${sin.toLocaleString('es-EC')} procesos (${pct(sin)}%) no tienen presupuesto porque la fuente no lo publica. Afecta a los indicadores que dependen del referencial, sobre todo IP-02.`
+      : `el presupuesto referencial ya se releyó de la fuente en todo el corpus. Quedan ${sin.toLocaleString('es-EC')} procesos (${pct(sin)}%) sin presupuesto porque el SERCOP no lo publica para ellos, sobre todo de régimen especial. Afecta a los indicadores que dependen del referencial, sobre todo IP-02.`;
+  } catch {
+    texto = 'el estado del presupuesto referencial no se pudo medir en esta consulta.';
+  }
+  cachePendiente = { at: Date.now(), texto };
+  return texto;
+}
+
 const METHODOLOGY = {
   verificado: 'Auditoría 2026-07-09/10: score y risk_level recomputados con 0 discrepancias sobre los 1,460,511 procesos que existían ENTONCES; correlaciones independientes del orden desde 2026-07-10. El corpus actual es mayor (ver oicp_info): los procesos incorporados después se evalúan con el mismo motor, pero no forman parte de esa verificación.',
   banderas_activas: 'El catálogo define 15 indicadores, pero IP-03 no dispara nunca (el OCDS del SERCOP no publica enmiendas): las banderas que de verdad pueden activarse son 14.',
@@ -284,7 +315,7 @@ const METHODOLOGY = {
     'TR-03': { nombre: 'Sin justificación de régimen especial', peso: 18, regla: 'el texto del procedimiento contiene "especial", "emergent" o "contratación directa" (con y sin tilde), O el identificador interno EMPIEZA por "OCDS-5WNO2W-RE-", O el ocid CONTIENE "-RE-" (aquí sí es "contiene", no prefijo), con monto > umbral de la fecha. Las dos últimas coinciden en la práctica porque el identificador interno se toma del ocid, pero el motor las evalúa por separado' },
   },
   exclusion_catalogo: 'Las banderas CC-* no se evalúan en catálogo electrónico (compra centralizada precalificada por SERCOP). IC-02 tampoco desde el 11-ago-2026.',
-  limitaciones_del_dato: 'Qué NO se puede medir con estos datos, medido el 11-ago-2026: (1) el presupuesto referencial falta HOY en 174.547 procesos, el 11,9% del corpus, y es un defecto de la plataforma, no de la fuente: la ingesta lo leía de tender.value, que el SERCOP publica vacío en esos procesos, cuando el monto vive en tender.lots[].value. Se creyó irrecuperable y no lo es. La lectura se corrigió el 11-ago-2026, así que lo nuevo entra con presupuesto, pero esos 174.547 siguen sin él hasta que se vuelvan a leer de la fuente. Afecta a los indicadores que dependen del referencial, sobre todo IP-02. (2) El SERCOP no publica enmiendas en el OCDS de búsqueda: IP-03 está inactiva, 0 casos. (3) Los días hábiles de IT-01 e IT-02 descuentan sábados, domingos y los FERIADOS del Art. 65 del Código del Trabajo (verificado sobre el texto vigente: 1-ene, viernes santo, 1 y 24-may, 10-ago, 9-oct, 2 y 3-nov, 25-dic, y lunes y martes de carnaval, con las reglas de traslado del mismo artículo y las tres fiestas móviles calculadas desde la Pascua). Advertencia: el decreto ejecutivo anual puede apartarse del Código en un año concreto. Lo que TODAVÍA no cumplen es el COA Art. 158, que manda contar "a partir del día hábil siguiente": aquí se cuenta el día inicial, y no se cambió porque mueve el significado de los mínimos de IT-01, pendientes de decisión. Se corrigió además, el 11-ago-2026, que el conteo dependía de la HORA del día: el mismo intervalo de un día calendario daba "1 día hábil" en 311 procesos y "2" en 460. (4) IP-02 tiene 5 disparos en todo 2019-2026 tras corregirse el 11-ago-2026: es el resultado real, no un fallo, porque adjudicar por encima del referencial es casi inexistente en estos datos.',
+  limitaciones_del_dato: 'Qué NO se puede medir con estos datos: (1) {{PRESUPUESTO_PENDIENTE}} (2) El SERCOP no publica enmiendas en el OCDS de búsqueda: IP-03 está inactiva, 0 casos. (3) Los días hábiles de IT-01 e IT-02 descuentan sábados, domingos y los FERIADOS del Art. 65 del Código del Trabajo (verificado sobre el texto vigente: 1-ene, viernes santo, 1 y 24-may, 10-ago, 9-oct, 2 y 3-nov, 25-dic, y lunes y martes de carnaval, con las reglas de traslado del mismo artículo y las tres fiestas móviles calculadas desde la Pascua). Advertencia: el decreto ejecutivo anual puede apartarse del Código en un año concreto. Lo que TODAVÍA no cumplen es el COA Art. 158, que manda contar "a partir del día hábil siguiente": aquí se cuenta el día inicial, y no se cambió porque mueve el significado de los mínimos de IT-01, pendientes de decisión. Se corrigió además, el 11-ago-2026, que el conteo dependía de la HORA del día: el mismo intervalo de un día calendario daba "1 día hábil" en 311 procesos y "2" en 460. (4) IP-02 tiene 5 disparos en todo 2019-2026 tras corregirse el 11-ago-2026: es el resultado real, no un fallo, porque adjudicar por encima del referencial es casi inexistente en estos datos.',
   disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES,
 };
 
@@ -441,7 +472,11 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
         nota: 'Usa oicp_methodology para indicadores, pesos y umbrales verificados.', disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES };
     }
     case 'oicp_methodology':
-      return METHODOLOGY;
+      // La limitación del presupuesto se MIDE al responder, no se publica clavada. Estaba escrita
+      // como «falta HOY en 174.547 procesos»: en cuanto el rellenado avanza, esa cifra deja de
+      // ser cierta y la metodología publicada pasa a mentir sin que nadie lo note (regla 4).
+      return { ...METHODOLOGY, limitaciones_del_dato: METHODOLOGY.limitaciones_del_dato
+        .replace('{{PRESUPUESTO_PENDIENTE}}', limitacionPresupuesto(db)) };
     case 'oicp_top_suppliers': {
       const limit = Math.max(1, Math.min(Number(args?.limit) || 20, 100));
       const order = args?.metric === 'procesos' ? 'n_procs' : 'total_usd';

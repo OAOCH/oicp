@@ -258,6 +258,25 @@ test('oicp_buyer_profile acepta el buyer_id que devuelve oicp_top_buyers (encade
   assert.equal(perfil.buyer_id, buyerId, 'y tiene que ser el MISMO comprador, no otro que se le parezca');
 });
 
+test('la metodología publica el pendiente MEDIDO, no una cifra clavada que envejece', () => {
+  const db = getDb();
+  const pendientes = (db.prepare(
+    `SELECT COUNT(*) AS n FROM procedures WHERE typeof(budget_amount)='text'`).get() as any).n;
+  const m: any = callTool(db, 'oicp_methodology', {});
+  const texto = String(m.limitaciones_del_dato);
+
+  assert.ok(!texto.includes('{{'), 'quedó un marcador sin reemplazar en el texto publicado');
+  assert.ok(!/174\.?547/.test(texto),
+    'la metodología sigue publicando la cifra clavada de 174.547: envejece en cuanto avanza el rellenado');
+  if (pendientes > 0) {
+    assert.ok(texto.includes(pendientes.toLocaleString('es-EC')),
+      `la metodología no publica el pendiente real (${pendientes}): dice "${texto.slice(0, 160)}"`);
+  } else {
+    assert.match(texto, /ya se releyó de la fuente/,
+      'sin pendientes, el texto tiene que decir que el rellenado terminó');
+  }
+});
+
 const activas = (id: string) => {
   const f = getDb().prepare(`SELECT flags FROM procedures WHERE id=?`).get(id) as any;
   return JSON.parse(f.flags || '[]').filter((x: any) => x.active).map((x: any) => x.code) as string[];

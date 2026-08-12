@@ -1,5 +1,16 @@
-import { useState } from 'react';
-import { SEVERITY_LABELS, FLAG_CATEGORIES } from '../lib/flags';
+import { useState, useEffect } from 'react';
+import { SEVERITY_LABELS, FLAG_CATEGORIES, formatCount } from '../lib/flags';
+
+// Estado del rellenado del presupuesto referencial, MEDIDO en el servidor.
+// Esta página publicaba «falta hoy en 174.547 procesos (11,9%)» escrito a mano. El rellenado
+// desde la fuente baja ese número cada hora, así que la cifra clavada se convertía en una
+// afirmación falsa publicada a las pocas horas. Ahora sale de /api/version, la misma medición
+// que devuelve el MCP, así que las dos superficies no pueden contradecirse (regla 11).
+type EstadoPresupuesto = { total: number; pendientes: number; sin_dato: number; con_dato: number };
+
+const fmt = (n: number) => formatCount(n);
+const pct = (n: number, total: number) =>
+  total > 0 ? `${(n * 100 / total).toFixed(1).replace('.', ',')}%` : '—';
 
 const FLAGS = [
   { code: 'IC-01', category: 'competencia', severity: 2, ocp: 'R018', name: 'Proveedor Único en Proceso Competitivo',
@@ -68,6 +79,17 @@ const WEIGHTS: Record<number, number> = { 0: 3, 1: 8, 2: 18, 3: 30 };
 
 export default function Methodology() {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [presupuesto, setPresupuesto] = useState<EstadoPresupuesto | null>(null);
+
+  // Si la llamada falla no se inventa ninguna cifra: la sección se redacta sin números. El pie
+  // de página ya publicó una vez una cobertura clavada como valor de reserva y eso fue un dato
+  // falso servido como si fuera real.
+  useEffect(() => {
+    fetch('/api/version')
+      .then(r => r.json())
+      .then(v => { if (v?.presupuesto) setPresupuesto(v.presupuesto); })
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -297,24 +319,46 @@ export default function Methodology() {
       <div className="bg-white rounded-xl border p-6 shadow-sm">
         <h2 className="font-semibold mb-3">Qué no se puede medir con estos datos</h2>
         <div className="text-sm text-gray-600 space-y-2">
+          {/* Las cifras NO van escritas a mano. El rellenado desde la fuente las mueve cada hora,
+              así que un número clavado aquí sería una afirmación falsa publicada a las pocas horas.
+              Salen medidas de /api/version, la misma medición que usa el MCP (regla 4 y regla 11). */}
           <p>
-            <strong>El presupuesto referencial falta hoy en 174.547 procesos (11,9% del total),
-            y es un defecto nuestro, no de la fuente.</strong> En esas filas quedó guardada la
-            palabra «USD» en el campo del monto en vez de la cifra. La causa, encontrada el 11 de
-            agosto de 2026: la ingesta leía el presupuesto de <code>tender.value</code>, que en
-            estos procesos el SERCOP publica vacío, cuando el monto vive en{' '}
-            <code>tender.lots[].value</code>. Se llegó a concluir que el dato era irrecuperable y
-            era falso: la fuente sí lo publica. Comprobado contra la API del SERCOP en cinco
-            procesos de esa bolsa, con montos entre $16.812,60 y $536.037,63.
+            <strong>
+              {presupuesto && presupuesto.pendientes > 0
+                ? `El presupuesto referencial falta todavía en ${fmt(presupuesto.pendientes)} procesos (${pct(presupuesto.pendientes, presupuesto.total)} del total), y es un defecto nuestro, no de la fuente.`
+                : 'El presupuesto referencial ya se releyó de la fuente en todo el corpus.'}
+            </strong>{' '}
+            En esas filas quedó guardada la palabra «USD» en el campo del monto en vez de la cifra.
+            La causa, encontrada el 11 de agosto de 2026: la ingesta leía el presupuesto de{' '}
+            <code>tender.value</code>, que en estos procesos el SERCOP publica vacío, cuando el
+            monto vive en <code>tender.lots[].value</code>. Se llegó a concluir que el dato era
+            irrecuperable y era falso: la fuente sí lo publica. Comprobado contra la API del
+            SERCOP en cinco procesos de esa bolsa, con montos entre $16.812,60 y $536.037,63.
           </p>
           <p>
             La lectura ya está corregida, así que todo proceso que se incorpore o se actualice
-            desde ahora trae su presupuesto. <strong>Los 174.547 anteriores siguen sin él hasta que
-            se vuelvan a leer de la fuente</strong>, que es un trabajo de horas contra una API con
-            límite de peticiones. Mientras tanto, los indicadores que dependen del referencial,
-            sobre todo <strong>IP-02</strong>, no pueden evaluar esos procesos; y donde falta
-            también el monto adjudicado, lo que marca la plataforma es TR-01 (información
-            incompleta), que es lo correcto.
+            desde ahora trae su presupuesto.{' '}
+            {presupuesto && presupuesto.pendientes > 0 ? (
+              <>
+                <strong>El rellenado de los anteriores está en curso</strong>, releyéndolos de la
+                fuente contra una API con límite de peticiones; la cifra de arriba se mide al
+                cargar esta página, así que baja sola. Mientras tanto, los indicadores que dependen
+                del referencial, sobre todo <strong>IP-02</strong>, no pueden evaluar esos procesos.
+              </>
+            ) : (
+              <>
+                El rellenado terminó.{' '}
+                {presupuesto ? (
+                  <>
+                    Quedan <strong>{fmt(presupuesto.sin_dato)} procesos</strong> (
+                    {pct(presupuesto.sin_dato, presupuesto.total)}) sin presupuesto porque el SERCOP
+                    no lo publica para ellos, sobre todo de régimen especial.
+                  </>
+                ) : null}
+              </>
+            )}{' '}
+            Donde falta también el monto adjudicado, lo que marca la plataforma es TR-01
+            (información incompleta), que es lo correcto.
           </p>
           <p>
             <strong>El SERCOP no publica enmiendas contractuales</strong> en el OCDS de búsqueda, así

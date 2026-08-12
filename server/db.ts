@@ -692,6 +692,32 @@ export function getFilterOptions() {
   };
 }
 
+// ── Estado del presupuesto referencial: UNA sola medición para las tres superficies ──
+// La web, el MCP y la metodología publicaban «falta hoy en 174.547 procesos (11,9%)» escrito a
+// mano. El rellenado desde la fuente baja ese número cada hora, así que una cifra clavada se
+// convierte en una afirmación falsa publicada, que es justo lo que prohíbe la regla 4. Y tres
+// copias del mismo número serían tres sitios donde queda viejo (regla 11).
+//
+// Recorre `procedures` (no hay índice por el TIPO de una columna), así que se cachea 5 minutos:
+// una foto de hace cinco minutos vale igual para un trabajo que dura días, y sin caché cualquiera
+// que recargara la metodología forzaría un recorrido de 1,47 M filas en el hilo único de Node.
+let cachePresupuesto: { at: number; valor: EstadoPresupuesto } | null = null;
+export type EstadoPresupuesto = { total: number; pendientes: number; sin_dato: number; con_dato: number };
+
+export function estadoPresupuesto(): EstadoPresupuesto {
+  if (cachePresupuesto && Date.now() - cachePresupuesto.at < 300_000) return cachePresupuesto.valor;
+  const r = db.prepare(`SELECT COUNT(*) AS total,
+      SUM(CASE WHEN typeof(budget_amount)='text' THEN 1 ELSE 0 END) AS pendientes,
+      SUM(CASE WHEN budget_amount IS NULL THEN 1 ELSE 0 END) AS sin_dato
+    FROM procedures`).get() as any;
+  const total = Number(r?.total || 0);
+  const pendientes = Number(r?.pendientes || 0);
+  const sin_dato = Number(r?.sin_dato || 0);
+  const valor = { total, pendientes, sin_dato, con_dato: total - pendientes - sin_dato };
+  cachePresupuesto = { at: Date.now(), valor };
+  return valor;
+}
+
 // Upsert procedure
 export function upsertProcedure(proc: any) {
   const stmt = db.prepare(`

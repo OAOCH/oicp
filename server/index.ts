@@ -14,6 +14,7 @@ import mcpRouter from './routes/mcp.js';
 import { ensureAuthTables, requireAuth, authEnabled } from './auth.js';
 import { getCachedStatistics, getCached } from './cache.js';
 import { scheduleAutoUpdate, refreshDataCutoff, getDataCutoff } from './updater.js';
+import { estadoPresupuesto } from './db.js';
 import { accessLogger, ensureAccessLog } from './access-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,10 @@ app.get('/api/version', (req, res) => {
     authEnabled: authEnabled(),
     dataCutoff: cutoff,
     processes,
+    // Estado del rellenado del presupuesto referencial, MEDIDO (cacheado 5 min), no clavado.
+    // La metodología de la web lo lee de aquí en vez de llevar la cifra escrita a mano: en
+    // cuanto el rellenado avanza, una cifra fija se convierte en una afirmación falsa publicada.
+    presupuesto: estadoPresupuesto(),
   });
 });
 
