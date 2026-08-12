@@ -12,3 +12,6 @@ data/*.db-shm
 # Estado del rellenado (cursor local, como .sync-cursor.json)
 .sync-repair-cursor.json
 rellenado.log
+
+# Volcados masivos del SERCOP (temporales, ~150 MB por anio)
+.volcado-*.zip

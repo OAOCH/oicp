@@ -60,6 +60,24 @@ test('un paquete repartido en varias líneas NO se pierde', async () => {
   assert.deepEqual(salidos.map(r => r.ocid), ['partido', 'entero']);
 });
 
+test('un carácter UTF-8 partido entre dos trozos NO corrompe el recorrido', async () => {
+  // Esto tumbó la primera corrida real sobre el volcado de 2019 (111 MB): los trozos del flujo
+  // cortan por bytes, así que una tilde partida se volvía el carácter de reemplazo. Basta con que
+  // rompa una comilla para que el estado se descuadre, la profundidad no vuelva a cero y el buffer
+  // crezca hasta «Cannot create a string longer than 0x1fffffe8 characters».
+  const paquetes = Array.from({ length: 30 }, (_, i) => ({
+    releases: [{ ocid: `P-${i}`, tender: { title: `AMPLIACIÓN Y REHABILITACIÓN ÑOÑA «${i}» — obra` } }],
+  }));
+  const texto = '[\n' + paquetes.map(p => JSON.stringify(p)).join(',\n') + '\n]';
+  const zip = zipDeTexto('releases.json', texto);
+  // Trozos de tamaño primo para que los cortes caigan en medio de secuencias multibyte.
+  const salidos: any[] = [];
+  for await (const r of releasesDelVolcado(flujoDe(zip, 13))) salidos.push(r);
+  assert.equal(salidos.length, 30, 'se perdieron paquetes al partir por bytes');
+  assert.match(salidos[7].tender.title, /AMPLIACIÓN Y REHABILITACIÓN ÑOÑA «7» — obra/,
+    'el texto llegó corrompido');
+});
+
 test('las llaves dentro de una cadena no cuentan como estructura', async () => {
   const texto = '[' + JSON.stringify({
     releases: [{ ocid: 'a', tender: { title: 'OBRA {CIVIL} "AMPLIACIÓN" \\ y } suelta' } }],

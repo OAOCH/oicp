@@ -98,6 +98,17 @@ function desempaquetar(entrada: Readable): Readable {
  * Cuenta llaves ignorando las que van dentro de una cadena y respetando los escapes.
  */
 export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
+  // `StringDecoder` y no `trozo.toString('utf8')`: los trozos del flujo cortan por bytes, no por
+  // caracteres, así que una tilde o una eñe partida entre dos trozos se convertía en el carácter
+  // de reemplazo y CORROMPÍA el texto. Con 111 MB de castellano eso pasa muchas veces, y basta
+  // con que rompa una comilla para que el estado de "dentro de una cadena" se descuadre: entonces
+  // la profundidad no vuelve a cero, el buffer crece sin freno y la corrida muere con
+  // «Cannot create a string longer than 0x1fffffe8 characters». Pasó en el volcado de 2019.
+  const { StringDecoder } = await import('string_decoder');
+  const decodificador = new StringDecoder('utf8');
+  // Si la profundidad no vuelve a cero, algo está mal en el fichero o en este recorrido: mejor
+  // fallar con un mensaje claro que consumir memoria hasta reventar.
+  const TOPE_OBJETO = 128 * 1024 * 1024;
   let acumulado = '';
   // `pos` es hasta dónde se ha escaneado YA. Sin él, al llegar un trozo nuevo se volvía a
   // recorrer el texto desde el principio y las llaves ya contadas se contaban otra vez, así que
@@ -106,7 +117,10 @@ export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
   let profundidad = 0, inicio = -1, enCadena = false, escapado = false;
 
   for await (const trozo of flujo) {
-    acumulado += trozo.toString('utf8');
+    acumulado += decodificador.write(Buffer.isBuffer(trozo) ? trozo : Buffer.from(trozo));
+    if (acumulado.length > TOPE_OBJETO) {
+      throw new Error(`objeto JSON de más de ${TOPE_OBJETO} bytes sin cerrar: el volcado no tiene la forma esperada`);
+    }
     while (pos < acumulado.length) {
       const c = acumulado[pos];
       if (enCadena) {
@@ -144,11 +158,58 @@ export async function* releasesDelVolcado(origen: Readable): AsyncGenerator<any>
   }
 }
 
-/** Abre el volcado de un año como flujo. */
+/** Abre el volcado de un año como flujo directamente desde la red. */
 export async function abrirVolcado(year: number, month = 0): Promise<Readable> {
   const res = await fetch(urlVolcado(year, month),
     { headers: { 'User-Agent': 'OICP-sync' }, signal: AbortSignal.timeout(1800000) });
   if (!res.ok) throw new Error(`volcado ${year}/${month}: HTTP ${res.status}`);
   if (!res.body) throw new Error(`volcado ${year}/${month}: sin cuerpo`);
   return Readable.fromWeb(res.body as any);
+}
+
+/**
+ * Descarga el volcado A DISCO y devuelve la ruta.
+ *
+ * Leer directamente de la red hacia el parseador parece más elegante y en la práctica es frágil:
+ * la primera corrida real murió con `TypeError: terminated` a mitad del volcado de 2019, o sea que
+ * el servidor cortó la conexión después de haber transferido decenas de megas, y con el flujo
+ * encadenado eso se pierde entero. Con el fichero en disco, un corte cuesta un reintento de la
+ * descarga y nada más; además el fichero queda para reprocesar sin volver a pedirlo.
+ *
+ * Se descarta lo descargado a medias: un ZIP truncado inflaría basura silenciosamente.
+ */
+export async function descargarVolcado(
+  year: number, destino: string, month = 0, intentos = 4,
+  registrar: (m: string) => void = () => {},
+): Promise<{ ruta: string; bytes: number }> {
+  const { createWriteStream, statSync, unlinkSync, existsSync } = await import('fs');
+  const { pipeline } = await import('stream/promises');
+  for (let intento = 1; intento <= intentos; intento++) {
+    try {
+      const t0 = Date.now();
+      const res = await fetch(urlVolcado(year, month),
+        { headers: { 'User-Agent': 'OICP-sync' }, signal: AbortSignal.timeout(1800000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.body) throw new Error('sin cuerpo');
+      const declarado = Number(res.headers.get('content-length')) || 0;
+      await pipeline(Readable.fromWeb(res.body as any), createWriteStream(destino));
+      const bytes = statSync(destino).size;
+      // Un ZIP cortado sigue empezando por la firma correcta: sin esta comprobación, un volcado
+      // a medias se procesaría como si estuviera completo y dejaría procesos sin reparar.
+      if (declarado && bytes !== declarado) {
+        throw new Error(`incompleto: ${bytes} de ${declarado} bytes`);
+      }
+      if (bytes < 1024) throw new Error(`demasiado pequeño (${bytes} bytes)`);
+      const seg = (Date.now() - t0) / 1000;
+      registrar(`  ${year}: ${(bytes / 1048576).toFixed(1)} MB en ${seg.toFixed(1)}s = ${(bytes / 1048576 / seg).toFixed(2)} MB/s`);
+      return { ruta: destino, bytes };
+    } catch (e: any) {
+      try { if (existsSync(destino)) unlinkSync(destino); } catch { /* mejor esfuerzo */ }
+      if (intento === intentos) throw new Error(`volcado ${year}: ${e.message}`);
+      const espera = 15 * intento;
+      registrar(`  ${year}: intento ${intento} falló (${e.message}); reintento en ${espera}s`);
+      await new Promise(r => setTimeout(r, espera * 1000));
+    }
+  }
+  throw new Error(`volcado ${year}: agotados los intentos`);
 }

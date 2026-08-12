@@ -15,7 +15,7 @@
  * Config: archivo .sync-token (token de /api/admin/mint-sync-token) junto a
  * package.json, o variable de entorno OICP_SYNC_TOKEN.
  */
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, createReadStream } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 // El mapeo OCDS -> fila vive en UN solo módulo (regla 11). Este archivo tenía su propia copia
@@ -24,7 +24,7 @@ import { fileURLToPath } from 'url';
 // `ocds-proc.ts` no toca base de datos ni red, así que se puede importar desde este script.
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
 import { crearLimitador } from './limitador.js';
-import { abrirVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
+import { descargarVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -345,11 +345,13 @@ async function repararMasivo(desdeAnio: number, hastaAnio: number) {
     const declarado = await totalDeclarado(anio);
     const tAnio = Date.now();
     let delAnio = 0, coincidencias = 0;
-    let flujo;
-    try { flujo = await abrirVolcado(anio); }
-    catch (e: any) { log(`  ${anio}: no se pudo abrir el volcado (${e.message}); se salta`); continue; }
+    // A disco primero: la primera corrida real murió con `TypeError: terminated` a mitad del
+    // volcado de 2019, y con el flujo encadenado se pierde todo lo transferido.
+    const ruta = resolve(ROOT, `.volcado-${anio}.zip`);
+    try { await descargarVolcado(anio, ruta, 0, 4, log); }
+    catch (e: any) { log(`  ${anio}: no se pudo descargar (${e.message}); se salta`); continue; }
 
-    for await (const rel of releasesDelVolcado(flujo)) {
+    for await (const rel of releasesDelVolcado(createReadStream(ruta))) {
       delAnio++; vistos++;
       const ocid = rel?.ocid;
       if (!ocid || !pendientes.has(ocid)) continue;
@@ -362,6 +364,8 @@ async function repararMasivo(desdeAnio: number, hastaAnio: number) {
       } catch (e: any) { log(`  mapeo ${ocid}: ${e.message}`); }
     }
     await empujar();
+    // El volcado ya no hace falta: son ~150 MB por año y el volumen local no es infinito.
+    try { unlinkSync(ruta); } catch { /* mejor esfuerzo */ }
     const seg = ((Date.now() - tAnio) / 1000).toFixed(1);
     // Comprobación de completitud ANTES de dar el año por bueno: si el volcado llegó cortado,
     // los procesos que faltan quedarían sin reparar y nada lo diría.
