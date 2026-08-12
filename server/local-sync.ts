@@ -441,6 +441,22 @@ async function fichaSoce(id: number, intentos = 3): Promise<string | null> {
 
 async function indiceSoce(desde: number, hasta: number, budgetMin: number) {
   const t0 = Date.now(), budgetMs = budgetMin * 60_000;
+
+  // GUARDIÁN DE ORDEN. El cruce ocid <-> ficha solo se acepta si la fecha límite de PREGUNTAS del
+  // portal coincide con el `enquiry_deadline` que tenemos de los datos abiertos. Si ese campo aún
+  // está vacío, NINGÚN cruce puede validarse y el barrido gastaría horas para aplicar cero.
+  // Medido en una prueba real: 81 fichas leídas, 61 con las dos fechas, 0 aplicadas y 58
+  // rechazadas por falta de testigo. Así que primero el rellenado, después el índice.
+  const estado = await prod('/api/admin/avance-reparacion', { fresco: true }, 2).catch(() => null);
+  if (estado && estado.total > 0) {
+    const cobertura = (estado.con_enquiry || 0) / estado.total;
+    log(`  cobertura de enquiry_deadline: ${(cobertura * 100).toFixed(1)}% (${estado.con_enquiry} de ${estado.total})`);
+    if (cobertura < 0.10) {
+      log('  ABORTA: sin enquiry_deadline no se puede validar ningún cruce, así que el barrido no ' +
+          'aplicaría nada. Primero tiene que avanzar el rellenado (--reparar-masivo).');
+      return;
+    }
+  }
   let cursor = hasta;
   try {
     const c = JSON.parse(readFileSync(SOCE_CURSOR, 'utf-8'));
