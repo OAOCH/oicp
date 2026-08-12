@@ -131,6 +131,26 @@ test('el lector no depende del formato: con y sin saltos de línea da lo mismo',
   assert.deepEqual(ok.flatMap(p => p.releases.map((r: any) => r.ocid)), ['ok', 'ok2']);
 });
 
+test('un consumidor LENTO no hace crecer la memoria ni pierde paquetes', async () => {
+  // Es la diferencia entre leer el volcado suelto (que funcionaba) y leerlo dentro del rellenado,
+  // que se detiene a empujar lotes por la red cada 500 procesos. La primera version empujaba los
+  // trozos inflados a un Readable propio IGNORANDO lo que devolvia push(), o sea sin control de
+  // flujo: el inflador seguia a toda velocidad y el volcado entero se acumulaba en memoria hasta
+  // reventar el tope. Medido sobre el fichero real de 2020 con este mismo patron: 160.676 leidos
+  // y 253 MB de memoria maxima.
+  const paquetes = Array.from({ length: 300 }, (_, i) => ({
+    releases: [{ ocid: `L-${i}`, tender: { title: 'x'.repeat(500) } }],
+  }));
+  const texto = ['[', paquetes.map(p => JSON.stringify(p)).join(',\n'), ']'].join('\n');
+  const salidos: string[] = [];
+  for await (const r of releasesDelVolcado(flujoDe(zipDeTexto('r.json', texto), 1024))) {
+    salidos.push(r.ocid);
+    if (salidos.length % 50 === 0) await new Promise(res => setTimeout(res, 5));
+  }
+  assert.equal(salidos.length, 300, 'con el consumidor lento se perdieron paquetes');
+  assert.equal(salidos[299], 'L-299');
+});
+
 test('un ZIP que no es un ZIP falla con un error claro, no con basura', async () => {
   await assert.rejects(async () => {
     for await (const _ of releasesDelVolcado(flujoDe(Buffer.from('esto no es un zip en absoluto')))) { /* vacío */ }

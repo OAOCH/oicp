@@ -152,6 +152,71 @@ tarda 449 ms. Y ~8 por segundo es justo el ritmo que produjo 21 respuestas 429 c
 Ahora el turno se **reserva** en vez de consultarse, vive en `server/limitador.ts` con sus pruebas, y
 un 429 frena a **todos** los hilos.
 
+### La vía masiva: 54 horas pasan a 20 minutos
+
+**El SERCOP publica volcados por año que su propia documentación no menciona.** Los documenta solo
+el código de su página de datos abiertos:
+
+```
+https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/download?type=json&year=YYYY&month=0&method=all
+https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/get-totals?year=YYYY&month=0&method=all
+```
+
+| | Uno por uno (`record?ocid=`) | Por volcados |
+|---|---|---|
+| Los 174 547 | ~54 h y 174 547 peticiones | **~20 min y 8 peticiones** (989 MB) |
+| Corpus completo | ~131 días | ~20 min y 12 peticiones (1,42 GB) |
+
+Y esa ruta **no devolvió un solo 429**, a diferencia de `/PLATAFORMA/api/*`, que tiene un cupo de 60
+por minuto **compartido entre clientes**: ahí no se puede planificar un ritmo desde nuestro lado.
+
+**Leer esos ficheros costó tres defectos, cada uno con su prueba**, y los tres son del tipo que pasa
+inadvertido:
+
+1. **Al llegar un trozo nuevo se recontaban las llaves ya contadas**, así que no salía ni un objeto.
+2. **`toString('utf8')` por trozo corrompe el texto**: los trozos cortan por bytes, no por
+   caracteres, y con 111 MB de castellano una tilde partida se vuelve el carácter de reemplazo.
+   Basta con que rompa una comilla para que todo se descuadre. Mató la corrida de 2019.
+3. **El volcado de 2020 trae una comilla SIN ESCAPAR**, o sea JSON inválido de origen. Contar
+   llaves no sobrevive: una vez desincronizado se come el año entero.
+4. **Y no todos los años vienen con formato bonito**: algunos traen el array en una sola línea, así
+   que delimitar por líneas revienta la memoria.
+
+La forma que sobrevive a todo es **contar llaves con resincronización por salto de línea**,
+apoyándose en una garantía del propio JSON: un salto de línea crudo no puede estar dentro de una
+cadena. Verificado contra los ficheros reales: **2019 dio 275 055 leídos contra 275 055 declarados
+y 2020 dio 160 676 contra 160 676. Diferencia cero en ambos.**
+
+### El Art. 96, resuelto: las dos fechas SÍ son públicas
+
+La ficha de impresión del SOCE las trae, en un solo GET, sin sesión y sin captcha:
+`https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/PC/ImprimirIPC2.cpe?id=<idSoliCompra>`
+
+| OCDS | Rótulo del portal |
+|---|---|
+| `tender.enquiryPeriod.endDate` | Fecha Límite de **Preguntas** |
+| *(no existe en OCDS)* | **Fecha Límite de Respuestas** ← inicio del término |
+| `tender.tenderPeriod.endDate` (vacío en el 93%) | **Fecha Límite entrega Ofertas** ← fin del término |
+
+**El enganche era el problema, no la lectura.** El ocid NO contiene el id interno del proceso: su
+número final es el de la **entidad**. Por eso el índice se construye al revés, recorriendo los id
+del portal y cruzando por el CÓDIGO de cada ficha. Y **el cruce se valida**: solo se acepta si la
+fecha límite de preguntas del portal coincide con la que ya tenemos de los datos abiertos. Sin ese
+testigo, un código repetido entre entidades publicaría fechas de otro proceso en una ficha con
+nombre y apellido.
+
+**Decisiones de Oscar del 12-ago-2026**: (a) hacer el barrido completo del índice, que de paso
+rellena la fecha límite de ofertas que falta en el 93%; (b) en Régimen Especial, la «Audiencia de
+Preguntas y Aclaraciones» **sí cuenta** como el hito del Art. 96, y el motor guarda de qué rótulo
+salió para poder declararlo.
+
+**IT-01 ya está implementado con dos regímenes y se activa solo** según el índice se llena:
+(A) el término legal del Art. 96 cuando hay las dos fechas y el proceso es del 28-oct-2025 en
+adelante, contado desde el día hábil siguiente (COA Art. 158) y sin feriados (Art. 159); (B) el
+referencial en el resto, cuyo detalle **ahora dice que es referencial y que no reproduce el
+Art. 96**. Desplegarlo no movió ningún score porque `answer_deadline` está vacío: lo único que
+cambió es el texto.
+
 ### El rellenado está CORRIENDO
 
 Validado con lote chico contra producción antes de soltarlo: **119 pedidos, 119 reparados, 0

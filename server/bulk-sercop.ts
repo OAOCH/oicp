@@ -27,7 +27,7 @@
  * primer nivel en cuanto se cierra. Memoria acotada al objeto más grande, no al fichero.
  */
 import zlib from 'zlib';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 
 export const BULK_URL = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/download';
 export const TOTALS_URL = 'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/get-totals';
@@ -57,40 +57,44 @@ export async function totalDeclarado(year: number, month = 0): Promise<number | 
  * otro se rechaza en vez de devolver basura silenciosamente.
  */
 function desempaquetar(entrada: Readable): Readable {
-  const salida = new Readable({ read() { /* empujado desde abajo */ } });
-  const inflate = zlib.createInflateRaw();
-  inflate.on('data', (c: Buffer) => salida.push(c));
-  inflate.on('end', () => salida.push(null));
-  inflate.on('error', (e) => salida.destroy(e));
-
+  // Se compone con `pipe`, no con `push` a mano. La primera versión empujaba los trozos inflados a
+  // un Readable propio ignorando lo que devolvía `push()`, o sea SIN control de flujo: cuando el
+  // consumidor se detenía a empujar lotes por la red (lo que hace el rellenado cada 500 procesos)
+  // el inflador seguía a toda velocidad y el volcado entero se acumulaba en memoria. Al intentar
+  // añadirle el control de flujo a mano, el resultado fue un bloqueo mutuo: nadie reanudaba el
+  // inflador. Encadenando con `pipe`, Node ya resuelve las dos cosas y no hay nada que inventar.
   let cabecera: Buffer = Buffer.alloc(0);
   let listo = false;
-  entrada.on('data', (trozo: Buffer) => {
-    if (listo) { inflate.write(trozo); return; }
-    cabecera = Buffer.concat([cabecera, trozo]);
-    // La firma se comprueba en cuanto hay 4 bytes. Si se esperara a tener los 30 de la cabecera,
-    // una respuesta corta que no es un ZIP (una página de error, por ejemplo) nunca llegaría a
-    // validarse y el fallo saldría como un críptico "unexpected end of file" del inflador.
-    if (cabecera.length >= 4 && cabecera.readUInt32LE(0) !== 0x04034b50) {
-      salida.destroy(new Error('el volcado no empieza por la firma de un ZIP'));
-      entrada.destroy(); return;
-    }
-    if (cabecera.length < 30) return;
-    const metodo = cabecera.readUInt16LE(8);
-    const nlen = cabecera.readUInt16LE(26), elen = cabecera.readUInt16LE(28);
-    const inicio = 30 + nlen + elen;
-    if (cabecera.length < inicio) return;
-    if (metodo !== 8) {
-      salida.destroy(new Error(`método de compresión ${metodo} no contemplado (se espera 8, deflate)`));
-      entrada.destroy(); return;
-    }
-    listo = true;
-    inflate.write(cabecera.subarray(inicio));
-    cabecera = Buffer.alloc(0);
+  const quitarCabecera = new Transform({
+    transform(trozo: Buffer, _enc, cb) {
+      if (listo) { cb(null, trozo); return; }
+      cabecera = Buffer.concat([cabecera, trozo]);
+      // La firma se comprueba en cuanto hay 4 bytes. Si se esperara a tener los 30 de la cabecera,
+      // una respuesta corta que no es un ZIP (una página de error) nunca llegaría a validarse y el
+      // fallo saldría como un críptico "unexpected end of file" del inflador.
+      if (cabecera.length >= 4 && cabecera.readUInt32LE(0) !== 0x04034b50) {
+        cb(new Error('el volcado no empieza por la firma de un ZIP')); return;
+      }
+      if (cabecera.length < 30) { cb(); return; }
+      const metodo = cabecera.readUInt16LE(8);
+      const nlen = cabecera.readUInt16LE(26), elen = cabecera.readUInt16LE(28);
+      const inicio = 30 + nlen + elen;
+      if (cabecera.length < inicio) { cb(); return; }
+      if (metodo !== 8) {
+        cb(new Error(`método de compresión ${metodo} no contemplado (se espera 8, deflate)`)); return;
+      }
+      listo = true;
+      const datos = cabecera.subarray(inicio);
+      cabecera = Buffer.alloc(0);
+      cb(null, datos);
+    },
   });
-  entrada.on('end', () => inflate.end());
-  entrada.on('error', (e) => salida.destroy(e));
-  return salida;
+
+  const inflate = zlib.createInflateRaw();
+  entrada.on('error', (e) => quitarCabecera.destroy(e));
+  quitarCabecera.on('error', (e) => inflate.destroy(e));
+  entrada.pipe(quitarCabecera).pipe(inflate);
+  return inflate;
 }
 
 /**
@@ -185,7 +189,13 @@ export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
       }
       pos++;
     }
+    // Se suelta todo lo ya consumido. Si hay un objeto a medias se conserva DESDE su primera
+    // llave, no desde el principio del buffer: sin este recorte, el texto entre objetos
+    // (separadores, sangrías) se acumulaba corrida tras corrida y el tope de 128 MB saltaba
+    // aunque ningún objeto fuera grande. Es lo que mató la corrida de 2020 dentro del rellenado,
+    // donde el consumidor se detiene a empujar por red y el buffer tiene tiempo de crecer.
     if (prof === 0 && !enCadena && inicio < 0) { buf = ''; pos = 0; }
+    else if (inicio > 0) { buf = buf.slice(inicio); pos -= inicio; inicio = 0; }
   };
 
   for await (const trozo of flujo) {
