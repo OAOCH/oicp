@@ -543,6 +543,61 @@ router.post('/ingest-finalize', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Rellenado desde la fuente (reparación de datos ya ingeridos) ──────────────
+// Va por aquí y no por /ingest a propósito: /ingest SALTA los ocid existentes, así que
+// no repara nada. Ver el comentario largo en updater.ts.
+router.post('/ocids-a-reparar', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const { ocidsAReparar } = await import('../updater.js');
+    const criterio = String(req.body?.criterio || 'presupuesto');
+    const ids = ocidsAReparar(criterio, Number(req.body?.limite) || 500, String(req.body?.desde || ''));
+    res.json({ criterio, ids, ultimo: ids.length ? ids[ids.length - 1] : (req.body?.desde || ''), fin: ids.length === 0 });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+router.post('/reparar', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  if (currentJob.running) return res.status(409).json({ error: 'Hay una descarga /admin/load en curso; reintenta después.' });
+  const procs = req.body?.procs;
+  if (!Array.isArray(procs) || !procs.length || procs.length > 500) {
+    return res.status(400).json({ error: 'procs[] requerido (1 a 500 por lote)' });
+  }
+  try {
+    const { repararProcs, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(repararProcs(procs));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/reparar-finalize', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const { finalizeReparacion, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(await finalizeReparacion());
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Avance del rellenado, para poder verificarlo por los DATOS y no por la respuesta HTTP.
+// Recorre la tabla, así que es deliberadamente de consulta manual y no de sondeo.
+// GET para poder abrirlo en el navegador con la sesión iniciada; POST para el barrido local.
+router.all('/avance-reparacion', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const db = getDb();
+    const r = db.prepare(`SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN typeof(budget_amount)='text' THEN 1 ELSE 0 END) AS con_texto_usd,
+        SUM(CASE WHEN typeof(budget_amount)='real' OR typeof(budget_amount)='integer' THEN 1 ELSE 0 END) AS con_numero,
+        SUM(CASE WHEN budget_amount IS NULL THEN 1 ELSE 0 END) AS sin_presupuesto,
+        SUM(CASE WHEN enquiry_deadline IS NOT NULL THEN 1 ELSE 0 END) AS con_enquiry,
+        SUM(CASE WHEN enquiry_deadline IS NULL AND published_date >= '2025-10-28' THEN 1 ELSE 0 END) AS falta_enquiry_art96
+      FROM procedures`).get();
+    res.json(r);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 async function updaterRunning(): Promise<boolean> {
   const { updateJob } = await import('../updater.js');
   return updateJob.running;

@@ -15,8 +15,8 @@
 import cron from 'node-cron';
 import type Database from 'better-sqlite3';
 import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
-import { valorReferencial } from './ocds-valor.js';
-import { evaluateAllFlags, getRegime } from './flag-engine.js';
+import { releaseFrom, releaseToProc } from './ocds-proc.js';
+import { evaluateAllFlags } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
 
@@ -83,49 +83,9 @@ async function sercopFetch(url: string, retries = 6): Promise<any | null> {
   return null;
 }
 
-// ── Parse del record OCDS (la API devuelve releases al nivel superior;
-//    se acepta también el formato antiguo records[0].releases) ─
-function releaseFrom(recData: any): any | null {
-  const rels = recData?.releases?.length ? recData.releases
-    : recData?.records?.[0]?.releases?.length ? recData.records[0].releases : null;
-  return rels ? rels[rels.length - 1] : null;
-}
-
-function releaseToProc(release: any, sr: any, year: number) {
-  const t = release.tender || {}, aw = release.awards || [], co = release.contracts || [];
-  const buyer = release.buyer || t.procuringEntity || {};
-  const fa = aw[0] || {}, fc = co[0] || {};
-  const suppliers: any[] = [];
-  for (const a of aw) for (const s of (a.suppliers || [])) {
-    const id = s.id || s.identifier?.id || '', name = s.name || '';
-    if ((id || name) && !suppliers.find(x => x.id === id && x.name === name)) suppliers.push({ id, name });
-  }
-  if (!suppliers.length && sr?.suppliers && typeof sr.suppliers === 'string') suppliers.push({ id: '', name: sr.suppliers });
-  const md = t.procurementMethodDetails || sr?.internal_type || '';
-  let m = t.procurementMethod || sr?.method || '';
-  if (!m) { const d = md.toLowerCase(); m = d.includes('ínfima') || d.includes('infima') ? 'limited' : d.includes('especial') ? 'selective' : d.includes('catálogo') || d.includes('catalogo') ? 'direct' : 'open'; }
-  const bn = buyer.name || sr?.buyer || null;
-  const bi = buyer.id || (bn ? 'EC-' + bn.substring(0, 30).replace(/[^A-Za-z0-9]/g, '-') : null);
-  let ac = 0; for (const c of co) ac += (c.amendments || []).length;
-  const pub = t.tenderPeriod?.startDate || release.date || sr?.date || null;
-  return {
-    // (ver valorReferencial más abajo: el presupuesto casi nunca viene en tender.value)
-    id: release.ocid || sr?.ocid, ocid: release.ocid || sr?.ocid,
-    title: t.title || t.description || sr?.title || '', description: t.description || sr?.description || '',
-    status: release.tag?.includes('contract') ? 'contract' : release.tag?.includes('award') ? 'award' : 'tender',
-    procurement_method: m, procurement_method_details: md, buyer_id: bi, buyer_name: bn,
-    budget_amount: valorReferencial(t, release, sr),
-    budget_currency: 'USD', award_amount: fa.value?.amount || (sr?.amount ? parseFloat(sr.amount) : null),
-    contract_amount: fc.value?.amount || null, final_amount: fc.implementation?.finalValue?.amount || null,
-    published_date: pub, submission_deadline: t.tenderPeriod?.endDate || null,
-    enquiry_deadline: t.enquiryPeriod?.endDate || null,
-    award_date: fa.date || null, contract_date: fc.dateSigned || null,
-    suppliers, number_of_tenderers: t.numberOfTenderers || release.bids?.details?.length || null,
-    items_classification: t.items?.[0]?.classification?.id || null,
-    has_amendments: ac > 0, amendment_count: ac, source_year: year,
-    regime: getRegime(pub || `${year}-06-15`),
-  };
-}
+// El parse del record OCDS y el mapeo a fila viven en `ocds-proc.ts`: son los mismos que usa
+// `local-sync.ts` y tienen que ser UNA sola definición (regla 11). Estuvieron duplicados y la
+// corrección del presupuesto se aplicó solo a esta copia; la de local-sync siguió rota.
 
 const rx10 = /\d{10,13}/;
 function num(x: any): number { const n = typeof x === 'number' ? x : parseFloat(x); return Number.isFinite(n) ? n : 0; }
@@ -637,6 +597,106 @@ export function ingestProcs(procs: any[]): { inserted: number; skipped: number }
   db.pragma('wal_checkpoint(TRUNCATE)');
   setSetting(db, 'update_clean', '1');
   return { inserted: fresh.length, skipped };
+}
+
+// ── RELLENADO DESDE LA FUENTE ────────────────────────────────────────────────
+// Reparar NO es lo mismo que ingerir, y por eso vive aparte de `ingestProcs`.
+//
+// `ingestProcs` SALTA los ocid que ya existen (es un barrido de novedades: pedir el record de
+// algo que ya tenemos sería gastar la cuota del SERCOP para nada). El plan heredado daba por
+// hecho que hacía upsert y que servía «igual para reparar que para insertar». No es así: el
+// rellenado habría corrido 16 horas y habría devuelto `skipped` en las 174.547 filas.
+//
+// El reparador escribe SOLO las dos columnas que la ingesta leía mal:
+//   - `budget_amount`, que en 174.547 filas guarda el TEXTO "USD" en vez de una cifra;
+//   - `enquiry_deadline`, vacío en las 1.470.321 porque nunca se mapeó.
+// No toca ninguna otra columna A PROPÓSITO: los agregados a_* se construyen con el monto
+// adjudicado/contratado (MONTO_SQL) y con el texto de la ficha, así que mientras el reparador
+// no toque esas columnas es IMPOSIBLE que los desincronice. Las banderas sí cambian, y de eso
+// se encarga `reflagChanged()` al final, que ya recalcula todo el corpus y aplica los deltas
+// de a_flag_year y a_risk_year comparando contra lo guardado.
+//
+// Verificado además que el índice de concentración no depende del presupuesto:
+// SQL_ES_INFIMA_POR_MONTO y MONTO_SQL usan `award_amount`, no `budget_amount`.
+
+const CRITERIOS_REPARACION: Record<string, string> = {
+  // Los que guardan el TEXTO "USD" donde debería ir el monto.
+  presupuesto: `typeof(budget_amount) = 'text'`,
+  // Los de la ventana del Art. 96 del Reglamento (vigente desde el 28-oct-2025) a los que
+  // les falta la fecha de cierre de preguntas, que es desde donde corre el término legal.
+  // Se acota a esa ventana a propósito: pedirla para los 1,47 M sería un barrido de ~6 días.
+  enquiry: `enquiry_deadline IS NULL AND published_date >= '2025-10-28'`,
+};
+
+export function ocidsAReparar(criterio: string, limite: number, desde: string): string[] {
+  const cond = Object.prototype.hasOwnProperty.call(CRITERIOS_REPARACION, criterio)
+    ? CRITERIOS_REPARACION[criterio] : null;
+  // Nunca interpolar lo que llega de fuera: el criterio se resuelve contra una tabla fija.
+  if (!cond) throw new Error(`criterio desconocido: ${criterio}`);
+  const n = Math.min(Math.max(Math.trunc(Number(limite)) || 500, 1), 2000);
+  // Cursor por clave primaria: la reparación no cambia el id, así que el cursor nunca
+  // retrocede ni repite, y el barrido es reanudable exactamente donde se quedó.
+  const filas = getDb().prepare(
+    `SELECT id FROM procedures WHERE id > ? AND ${cond} ORDER BY id LIMIT ?`)
+    .all(typeof desde === 'string' ? desde : '', n) as any[];
+  return filas.map(f => f.id);
+}
+
+export function repararProcs(procs: any[]): {
+  reparados: number; sin_cambio: number; ausentes: number; invalidos: number;
+} {
+  const db = getDb();
+  const leer = db.prepare(`SELECT budget_amount, enquiry_deadline FROM procedures WHERE id=?`);
+  const upd = db.prepare(
+    `UPDATE procedures SET budget_amount=?, enquiry_deadline=?, updated_at=datetime('now') WHERE id=?`);
+  let reparados = 0, sinCambio = 0, ausentes = 0, invalidos = 0;
+
+  const tx = db.transaction((lote: any[]) => {
+    for (const raw of lote) {
+      if (!raw || typeof raw.id !== 'string' || !raw.id) { invalidos++; continue; }
+      const actual = leer.get(raw.id) as any;
+      // Esta vía repara, no inserta. Un ocid ausente es un aviso, no algo que crear a ciegas.
+      if (!actual) { ausentes++; continue; }
+
+      const dePaso = typeof raw.budget_amount === 'number' && Number.isFinite(raw.budget_amount)
+        && raw.budget_amount > 0 ? raw.budget_amount : null;
+      // Si la fuente no publica presupuesto, el destino es NULL, no el texto que había.
+      // Un texto es truthy en JavaScript y por eso TR-01 dejaba de marcar estos procesos.
+      // Pero si la base YA tenía un número bueno, no se degrada por un null de la fuente.
+      const presupuesto = dePaso !== null ? dePaso
+        : (typeof actual.budget_amount === 'number' ? actual.budget_amount : null);
+
+      const enqFuente = typeof raw.enquiry_deadline === 'string' && raw.enquiry_deadline
+        ? raw.enquiry_deadline : null;
+      const enquiry = enqFuente ?? (actual.enquiry_deadline || null);
+
+      if (presupuesto === actual.budget_amount && enquiry === (actual.enquiry_deadline ?? null)) {
+        sinCambio++; continue;
+      }
+      upd.run(presupuesto, enquiry, raw.id);
+      reparados++;
+    }
+  });
+  tx(procs);
+  // Checkpoint entre lotes: un WAL sin control ya llenó el volumen y corrompió la base (regla 2).
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  return { reparados, sin_cambio: sinCambio, ausentes, invalidos };
+}
+
+/**
+ * Cierre del rellenado. Solo re-evalúa banderas: el reparador no toca las columnas de las que
+ * dependen `concentration_index` ni los totales de los agregados, así que reconstruir el índice
+ * de concentración sería trabajo (y riesgo de escritura masiva) para nada.
+ */
+export async function finalizeReparacion(): Promise<any> {
+  const db = getDb();
+  const reflagged = await reflagChanged(db);
+  invalidateStatsCache();
+  setSetting(getDb(), 'reparacion_last_run', JSON.stringify({
+    finishedAt: new Date().toISOString(), reflagged,
+  }));
+  log(`rellenado finalizado: reflag=${reflagged}`);
+  return { reflagged };
 }
 
 export async function finalizeIngest(year: number): Promise<any> {

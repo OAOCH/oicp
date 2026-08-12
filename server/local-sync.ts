@@ -8,12 +8,21 @@
  * Uso (programado mar/jue 08:00 por el Programador de tareas de Windows):
  *   npx tsx server/local-sync.ts [--year 2026] [--budget-min 300] [--term agua]
  *
+ * Modo RELLENADO (repara datos ya ingeridos volviéndolos a pedir a la fuente):
+ *   npx tsx server/local-sync.ts --reparar [--criterio presupuesto|enquiry] [--budget-min 600]
+ * Es reanudable: guarda cursor en .sync-repair-cursor.json y sigue donde se quedó.
+ *
  * Config: archivo .sync-token (token de /api/admin/mint-sync-token) junto a
  * package.json, o variable de entorno OICP_SYNC_TOKEN.
  */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+// El mapeo OCDS -> fila vive en UN solo módulo (regla 11). Este archivo tenía su propia copia
+// y por eso la corrección del presupuesto del 11-ago no llegó al único camino que de verdad
+// llega al SERCOP: seguía guardando el texto "USD" y `enquiry_deadline` en nulo.
+// `ocds-proc.ts` no toca base de datos ni red, así que se puede importar desde este script.
+import { releaseFrom, releaseToProc } from './ocds-proc.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -103,54 +112,134 @@ async function prod(path: string, body: any, retries = 4): Promise<any> {
   }
 }
 
-function releaseFrom(recData: any): any | null {
-  const rels = recData?.releases?.length ? recData.releases
-    : recData?.records?.[0]?.releases?.length ? recData.records[0].releases : null;
-  return rels ? rels[rels.length - 1] : null;
+// ── RELLENADO DESDE LA FUENTE (`--reparar`) ──────────────────────────────────
+// 174.547 procesos guardan el TEXTO "USD" donde debería ir el presupuesto, porque la ingesta
+// leía `tender.value` (que el SERCOP publica vacío) en vez de `tender.lots[].value.amount`.
+// La lectura ya está corregida, pero los procesos viejos hay que volver a pedirlos a la fuente.
+//
+// Corre por aquí y no desde Railway porque el SERCOP bloquea las IP de datacenter.
+// Es REANUDABLE: guarda cursor por criterio en `.sync-repair-cursor.json`, así que se puede
+// cortar (apagón, batería, tope de tiempo) y sigue exactamente donde se quedó.
+const REPAIR_CURSOR = resolve(ROOT, '.sync-repair-cursor.json');
+const CRITERIOS = ['presupuesto', 'enquiry'] as const;
+type Criterio = typeof CRITERIOS[number];
+
+type EstadoReparacion = {
+  criterio: Criterio; desde: string; pase: number;
+  pedidos: number; reparados: number; sinCambio: number; errores: number;
+  actualizado: string;
+};
+
+function leerEstado(): EstadoReparacion {
+  try {
+    const e = JSON.parse(readFileSync(REPAIR_CURSOR, 'utf-8'));
+    if (e && CRITERIOS.includes(e.criterio)) return e;
+  } catch { /* sin estado previo: empieza de cero */ }
+  return { criterio: 'presupuesto', desde: '', pase: 1, pedidos: 0, reparados: 0, sinCambio: 0, errores: 0, actualizado: '' };
+}
+function guardarEstado(e: EstadoReparacion) {
+  e.actualizado = new Date().toISOString();
+  writeFileSync(REPAIR_CURSOR, JSON.stringify(e, null, 2));
 }
 
-function getRegimeLocal(dateStr: string | null): string {
-  // LOSNCP reformada rige desde 2025-10-07 (RO 4S 140); antes coeficientes.
-  // Devuelve 'LOSNCP_REFORMADA', NO 'LOIP': el resto del código (updater.ts, load-data.ts,
-  // flag-engine.ts) usa ese identificador y la ficha del proceso muestra el campo. Con dos
-  // nombres para el mismo régimen, dos procesos idénticos aparecían etiquetados distinto
-  // según por qué vía se hubieran ingerido.
-  if (!dateStr) return 'LOSNCP_COEFICIENTES';
-  return dateStr >= '2025-10-07' ? 'LOSNCP_REFORMADA' : 'LOSNCP_COEFICIENTES';
-}
-
-function releaseToProc(release: any, sr: any, year: number) {
-  const t = release.tender || {}, aw = release.awards || [], co = release.contracts || [];
-  const buyer = release.buyer || t.procuringEntity || {};
-  const fa = aw[0] || {}, fc = co[0] || {};
-  const suppliers: any[] = [];
-  for (const a of aw) for (const s of (a.suppliers || [])) {
-    const id = s.id || s.identifier?.id || '', name = s.name || '';
-    if ((id || name) && !suppliers.find(x => x.id === id && x.name === name)) suppliers.push({ id, name });
+async function reparar(budgetMin: number, soloCriterio?: string) {
+  const t0 = Date.now();
+  const budgetMs = budgetMin * 60_000;
+  const estado = leerEstado();
+  if (soloCriterio) {
+    if (!CRITERIOS.includes(soloCriterio as Criterio)) {
+      console.error(`--criterio tiene que ser uno de: ${CRITERIOS.join(', ')}`); process.exit(1);
+    }
+    if (estado.criterio !== soloCriterio) Object.assign(estado, { criterio: soloCriterio as Criterio, desde: '', pase: 1 });
   }
-  if (!suppliers.length && sr?.suppliers && typeof sr.suppliers === 'string') suppliers.push({ id: '', name: sr.suppliers });
-  const md = t.procurementMethodDetails || sr?.internal_type || '';
-  let m = t.procurementMethod || sr?.method || '';
-  if (!m) { const d = md.toLowerCase(); m = d.includes('ínfima') || d.includes('infima') ? 'limited' : d.includes('especial') ? 'selective' : d.includes('catálogo') || d.includes('catalogo') ? 'direct' : 'open'; }
-  const bn = buyer.name || sr?.buyer || null;
-  const bi = buyer.id || (bn ? 'EC-' + bn.substring(0, 30).replace(/[^A-Za-z0-9]/g, '-') : null);
-  let ac = 0; for (const c of co) ac += (c.amendments || []).length;
-  const pub = t.tenderPeriod?.startDate || release.date || sr?.date || null;
-  return {
-    id: release.ocid || sr?.ocid, ocid: release.ocid || sr?.ocid,
-    title: t.title || t.description || sr?.title || '', description: t.description || sr?.description || '',
-    status: release.tag?.includes('contract') ? 'contract' : release.tag?.includes('award') ? 'award' : 'tender',
-    procurement_method: m, procurement_method_details: md, buyer_id: bi, buyer_name: bn,
-    budget_amount: t.value?.amount || release.planning?.budget?.amount?.amount || (sr?.budget ? parseFloat(sr.budget) : null),
-    budget_currency: 'USD', award_amount: fa.value?.amount || (sr?.amount ? parseFloat(sr.amount) : null),
-    contract_amount: fc.value?.amount || null, final_amount: fc.implementation?.finalValue?.amount || null,
-    published_date: pub, submission_deadline: t.tenderPeriod?.endDate || null,
-    award_date: fa.date || null, contract_date: fc.dateSigned || null,
-    suppliers, number_of_tenderers: t.numberOfTenderers || release.bids?.details?.length || null,
-    items_classification: t.items?.[0]?.classification?.id || null,
-    has_amendments: ac > 0, amendment_count: ac, source_year: year,
-    regime: getRegimeLocal(pub || `${year}-06-15`),
+
+  log(`RELLENADO: criterio "${estado.criterio}", cursor "${estado.desde || '(inicio)'}", pase ${estado.pase}, presupuesto ${budgetMin} min`);
+  const avance = await prod('/api/admin/avance-reparacion', {}, 2).catch(() => null);
+  if (avance) log(`  estado inicial en producción: ${JSON.stringify(avance)}`);
+
+  let buffer: any[] = [];
+  let sinTiempo = false;
+
+  const empujar = async () => {
+    if (!buffer.length) return;
+    const r = await prod('/api/admin/reparar', { procs: buffer });
+    estado.reparados += r.reparados || 0;
+    estado.sinCambio += r.sin_cambio || 0;
+    if (r.ausentes) log(`  aviso: ${r.ausentes} ocid del lote ya no están en la base`);
+    buffer = [];
   };
+
+  for (;;) {
+    if (Date.now() - t0 > budgetMs) { sinTiempo = true; break; }
+
+    const { ids } = await prod('/api/admin/ocids-a-reparar',
+      { criterio: estado.criterio, limite: 500, desde: estado.desde });
+
+    if (!ids.length) {
+      // Fin de una pasada. Si hubo fallos de red, los que no se pudieron traer siguen
+      // cumpliendo el criterio, así que una segunda pasada los recoge. Dos pasadas extra
+      // como máximo: más allá de eso el problema no es transitorio y hay que mirarlo.
+      if (estado.errores > 0 && estado.pase < 3) {
+        log(`  fin de la pasada ${estado.pase} con ${estado.errores} fallos de red; repito desde el inicio`);
+        Object.assign(estado, { desde: '', pase: estado.pase + 1, errores: 0 });
+        guardarEstado(estado);
+        continue;
+      }
+      const i = CRITERIOS.indexOf(estado.criterio);
+      if (soloCriterio || i === CRITERIOS.length - 1) { log(`  criterio "${estado.criterio}" COMPLETO`); break; }
+      log(`  criterio "${estado.criterio}" COMPLETO; sigo con "${CRITERIOS[i + 1]}"`);
+      Object.assign(estado, { criterio: CRITERIOS[i + 1], desde: '', pase: 1, errores: 0 });
+      guardarEstado(estado);
+      continue;
+    }
+
+    for (const ocid of ids) {
+      if (Date.now() - t0 > budgetMs) { sinTiempo = true; break; }
+      const recData = await sercopFetch(`${RECORD_API}?ocid=${encodeURIComponent(ocid)}`);
+      const release = recData ? releaseFrom(recData) : null;
+      estado.pedidos++;
+      if (!release) { estado.errores++; continue; }
+      try {
+        // MISMO mapeo que la ingesta (regla 11): así el presupuesto se lee de los lotes y la
+        // fecha de preguntas se toma de enquiryPeriod, sin una segunda interpretación.
+        // El año solo alimenta `source_year` y `regime`, y ninguno de los dos se envía en la
+        // reparación (que escribe exclusivamente presupuesto y fecha de preguntas).
+        const proc = releaseToProc(release, null, new Date().getFullYear());
+        buffer.push({ id: ocid, budget_amount: proc.budget_amount, enquiry_deadline: proc.enquiry_deadline });
+        if (buffer.length >= 500) await empujar();
+      } catch (e: any) { estado.errores++; log(`  mapeo ${ocid}: ${e.message}`); }
+    }
+
+    await empujar();
+    // El cursor avanza SOLO después de empujar el lote: si el proceso muere entre medias, la
+    // próxima corrida repite ese tramo, que es idempotente, en vez de saltárselo.
+    estado.desde = ids[ids.length - 1];
+    guardarEstado(estado);
+    const mins = ((Date.now() - t0) / 60000).toFixed(1);
+    log(`  [${estado.criterio}] pedidos ${estado.pedidos} · reparados ${estado.reparados} · sin cambio ${estado.sinCambio} · fallos ${estado.errores} · ${mins} min`);
+  }
+
+  await empujar();
+  guardarEstado(estado);
+  log(`RELLENADO ${sinTiempo ? 'PARCIAL (se acabó el tiempo; el cursor quedó guardado)' : 'TERMINADO'}: ` +
+      `pedidos ${estado.pedidos}, reparados ${estado.reparados}, sin cambio ${estado.sinCambio}, fallos ${estado.errores}`);
+
+  if (estado.reparados > 0) {
+    // Re-evaluación de banderas. Tarda entre 5 y 11 minutos y el proxy de Railway corta a los
+    // 300 s con un `upstream error` AUNQUE EL TRABAJO SIGA BIEN: por eso no se concluye por la
+    // respuesta HTTP, sino comprobando después el avance por los datos.
+    log('re-evaluando banderas en producción (esto tarda de 5 a 11 min; un corte del proxy NO significa que falló)…');
+    try {
+      const fin = await prod('/api/admin/reparar-finalize', {}, 1);
+      log(`re-evaluación: ${JSON.stringify(fin)}`);
+    } catch (e: any) {
+      log(`la respuesta HTTP se cortó (${e.message}). Es lo esperado si pasó de 300 s; el servidor sigue trabajando.`);
+    }
+  }
+  const fin = await prod('/api/admin/avance-reparacion', {}, 2).catch(() => null);
+  if (fin) log(`estado final en producción: ${JSON.stringify(fin)}`);
+  log('OK');
+  process.exit(0);
 }
 
 function readCursor(year: number): { termIdx: number; page: number } {
@@ -174,6 +263,13 @@ async function main() {
   const terms = oneTerm ? [oneTerm] : TERMS;
 
   if (!TOKEN) { console.error('Falta el token: crea el archivo .sync-token o exporta OICP_SYNC_TOKEN'); process.exit(1); }
+
+  // Modo rellenado: no barre novedades, repara lo ya ingerido pidiéndolo otra vez a la fuente.
+  // Es un trabajo de fondo de varias horas, así que trae su propio presupuesto de tiempo.
+  if (args.includes('--reparar')) {
+    await reparar(Number(argOf('--budget-min')) || 600, argOf('--criterio'));
+    return;
+  }
 
   // Recuperación: si una corrida anterior murió (apagado/batería) después de
   // ingerir pero antes de finalizar, la finalización quedó pendiente en el
