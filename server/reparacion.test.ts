@@ -24,14 +24,18 @@ process.env.DB_PATH = path.join(TMP, 'reparacion.db');
 process.env.JWT_SECRET = '';
 
 const { migrate, getDb, upsertProcedure } = await import('./db.js');
-const { ingestProcs, repararProcs, ocidsAReparar, reflagChanged } = await import('./updater.js');
+const { ingestProcs, repararProcs, ocidsAReparar, reflagChanged, repararRegimen } = await import('./updater.js');
+const { callTool, buildAnalytics } = await import('./mcp-server.js');
 
 // Una fila igual a las que hay en producción: el texto "USD" donde debería ir el monto.
 function filaRota(id: string, anio = 2024, extra: Record<string, any> = {}) {
   return {
     id, ocid: id, title: `Proceso ${id}`, description: `Objeto del proceso ${id}`,
     status: 'award', procurement_method: 'open', procurement_method_details: 'Subasta Inversa Electronica',
-    buyer_id: 'EC-RUC-9999999990', buyer_name: 'ENTIDAD DE PRUEBA',
+    // Forma EXACTA de los buyer_id de producción: RUC de 13 dígitos + guion + código interno.
+    // Importa para la prueba de oicp_buyer_profile: al quedarse solo con los dígitos, este id se
+    // convierte en '1768152800001238940', que no casa con ningún LIKE sobre el id real.
+    buyer_id: 'EC-RUC-1768152800001-238940', buyer_name: 'ENTIDAD DE PRUEBA',
     budget_amount: 'USD',                       // <- exactamente lo que hay en producción
     budget_currency: 'USD', award_amount: 16990, contract_amount: null, final_amount: null,
     published_date: `${anio}-12-30T20:00:00-05:00`,
@@ -172,6 +176,50 @@ test('el criterio "enquiry" solo trae los de la ventana del Art. 96 (desde el 28
 
 test('un criterio desconocido se rechaza, no se interpola en el SQL', () => {
   assert.throws(() => ocidsAReparar("presupuesto' OR 1=1 --" as any, 10, ''), /criterio/i);
+});
+
+// ── Régimen normativo publicado ──────────────────────────────────────────────
+test('el régimen se recomputa desde la fecha: un proceso de 2023 no puede decir "reformada"', async () => {
+  const db = getDb();
+  // Réplica de lo que hay en producción: una vía de ingesta antigua escribió 'LOIP' en 627 834
+  // procesos de 2023 a 2026, y la ficha lo traducía a «LOSNCP reformada (desde el 7-oct-2025)».
+  upsertProcedure(filaRota('r2023', 2023, { regime: 'LOIP', published_date: '2023-05-10T12:00:00-05:00' }));
+  upsertProcedure(filaRota('r2024', 2024, { regime: 'LOIP', published_date: '2024-07-01T12:00:00-05:00' }));
+  upsertProcedure(filaRota('r2025ago', 2025, { regime: 'LOIP', published_date: '2025-08-20T12:00:00-05:00' }));
+  upsertProcedure(filaRota('r2025nov', 2025, { regime: 'LOIP', published_date: '2025-11-20T12:00:00-05:00' }));
+
+  const r = await repararRegimen();
+  assert.ok(r.corregidos >= 3, `debería corregir al menos los tres anteriores a la reforma; corrigió ${r.corregidos}`);
+
+  const reg = (id: string) => (db.prepare(`SELECT regime FROM procedures WHERE id=?`).get(id) as any).regime;
+  assert.equal(reg('r2023'), 'LOSNCP_COEFICIENTES', 'mayo de 2023 es anterior a la reforma');
+  assert.equal(reg('r2024'), 'LOSNCP_COEFICIENTES', 'julio de 2024 es anterior a la reforma');
+  assert.equal(reg('r2025ago'), 'LOSNCP_COEFICIENTES', 'agosto de 2025 sigue siendo anterior al 7-oct-2025');
+  assert.equal(reg('r2025nov'), 'LOSNCP_REFORMADA', 'noviembre de 2025 sí es posterior a la reforma');
+});
+
+test('no queda ningún identificador de régimen fuera del catálogo publicado', () => {
+  const filas = getDb().prepare(`SELECT DISTINCT regime FROM procedures`).all() as any[];
+  const validos = new Set(['LOSNCP_COEFICIENTES', 'LOSNCP_REFORMADA']);
+  for (const f of filas) {
+    assert.ok(validos.has(f.regime), `régimen "${f.regime}" no está en el catálogo que traduce la ficha`);
+  }
+});
+
+test('recomputar el régimen es idempotente: la segunda pasada no corrige nada', async () => {
+  const r = await repararRegimen();
+  assert.equal(r.corregidos, 0, 'si vuelve a corregir es que el cálculo no es estable');
+});
+
+test('oicp_buyer_profile acepta el buyer_id que devuelve oicp_top_buyers (encadenar las herramientas)', () => {
+  const db = getDb();
+  buildAnalytics(db);
+  const top: any = callTool(db, 'oicp_top_buyers', { metric: 'monto', limit: 1 });
+  const buyerId = top.top?.[0]?.buyer_id;
+  assert.ok(buyerId, 'oicp_top_buyers tiene que devolver un buyer_id');
+  const perfil: any = callTool(db, 'oicp_buyer_profile', { query: buyerId });
+  assert.ok(!perfil.error, `oicp_buyer_profile no encontró el id que dio oicp_top_buyers: ${perfil.error}`);
+  assert.equal(perfil.buyer_id, buyerId, 'y tiene que ser el MISMO comprador, no otro que se le parezca');
 });
 
 const activas = (id: string) => {

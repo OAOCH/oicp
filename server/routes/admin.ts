@@ -570,6 +570,15 @@ router.post('/reparar', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+router.post('/reparar-regimen', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const { repararRegimen, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(await repararRegimen());
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/reparar-finalize', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {
@@ -581,10 +590,21 @@ router.post('/reparar-finalize', async (req, res) => {
 
 // Avance del rellenado, para poder verificarlo por los DATOS y no por la respuesta HTTP.
 // Recorre la tabla, así que es deliberadamente de consulta manual y no de sondeo.
+// Avance del rellenado. Recorre `procedures` entero (no hay índice por el TIPO de una columna),
+// y better-sqlite3 es SÍNCRONO: sobre 1,47 M filas y ~2,5 GB eso bloquea el único hilo de Node
+// varios segundos. Ya hubo dos congelamientos de producción por rutas que recorrían esta tabla
+// dentro de la petición HTTP, así que el resultado se cachea 5 minutos. El rellenado avanza en
+// horas: una foto de hace 5 minutos es igual de útil y no puede tumbar nada por refrescar.
+let avanceCache: { at: number; valor: any } | null = null;
+const AVANCE_TTL_MS = 5 * 60_000;
+
 // GET para poder abrirlo en el navegador con la sesión iniciada; POST para el barrido local.
 router.all('/avance-reparacion', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {
+    if (avanceCache && Date.now() - avanceCache.at < AVANCE_TTL_MS) {
+      return res.json({ ...avanceCache.valor, medido_hace_seg: Math.round((Date.now() - avanceCache.at) / 1000) });
+    }
     const db = getDb();
     const r = db.prepare(`SELECT
         COUNT(*) AS total,
@@ -594,7 +614,8 @@ router.all('/avance-reparacion', async (req, res) => {
         SUM(CASE WHEN enquiry_deadline IS NOT NULL THEN 1 ELSE 0 END) AS con_enquiry,
         SUM(CASE WHEN enquiry_deadline IS NULL AND published_date >= '2025-10-28' THEN 1 ELSE 0 END) AS falta_enquiry_art96
       FROM procedures`).get();
-    res.json(r);
+    avanceCache = { at: Date.now(), valor: r };
+    res.json({ ...(r as any), medido_hace_seg: 0 });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

@@ -1,7 +1,113 @@
-# ESTADO — actualizado 2026-08-11 (tarde)
+# ESTADO — actualizado 2026-08-12
 
 > **Lee primero esta sección.** Lo que sigue después conserva el historial de las auditorías
 > anteriores y tiene tramos que ya quedaron superados; donde haya contradicción, manda lo de aquí.
+
+## 2026-08-12 — el rellenado, y las dos afirmaciones falsas que lo habrían hecho fracasar
+
+El traspaso anterior daba por buenas dos cosas sobre el rellenado de los 174 547 presupuestos.
+**Las dos eran falsas, y cada una por separado bastaba para que el trabajo corriera 16 horas
+contra la API del SERCOP y no reparara ni una sola fila, sin error y sin aviso.**
+
+1. **«Reutiliza `/api/admin/ingest`, que ya hace upsert por ocid».** No lo hace. `ingestProcs()`
+   salta los ocid que ya existen (`updater.ts`: `if (exists.get(raw.id)) { skipped++; continue; }`)
+   porque es un barrido de novedades. La respuesta habría sido `skipped: 174547`.
+2. **«La lectura ya está corregida y la usan los dos caminos de ingesta».** Había un TERCER
+   camino: `local-sync.ts` tenía su propia copia de `releaseToProc`, sin corregir. Y es el único
+   que llega de verdad al SERCOP, porque Railway tiene la IP bloqueada. **Cada corrida programada
+   de martes y jueves seguía guardando el texto `"USD"` y `enquiry_deadline` en nulo.** Regla 11
+   rota en el mismo sitio donde ya había costado horas.
+
+### Lo que se construyó y quedó desplegado (`adbda4a`, `6543817`)
+
+- **`server/ocds-proc.ts`**: el mapeo OCDS → fila, en UNA sola definición, importado por
+  `updater.ts` y por `local-sync.ts`. Una prueba falla si algún archivo vuelve a definir el suyo.
+- **Reparador aparte del ingestor**: escribe SOLO `budget_amount` y `enquiry_deadline`, y hay una
+  prueba que compara columna por columna y falla si toca cualquier otra. Es lo que hace imposible
+  desincronizar los agregados `a_*`: se construyen con `MONTO_SQL` (adjudicado/contratado/final) y
+  con el texto de la ficha. Verificado además que el índice de concentración no depende del
+  presupuesto (`SQL_ES_INFIMA_POR_MONTO` usa `award_amount`).
+- **`POST /api/admin/ocids-a-reparar`** (cursor por clave primaria, criterio resuelto contra una
+  tabla fija y nunca interpolado), **`POST /api/admin/reparar`**, **`POST /api/admin/reparar-finalize`**
+  (solo re-evalúa banderas: reconstruir concentración sería riesgo de escritura masiva para nada) y
+  **`/api/admin/avance-reparacion`**, cacheado 5 minutos porque recorre la tabla entera.
+- **Modo `--reparar` en `local-sync.ts`**, reanudable por cursor en disco, con segunda pasada para
+  los fallos de red. Se lanza con `run-rellenado.cmd`.
+- **20 pruebas nuevas**: 143 → 163.
+
+### Un defecto propio, encontrado releyendo antes de soltar nada
+
+La primera versión del barrido avanzaba el cursor al último id de la página aunque se hubiera
+quedado sin tiempo a mitad. Los no procesados **no se habrían vuelto a pedir nunca** y el
+rellenado se habría dado por completo faltando datos: el mismo hueco silencioso que ya dejó el
+barrido por términos. Ahora el cursor sigue al último ocid realmente consumido, con prueba.
+
+### Verificado contra la fuente ANTES de construir
+
+- En los procesos sondeados, `tender.value` viene **ausente** y el monto está en
+  `tender.lots[].value.amount`; `tender.enquiryPeriod.endDate` **sí se publica**.
+- Baseline medido: **174 547** con el texto `"USD"` (18 811 · 13 815 · 20 492 · 35 533 · 26 065 ·
+  30 859 · 23 902 · 5 070 de 2019 a 2026, suma exacta) y `enquiry_deadline` en **0 de 1 470 321**.
+- **El presupuesto es recuperable en el grueso**: Régimen Especial, que es donde la fuente no
+  publica monto, son solo **6 859 de 174 547 (3,9%)**.
+- **La descarga masiva quedó descartada con evidencia**: `/api/records` ignora el filtro por año y
+  fija `per_page` en 15, o sea 184 930 peticiones y ~95 GB. Peor que ir uno por uno.
+- `/api/admin/fix-budget` **no sirve para esto**: mueve `budget_currency` a `budget_amount`, y en
+  estas filas `budget_currency` es NULL. Es la tarjeta «Reparar budget_amount» del panel, la misma
+  que la trampa 2 advierte no pulsar por error. Hoy además es inofensiva porque no encuentra nada.
+
+### CC-01 verificada por ejecución del motor (cerrado)
+
+**103 procesos reales, 0 discrepancias**, con `server/verificar-lote.mjs`. Cubre **69 de los 129
+disparos (53,5%)** y **los 6 años** en que la bandera dispara, con el contexto de concentración
+completo de cada comprador (712 filas de `concentration_index`). Tres controles para que el cero
+signifique algo: el motor **produce** los 69 (no es que ambas puntas omitan); topando
+`infima_count` en 4 el motor **pierde los 69**; y saboteando tres procesos el arnés los delató y
+salió con código 1. En Ministerio del Ambiente 2019 y GAD Cotaló se compararon **todos** sus
+procesos, no solo los que ya tenían CC-01, así que ahí también está descartado el falso negativo.
+Queda sin cubrir: 60 disparos en 9 pares comprador-año, y los falsos negativos fuera de esos dos
+barridos completos.
+
+### La tabla del Art. 96, verificada en fuente primaria (cerrado)
+
+Registro Oficial **Noveno Suplemento 153 de 28-oct-2025, página 69**, extraída del PDF oficial y
+contrastada con una copia independiente y con Lexis:
+
+| Presupuesto referencial (USD) | Término mínimo |
+|---|---|
+| Superior a 10.000 hasta 100.000 | No menor a 2 días |
+| Superior a 100.000 hasta 500.000 | No menor a 4 días |
+| Superior 500.000 a 1.000.000 | No menor a 6 días |
+| 1´000.000 en adelante | No menor a 10 días |
+
+Son **términos**, o sea días hábiles. La tabla **empieza en «superior a 10.000»**: los
+procedimientos de 10.000 o menos no tienen término asignado. El **Decreto Ejecutivo 461**
+(R.O. 3S 337, 30-jul-2026) **no reformó el Art. 96**, ni lo hicieron la fe de erratas (R.O. 7S 155)
+ni los decretos 295 y 356; sí tocaron artículos vecinos, lo que hace más significativo que a este
+lo dejaran intacto.
+
+### El problema abierto de IT-01: el término legal NO es reproducible con los datos abiertos
+
+El Art. 96 cuenta el término «a partir de fenecer la fecha límite para contestar respuestas y
+aclaraciones». Medido contra la fuente:
+
+- Esa fecha **no se publica**. La API da `tender.enquiryPeriod.endDate`, que es la fecha límite
+  para PREGUNTAR, no para responder. Entre una y otra median de 2 a 6 días (Art. 91).
+- El otro extremo tampoco: `tender.tenderPeriod.endDate` **viene vacío en el 93%** de los procesos
+  (204 165 de 219 185 en 2024).
+- Por eso IT-01 solo puede evaluar **106 249 de 1 470 321 procesos (7,2%)**, y dentro de ese
+  universo marca **58 541, el 55,1%**, con mínimos de 9/13/17 días que no salen de ninguna norma.
+
+Está en curso la búsqueda del cronograma público del SERCOP, que sí publica «fecha límite de
+respuestas y aclaraciones» y «fecha límite de entrega de ofertas». **Decisión pendiente de Oscar**
+hasta saber si esas fechas se pueden obtener de forma automatizable.
+
+### El rendimiento de la fuente, medido
+
+`record?ocid=` da **0,13 peticiones por segundo sostenidas** (p50 7,3 s, máximo 10,7 s), no las 3
+que suponía el traspaso. A ese ritmo los 174 547 no son 17 horas sino ~15 días. El límite de tasa
+es duro: 36 peticiones con concurrencia 3 produjeron **21 respuestas 429 con `Retry-After: 24`**.
+Está en curso la búsqueda de una vía más rápida.
 
 ## 2026-08-11 (tarde) — auditoría de verificación y cierre de la regla 10
 

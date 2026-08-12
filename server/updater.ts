@@ -16,7 +16,7 @@ import cron from 'node-cron';
 import type Database from 'better-sqlite3';
 import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
-import { evaluateAllFlags } from './flag-engine.js';
+import { evaluateAllFlags, getRegime } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
 
@@ -681,6 +681,54 @@ export function repararProcs(procs: any[]): {
   // Checkpoint entre lotes: un WAL sin control ya llenó el volumen y corrompió la base (regla 2).
   db.pragma('wal_checkpoint(TRUNCATE)');
   return { reparados, sin_cambio: sinCambio, ausentes, invalidos };
+}
+
+/**
+ * Recomputa la columna `regime` desde la fecha de publicación.
+ *
+ * No necesita ir a la fuente: el régimen es una FUNCIÓN de la fecha, no un dato que publique el
+ * SERCOP. Una vía de ingesta antigua escribió el identificador `LOIP`, que no existe en el resto
+ * del código, en 627 834 procesos de 2023 a 2026, incluidos los muy anteriores a la reforma. La
+ * ficha traducía ese `LOIP` a «LOSNCP reformada (desde el 7-oct-2025)», o sea que un proceso de
+ * 2023 declaraba regirse por una reforma de octubre de 2025. Además 2023 quedó partido entre dos
+ * identificadores según por qué vía hubiera entrado cada proceso.
+ *
+ * Se calcula con `getRegime()`, la MISMA función que usa la ingesta (regla 11): hacerlo con un
+ * CASE en SQL habría creado la segunda definición que este proyecto ya pagó cara.
+ *
+ * El régimen NO entra en el motor de banderas (que usa la tabla `YEAR_DATA` por año), así que
+ * esto no mueve ningún score: corrige lo que se PUBLICA.
+ */
+export async function repararRegimen(): Promise<{ revisados: number; corregidos: number }> {
+  const db = getDb();
+  const LOTE = 5000;
+  const leer = db.prepare(
+    `SELECT id, published_date, source_year, regime FROM procedures WHERE id > ? ORDER BY id LIMIT ?`);
+  const upd = db.prepare(`UPDATE procedures SET regime=? WHERE id=?`);
+  let cursor = '', revisados = 0, corregidos = 0;
+
+  for (;;) {
+    const filas = leer.all(cursor, LOTE) as any[];
+    if (!filas.length) break;
+    cursor = filas[filas.length - 1].id;
+    const cambios: [string, string][] = [];
+    for (const f of filas) {
+      revisados++;
+      // Mismo respaldo que la ingesta cuando la fuente no trae fecha de publicación.
+      const correcto = getRegime(f.published_date || `${f.source_year || 2024}-06-15`);
+      if (correcto !== f.regime) cambios.push([correcto, f.id]);
+    }
+    if (cambios.length) {
+      const tx = db.transaction((lote: [string, string][]) => { for (const c of lote) upd.run(c[0], c[1]); });
+      tx(cambios);
+      // Escritura masiva: checkpoint entre lotes o el WAL crece sin control (regla 2).
+      db.pragma('wal_checkpoint(TRUNCATE)');
+      corregidos += cambios.length;
+    }
+    await yieldLoop();
+  }
+  log(`régimen recomputado: ${corregidos} corregidos de ${revisados} revisados`);
+  return { revisados, corregidos };
 }
 
 /**

@@ -479,9 +479,13 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
     case 'oicp_buyer_profile': {
       const q = String(args?.query || '');
       const d = digits(q);
-      let row: any;
-      if (d.length >= 10) row = db.prepare(`SELECT * FROM a_buyers WHERE buyer_id LIKE ? ORDER BY total_usd DESC`).get(`%${d}%`);
-      else row = db.prepare(`SELECT * FROM a_buyers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q.toUpperCase()}%`);
+      // El buyer_id EXACTO primero. Es lo que devuelven oicp_top_buyers, oicp_search y oicp_sql,
+      // así que encadenar esas herramientas con esta es el uso natural y antes fallaba: al
+      // quedarse solo con los dígitos, 'EC-RUC-1768152800001-238940' se convertía en
+      // '1768152800001238940' y ningún buyer_id (que lleva guiones) casaba con ese LIKE.
+      let row: any = db.prepare(`SELECT * FROM a_buyers WHERE buyer_id = ?`).get(q);
+      if (!row && d.length >= 10) row = db.prepare(`SELECT * FROM a_buyers WHERE buyer_id LIKE ? ORDER BY total_usd DESC`).get(`%${d}%`);
+      if (!row) row = db.prepare(`SELECT * FROM a_buyers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q.toUpperCase()}%`);
       if (!row) row = db.prepare(`SELECT * FROM a_buyers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q}%`);
       if (!row) return { error: `Comprador no encontrado: '${q}'` };
       row.proveedores_top = db.prepare(`SELECT s.name, sb.ruc10, sb.n_procs, sb.total_usd FROM a_supplier_buyer sb

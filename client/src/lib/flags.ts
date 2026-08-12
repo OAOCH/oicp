@@ -82,10 +82,16 @@ export function statusColor(status: string | null | undefined): string {
 // 7-oct-2025, pero el umbral de ínfima ya era de USD 10.000 desde el 7-jul-2025 por la
 // Resolución R.E-SERCOP-2025-0152. Un proceso de agosto de 2025 lleva régimen de coeficientes
 // y umbral de 10.000 a la vez, y la etiqueta anterior lo desmentía en la propia ficha.
+// `LOIP` estuvo aquí traducido como «LOSNCP reformada (desde el 7-oct-2025)», y eso era una
+// AFIRMACIÓN FALSA sobre el marco legal aplicable en 627 834 procesos: una vía de ingesta
+// antigua escribió ese identificador en TODO 2023, 2024, 2025 y 2026, incluidos los procesos
+// anteriores a la reforma. La ficha de un proceso de 2023 declaraba que se rigió por una
+// reforma de octubre de 2025. Los datos se corrigieron recomputando el régimen desde la fecha
+// de publicación, y la etiqueta se retira: si vuelve a aparecer un identificador desconocido,
+// que se muestre tal cual y se note, en vez de afirmar un marco legal que no corresponde.
 const REGIMEN_LABELS: Record<string, string> = {
   LOSNCP_COEFICIENTES: 'LOSNCP · marco previo a la reforma del 7-oct-2025',
   LOSNCP_REFORMADA: 'LOSNCP reformada (desde el 7-oct-2025)',
-  LOIP: 'LOSNCP reformada (desde el 7-oct-2025)',
   LOSNCP: 'LOSNCP',
 };
 
