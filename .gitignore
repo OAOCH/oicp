@@ -15,3 +15,7 @@ rellenado.log
 
 # Volcados masivos del SERCOP (temporales, ~150 MB por anio)
 .volcado-*.zip
+
+# Cursor del indice del SOCE (estado local)
+.soce-cursor.json
+masivo*.log

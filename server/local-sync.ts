@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
 import { crearLimitador } from './limitador.js';
 import { descargarVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
+import { parsearFicha, urlFicha } from './soce-ficha.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -393,6 +394,98 @@ async function repararMasivo(desdeAnio: number, hastaAnio: number) {
   log('OK');
 }
 
+// ── ÍNDICE DEL SOCE (`--indice-soce`) ────────────────────────────────────────
+// Las dos fechas que necesita el Art. 96 (la fecha límite para RESPONDER y la de entrega de
+// ofertas) NO están en los datos abiertos, y sí en la ficha pública del portal. El problema no es
+// leerla: es el enganche. El ocid NO contiene el id interno del proceso (su número final es el de
+// la ENTIDAD), así que no se puede ir del ocid a la ficha. Hay que ir al revés: recorrer los id
+// del portal, leer el CÓDIGO de cada ficha, y cruzar por ese código.
+//
+// Va de MAYOR A MENOR a propósito: los id crecen con el tiempo, así que empezar por el final
+// cubre primero los procesos recientes, que son justamente a los que les aplica la tabla del
+// Art. 96 (vigente desde el 28-oct-2025). Si el barrido se corta a medias, lo cubierto es lo útil.
+//
+// El portal aguantó 260 peticiones sin un solo 429, pero su WAF impide leer el robots.txt, así que
+// no se pudo verificar la política de rastreo declarada: se va a ~1,6 por segundo, un ritmo de
+// persona navegando, y con el mismo limitador que frena a todos los hilos ante un rechazo.
+const SOCE_CURSOR = resolve(ROOT, '.soce-cursor.json');
+const limitadorSoce = crearLimitador(600);
+
+async function fichaSoce(id: number, intentos = 3): Promise<string | null> {
+  for (let a = 1; a <= intentos; a++) {
+    await limitadorSoce.turno();
+    try {
+      const res = await fetch(urlFicha(id), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' },
+        signal: AbortSignal.timeout(45000),
+      });
+      if (res.status === 429) {
+        const ra = Number(res.headers.get('retry-after')) || 20;
+        limitadorSoce.frenar(ra);
+        await sleep(ra * 1000);
+        continue;
+      }
+      if (!res.ok) return null;
+      return await res.text();
+    } catch {
+      if (a === intentos) return null;
+      await sleep(3000 * a);
+    }
+  }
+  return null;
+}
+
+async function indiceSoce(desde: number, hasta: number, budgetMin: number) {
+  const t0 = Date.now(), budgetMs = budgetMin * 60_000;
+  let cursor = hasta;
+  try {
+    const c = JSON.parse(readFileSync(SOCE_CURSOR, 'utf-8'));
+    if (typeof c?.cursor === 'number' && c.cursor <= hasta && c.cursor >= desde) cursor = c.cursor;
+  } catch { /* sin cursor: desde el final */ }
+
+  log(`ÍNDICE SOCE: de ${hasta} bajando hasta ${desde}, reanudando en ${cursor}, presupuesto ${budgetMin} min`);
+  let leidas = 0, conFicha = 0, conFechas = 0, aplicados = 0, sinTestigo = 0, sinProceso = 0;
+  let buffer: any[] = [];
+
+  const empujar = async () => {
+    if (!buffer.length) return;
+    const r = await prod('/api/admin/cronograma', { fichas: buffer });
+    aplicados += r.aplicados || 0;
+    sinTestigo += r.sin_testigo || 0;
+    sinProceso += r.sin_proceso || 0;
+    buffer = [];
+  };
+
+  for (let id = cursor; id >= desde; id--) {
+    if (Date.now() - t0 > budgetMs) { log('  se acabó el tiempo; el cursor queda guardado'); break; }
+    leidas++;
+    const html = await fichaSoce(id);
+    const f = html ? parsearFicha(html, id) : null;
+    if (f) conFicha++;
+    if (f?.codigo && f.fechaLimiteRespuestas && f.fechaLimitePreguntas) {
+      conFechas++;
+      buffer.push({
+        codigo: f.codigo, preguntas: f.fechaLimitePreguntas,
+        respuestas: f.fechaLimiteRespuestas, ofertas: f.fechaLimiteOfertas,
+      });
+      if (buffer.length >= 500) { await empujar(); }
+    }
+    if (leidas % 250 === 0) {
+      await empujar();
+      // El cursor se guarda DESPUÉS de empujar: si el proceso muere entre medias, se repite ese
+      // tramo (que es idempotente) en vez de saltárselo.
+      writeFileSync(SOCE_CURSOR, JSON.stringify({ cursor: id, desde, hasta, leidas, conFicha, conFechas, aplicados, actualizado: new Date().toISOString() }, null, 2));
+      const min = (Date.now() - t0) / 60000;
+      log(`  id ${id} · leídas ${leidas} · con ficha ${conFicha} · con fechas ${conFechas} · aplicadas ${aplicados} · sin testigo ${sinTestigo} · sin proceso ${sinProceso} · ${(leidas / min).toFixed(0)}/min`);
+    }
+    cursor = id;
+  }
+  await empujar();
+  writeFileSync(SOCE_CURSOR, JSON.stringify({ cursor, desde, hasta, leidas, conFicha, conFechas, aplicados, actualizado: new Date().toISOString() }, null, 2));
+  log(`ÍNDICE SOCE: leídas ${leidas}, con ficha ${conFicha}, con las dos fechas ${conFechas}, aplicadas ${aplicados}, sin testigo ${sinTestigo}, sin proceso en la base ${sinProceso}`);
+  log('OK');
+}
+
 function readCursor(year: number): { termIdx: number; page: number } {
   try {
     const c = JSON.parse(readFileSync(CURSOR_FILE, 'utf-8'));
@@ -421,6 +514,16 @@ async function main() {
   // proceso por proceso y baja la carga sobre la fuente de 174.547 peticiones a 8.
   if (args.includes('--reparar-masivo')) {
     await repararMasivo(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
+    process.exit(0);
+  }
+
+  // Índice del SOCE: las dos fechas del Art. 96 que los datos abiertos no publican.
+  if (args.includes('--indice-soce')) {
+    await indiceSoce(
+      Number(argOf('--desde')) || 1430000,   // ~junio de 2019, el inicio del corpus
+      Number(argOf('--hasta')) || 2010000,   // ~mediados de 2026
+      Number(argOf('--budget-min')) || 600,
+    );
     process.exit(0);
   }
 
