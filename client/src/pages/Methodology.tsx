@@ -146,16 +146,23 @@ export default function Methodology() {
             reportaban «2». Ahora la cuenta se hace sobre la fecha calendario y es independiente de
             la zona horaria, así que el mismo intervalo da siempre el mismo número.
           </p>
+          {/* Este párrafo decía «aquí se cuenta el día inicial Y NO SE DESCUENTAN FERIADOS» y
+              contradecía, tres párrafos más arriba y en la misma página, la corrección del
+              11-ago-2026 que sí los descuenta. Publicar dos versiones opuestas de la misma regla
+              es peor que publicar la incompleta: quien la cite no sabe cuál rige (regla 10). */}
           <p>
             <strong>Lo que este conteo todavía NO es:</strong> el término legal. El Código Orgánico
             Administrativo dispone en su Art. 158 que los términos corren «a partir del día hábil
-            siguiente», y en su Art. 159 que se excluyen los feriados. Aquí se cuenta el día inicial
-            y no se descuentan feriados, así que estos dos indicadores miden un intervalo de días
-            laborables, no un término administrativo. Alinearlo exige fijar el calendario de
-            feriados del Art. 65 del Código del Trabajo, con sus tres fiestas móviles y sus reglas
-            de traslado, contrastado contra el calendario oficial de cada año. Está pendiente y se
-            declara aquí en vez de esconderse: <strong>al citar IT-01 o IT-02 conviene verificar las
-            fechas en el portal oficial</strong>.
+            siguiente», y en su Art. 159 que se excluyen los feriados.{' '}
+            <strong>La segunda condición ya se cumple</strong> desde el 11 de agosto de 2026, con el
+            calendario del Art. 65 descrito arriba. <strong>La primera no:</strong> aquí se cuenta el
+            día inicial, así que estos dos indicadores miden un intervalo de días laborables y no un
+            término administrativo, y sobreestiman el término en un día. No se cambió porque mueve el
+            significado de los mínimos de IT-01 (9/13/17), que están pendientes de una decisión sobre
+            a qué tramo del procedimiento corresponden y desde qué fecha aplican; las dos cosas se
+            resuelven juntas o el indicador queda a medio camino. Se declara aquí en vez de
+            esconderse: <strong>al citar IT-01 o IT-02 conviene verificar las fechas en el portal
+            oficial</strong>.
           </p>
         </div>
       </div>
