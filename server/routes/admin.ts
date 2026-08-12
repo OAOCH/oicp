@@ -570,6 +570,15 @@ router.post('/reparar', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+router.post('/reparar-nombres', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const { repararNombresProveedor, updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    res.json(repararNombresProveedor());
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/reparar-regimen', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {

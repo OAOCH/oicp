@@ -24,7 +24,8 @@ process.env.DB_PATH = path.join(TMP, 'reparacion.db');
 process.env.JWT_SECRET = '';
 
 const { migrate, getDb, upsertProcedure } = await import('./db.js');
-const { ingestProcs, repararProcs, ocidsAReparar, reflagChanged, repararRegimen } = await import('./updater.js');
+const { ingestProcs, repararProcs, ocidsAReparar, reflagChanged, repararRegimen,
+  repararNombresProveedor } = await import('./updater.js');
 const { callTool, buildAnalytics } = await import('./mcp-server.js');
 
 // Una fila igual a las que hay en producción: el texto "USD" donde debería ir el monto.
@@ -209,6 +210,41 @@ test('no queda ningún identificador de régimen fuera del catálogo publicado',
 test('recomputar el régimen es idempotente: la segunda pasada no corrige nada', async () => {
   const r = await repararRegimen();
   assert.equal(r.corregidos, 0, 'si vuelve a corregir es que el cálculo no es estable');
+});
+
+// ── Nombres de proveedor que la fuente publica como la cadena "null" ─────────
+test('un proveedor con nombre "null" deja de publicarse así y cae al RUC', () => {
+  const db = getDb();
+  upsertProcedure(filaRota('n001', 2024, {
+    suppliers: [{ id: 'EC-RUC-0992122943001-65215', name: 'null' }],
+    award_amount: 38949437.52,
+  }));
+  // Punto de partida: el dato guardado es la cadena "null", igual que en producción.
+  const crudo = JSON.parse((db.prepare(`SELECT suppliers FROM procedures WHERE id='n001'`).get() as any).suppliers);
+  assert.equal(crudo[0].name, 'null', 'partida: así está guardado hoy en producción');
+
+  buildAnalytics(db);
+  const r = repararNombresProveedor();
+  assert.equal(r.procesos, 1);
+
+  const sups = JSON.parse((db.prepare(`SELECT suppliers FROM procedures WHERE id='n001'`).get() as any).suppliers);
+  assert.equal(sups[0].name, '', 'en el dato se guarda vacío: la verdad es que la fuente no lo publica');
+  assert.equal(sups[0].id, 'EC-RUC-0992122943001-65215', 'y el RUC no se pierde');
+
+  const despues: any = callTool(db, 'oicp_supplier_profile', { query: '0992122943' });
+  assert.match(despues.name, /0992122943/, 'al mostrarlo tiene que caer al RUC, no quedar en blanco');
+  assert.ok(!/null/i.test(despues.name), `sigue publicando "null": ${despues.name}`);
+});
+
+test('reconstruir los agregados no reintroduce el nombre "null"', () => {
+  const db = getDb();
+  buildAnalytics(db);
+  const p: any = callTool(db, 'oicp_supplier_profile', { query: '0992122943' });
+  assert.ok(!/^null$/i.test(p.name), `buildAnalytics volvió a escribir "${p.name}"`);
+  const top: any = callTool(db, 'oicp_top_suppliers', { metric: 'monto', limit: 50 });
+  for (const s of top.top) {
+    assert.ok(!/^(null|undefined)$/i.test(String(s.name)), `el ranking publica "${s.name}" como nombre`);
+  }
 });
 
 test('oicp_buyer_profile acepta el buyer_id que devuelve oicp_top_buyers (encadenar las herramientas)', () => {

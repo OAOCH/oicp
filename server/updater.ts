@@ -15,7 +15,7 @@
 import cron from 'node-cron';
 import type Database from 'better-sqlite3';
 import { getDb, rebuildConcentrationIndex, upsertProcedure } from './db.js';
-import { releaseFrom, releaseToProc } from './ocds-proc.js';
+import { releaseFrom, releaseToProc, limpiarNombre, nombreVisible } from './ocds-proc.js';
 import { evaluateAllFlags, getRegime } from './flag-engine.js';
 import { analyticsReady } from './mcp-server.js';
 import { invalidateStatsCache } from './cache.js';
@@ -174,7 +174,8 @@ export function patchAggregatesForNew(db: Database.Database, procs: any[]) {
       const cnt = { c: rl === 'critical' ? 1 : 0, h: rl === 'high' ? 1 : 0, mo: rl === 'moderate' ? 1 : 0, lo: (rl === 'low' || !rl) ? 1 : 0 };
       const sups = uniqueRuc10(p.suppliers);
       for (const { r10, name } of sups) {
-        upSup.run({ r: r10, name, m: monto, y, ...cnt });
+        // El nombre se guarda ya resuelto: si la fuente publica basura ("null"), cae al RUC.
+        upSup.run({ r: r10, name: nombreVisible(name, r10), m: monto, y, ...cnt });
         if (p.buyer_id) {
           upSb.run({ r: r10, b: p.buyer_id, bn: p.buyer_name || '', m: monto, y });
           setNb.run((nBuyers.get(r10) as any).n, r10);
@@ -699,6 +700,54 @@ export function repararProcs(procs: any[]): {
  * El régimen NO entra en el motor de banderas (que usa la tabla `YEAR_DATA` por año), así que
  * esto no mueve ningún score: corrige lo que se PUBLICA.
  */
+/**
+ * Nombres de proveedor que la fuente publica como la CADENA "null".
+ *
+ * Son 19 proveedores en 83 procesos, pero uno de ellos mueve USD 38,9 millones y salía en el
+ * top 10 del perfil de CELEC EP llamándose «null». No es cosmético: es una tabla de proveedores
+ * del Estado con una fila sin identificar. Se limpia el dato guardado (a cadena vacía, que es la
+ * verdad: no lo publican) y quien lo muestre cae al RUC con `nombreVisible()`.
+ *
+ * No hace falta ir a la fuente: el RUC ya está en el mismo objeto.
+ */
+export function repararNombresProveedor(): { procesos: number; agregados: number } {
+  const db = getDb();
+  const filas = db.prepare(
+    `SELECT id, suppliers FROM procedures WHERE suppliers LIKE '%"name":"null"%' OR suppliers LIKE '%"name":"undefined"%'`)
+    .all() as any[];
+  const upd = db.prepare(`UPDATE procedures SET suppliers=? WHERE id=?`);
+  const rucs = new Set<string>();
+  const tx = db.transaction((lote: any[]) => {
+    for (const f of lote) {
+      let sups: any[] = [];
+      try { sups = JSON.parse(f.suppliers || '[]'); } catch { continue; }
+      const limpio = sups.map(s => ({ ...s, name: limpiarNombre(s?.name) }));
+      for (const { r10 } of uniqueRuc10(limpio)) rucs.add(r10);
+      upd.run(JSON.stringify(limpio), f.id);
+    }
+  });
+  tx(filas);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+
+  // Los agregados guardan el nombre ya resuelto, porque los leen seis pantallas distintas y
+  // repetir el respaldo en cada una sería seis copias de la misma regla (regla 11).
+  let agregados = 0;
+  if (analyticsReady(db)) {
+    const updSup = db.prepare(`UPDATE a_suppliers SET name=? WHERE ruc10=?`);
+    const txa = db.transaction(() => {
+      for (const r10 of rucs) { updSup.run(nombreVisible('', r10), r10); agregados++; }
+      for (const r of db.prepare(
+        `SELECT ruc10 FROM a_suppliers WHERE name='null' OR name='undefined' OR name=''`).all() as any[]) {
+        updSup.run(nombreVisible('', r.ruc10), r.ruc10); agregados++;
+      }
+    });
+    txa();
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+  log(`nombres de proveedor: ${filas.length} procesos limpiados, ${agregados} agregados corregidos`);
+  return { procesos: filas.length, agregados };
+}
+
 export async function repararRegimen(): Promise<{ revisados: number; corregidos: number }> {
   const db = getDb();
   const LOTE = 5000;

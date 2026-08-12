@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import DatabaseCtor from 'better-sqlite3';
 import type Database from 'better-sqlite3';
 import { hidratarBanderas } from './flag-engine.js';
+import { nombreVisible } from './ocds-proc.js';
 
 const PROD = 'https://oicp-production.up.railway.app';
 const DISCLAIMER = 'Los indicadores son señales analíticas basadas en datos públicos OCDS del SERCOP; NO constituyen evidencia ni acusación de irregularidad. Verificar siempre en la fuente oficial.';
@@ -191,7 +192,9 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
   const insCrit = wdb.prepare(`INSERT INTO a_supplier_critical VALUES (?,?,?,?,?,?)`);
   wdb.transaction(() => {
     for (const [r10, v] of sup) {
-      insSup.run(r10, v.name, v.n, Math.round(v.t * 100) / 100, v.fy, v.ly, v.buyers.size, v.crit, v.high, v.mod, v.low);
+      // Nombre ya resuelto: la fuente publica la cadena "null" como nombre en algunos
+      // proveedores y así salía en los rankings. Con esto cae al RUC (ver ocds-proc.ts).
+      insSup.run(r10, nombreVisible(v.name, r10), v.n, Math.round(v.t * 100) / 100, v.fy, v.ly, v.buyers.size, v.crit, v.high, v.mod, v.low);
       v.top.sort((a, b) => b.score - a.score);
       for (const t of v.top.slice(0, 5)) insCrit.run(r10, t.ocid, t.score, t.rl, t.y, Math.round(t.m * 100) / 100);
     }

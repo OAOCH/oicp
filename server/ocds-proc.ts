@@ -22,6 +22,29 @@ import { valorReferencial } from './ocds-valor.js';
 import { getRegime } from './flag-engine.js';
 
 /**
+ * Nombres basura que la fuente publica como si fueran nombres.
+ *
+ * En 83 procesos el SERCOP publica la CADENA "null" como nombre del proveedor, y pasaba tal cual
+ * hasta la ficha y hasta los agregados: en el perfil de CELEC EP, un proveedor con USD 38,9
+ * millones aparecía en el top 10 llamándose «null». Se normalizan a cadena vacía, y quien muestre
+ * el dato cae al RUC con `nombreVisible()`. No se inventa un nombre: se dice que no lo publican.
+ */
+const NOMBRES_BASURA = new Set(['null', 'undefined', 'n/a', 'na', 'sin nombre', '-', '--', '.']);
+
+export function limpiarNombre(nombre: any): string {
+  const s = String(nombre ?? '').trim();
+  return NOMBRES_BASURA.has(s.toLowerCase()) ? '' : s;
+}
+
+/** Qué mostrar cuando la fuente no publica el nombre. UNA sola definición para web y MCP. */
+export function nombreVisible(nombre: any, id: any): string {
+  const n = limpiarNombre(nombre);
+  if (n) return n;
+  const ruc = String(id ?? '').match(/\d{10,13}/)?.[0];
+  return ruc ? `Proveedor sin nombre publicado (RUC ${ruc})` : 'Proveedor sin nombre publicado';
+}
+
+/**
  * Extrae el release vigente de un record OCDS.
  * La API devuelve `releases` al nivel superior; se acepta también el formato antiguo
  * `records[0].releases`. Se toma el ÚLTIMO, que es el estado más reciente del proceso.
@@ -38,10 +61,13 @@ export function releaseToProc(release: any, sr: any, year: number) {
   const fa = aw[0] || {}, fc = co[0] || {};
   const suppliers: any[] = [];
   for (const a of aw) for (const s of (a.suppliers || [])) {
-    const id = s.id || s.identifier?.id || '', name = s.name || '';
+    const id = s.id || s.identifier?.id || '', name = limpiarNombre(s.name);
     if ((id || name) && !suppliers.find(x => x.id === id && x.name === name)) suppliers.push({ id, name });
   }
-  if (!suppliers.length && sr?.suppliers && typeof sr.suppliers === 'string') suppliers.push({ id: '', name: sr.suppliers });
+  if (!suppliers.length && sr?.suppliers && typeof sr.suppliers === 'string') {
+    const n = limpiarNombre(sr.suppliers);
+    if (n) suppliers.push({ id: '', name: n });
+  }
   const md = t.procurementMethodDetails || sr?.internal_type || '';
   let m = t.procurementMethod || sr?.method || '';
   if (!m) { const d = md.toLowerCase(); m = d.includes('ínfima') || d.includes('infima') ? 'limited' : d.includes('especial') ? 'selective' : d.includes('catálogo') || d.includes('catalogo') ? 'direct' : 'open'; }
