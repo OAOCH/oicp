@@ -13,19 +13,24 @@
 Retomo el OICP (Observatorio de Integridad de Contratación Pública del Ecuador). Soy Oscar,
 abogado, no técnico: resuelve lo técnico tú y explícame en lenguaje llano.
 
-## Lo primero: hay un trabajo de fondo CORRIENDO en mi PC
+## Lo primero: el rellenado YA TERMINÓ, y hay otro trabajo de fondo corriendo
 
-El **rellenado de presupuestos** está en marcha. No lo reinicies, no lo dupliques y no lo des por
-terminado sin mirar los datos.
+**El rellenado de presupuestos está hecho y verificado.** 173 250 procesos reparados en 27,7
+minutos por los volcados masivos del SERCOP. `con_texto_usd` está en **0 en los ocho años**,
+`enquiry_deadline` pasó de 0 a **154 682**, y el reflag movió **92 506** procesos. No hay que
+volver a correrlo; la tarea diaria lo comprueba y sale enseguida si no hay nada.
 
-- Tarea de Windows **«OICP Rellenado presupuestos»**, diaria a las 21:00, hasta 11 h por corrida.
-- Reanudable: cursor en `.sync-repair-cursor.json`. Se puede apagar el equipo sin perder nada.
-- **Verifica el avance así**, y solo así:
-  `https://oicp-production.up.railway.app/api/admin/avance-reparacion?fresco=1`
-  Tiene que bajar `con_texto_usd` desde 174 547 hacia 0. También está en `rellenado.log` y en la
-  página de Metodología, que publica la cifra medida al cargar.
-- Ritmo medido: **0,9 procesos por segundo con 20 hilos**, o sea unas **54 horas** en total.
-- Cuando `con_texto_usd` llegue a 0, **el trabajo pendiente es el recálculo** (ver más abajo).
+**Lo que SÍ está corriendo es el índice del SOCE**, que trae las dos fechas del Art. 96:
+
+- Tarea de Windows **«OICP Indice SOCE Art96»**, diaria a las 22:00, hasta 11 h por corrida.
+- Va de lo más nuevo hacia atrás, a ~1,6 peticiones por segundo. Reanudable por
+  `.soce-cursor.json`. Se puede apagar el equipo sin perder nada.
+- Es un trabajo de varios días. **Verifica el avance en `indice-soce.log`**: la línea de progreso
+  trae `aplicadas`, que es lo que importa.
+- **IT-01 se va activando solo** según ese índice se llena: no hay que tocar el motor.
+
+Y para el presupuesto, la verificación sigue siendo:
+`https://oicp-production.up.railway.app/api/admin/avance-reparacion?fresco=1`
 
 ## Lee esto primero
 
@@ -51,16 +56,16 @@ terminado sin mirar los datos.
 
 # LO QUE FALTA
 
-## 1. El recálculo, cuando el rellenado llegue a cero
+## 1. El índice del SOCE, que es lo único grande que sigue en marcha
 
-Con los presupuestos puestos, **IP-02 puede pasar de 5 disparos a bastantes más, y eso es
-correcto**: hoy no dispara en esos procesos porque no tiene con qué comparar. También se mueven
-TR-01 (deja de marcar los que ya tienen valor conocido) e IC-02 (usa el presupuesto como respaldo
-cuando no hay adjudicado).
+Corre solo. Lo que hay que vigilar es que **`aplicadas` suba** en `indice-soce.log`. Si se queda en
+cero corrida tras corrida, el problema es el cruce, no el barrido: revisa que la fecha límite de
+preguntas del portal esté coincidiendo con `enquiry_deadline`.
 
-El barrido ya lanza `reparar-finalize` al terminar cada corrida, así que el reflag se aplica solo.
-Lo que tienes que hacer es **verificar por los datos**: captura la línea base con `oicp_flag_stats`
-antes, y comprueba después que los cuatro niveles de riesgo siguen sumando el total exacto.
+Cuando la cobertura sea apreciable, **vuelve a medir IT-01**: los procesos que pasen al régimen (A)
+se evalúan contra el término legal y su detalle empieza por «Art. 96:». Captura la línea base con
+`oicp_flag_stats` antes de cada recálculo y comprueba después que los cuatro niveles de riesgo
+siguen sumando 1 470 321 exacto.
 
 ## 2. IT-01: decisión de Oscar, pendiente
 

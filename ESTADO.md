@@ -217,7 +217,59 @@ referencial en el resto, cuyo detalle **ahora dice que es referencial y que no r
 Art. 96**. Desplegarlo no movió ningún score porque `answer_deadline` está vacío: lo único que
 cambió es el texto.
 
-### El rellenado está CORRIENDO
+### EL RELLENADO TERMINÓ, y está verificado por los datos
+
+**27,7 minutos.** 1 520 444 releases recorridos, 198 652 de la lista encontrados, **173 250
+reparados**, 25 402 sin cambio. Los ocho años cuadran contra lo que declara la fuente
+(las diferencias de 1 y de 22 son del propio contador del SERCOP, que ya se le vieron al medir):
+
+| Año | Leídos | Declarados | De la lista |
+|---|---|---|---|
+| 2019 | 275 055 | 275 055 | 0 |
+| 2020 | 160 676 | 160 676 | 775 |
+| 2021 | 167 058 | 167 058 | 20 412 |
+| 2022 | 212 324 | 212 324 | 35 139 |
+| 2023 | 217 913 | 217 914 | 25 899 |
+| 2024 | 219 185 | 219 186 | 30 600 |
+| 2025 | 187 988 | 187 988 | 40 927 |
+| 2026 | 80 245 | 80 267 | 44 900 |
+
+**Estado final, medido:**
+
+| | Antes | Ahora |
+|---|---|---|
+| Con el TEXTO `"USD"` | 174 547 | **0 en los ocho años** |
+| Con `enquiry_deadline` | 0 | **154 682** |
+| Sin presupuesto porque la fuente no lo publica | 3 233 | 13 128 |
+| Falta `enquiry_deadline` en la ventana del Art. 96 | 68 104 | 51 707 |
+
+Los 13 128 sin presupuesto **son la verdad, no un fallo**: son procesos donde el SERCOP no lo
+publica, casi todos porque en el corte del volcado seguían en fase de planificación. Antes esos
+mismos figuraban con la palabra «USD» como si fuera un monto, y **eso hacía que TR-01 no los
+marcara como información incompleta**. Ahora sí.
+
+**El reflag cambió 92 506 procesos.** Cifras nuevas, con el invariante exacto
+(10 079 + 46 618 + 1 332 879 + 80 745 = 1 470 321):
+
+| Indicador | Antes | Ahora | Por qué |
+|---|---|---|---|
+| TR-03 | 45 969 | **48 617** | con el presupuesto conocido, más procesos superan el umbral |
+| IP-01 | 16 140 | **16 417** | ídem, caen en la banda del 85 al 100% |
+| TR-01 | 52 940 | **52 915** | los que ya tienen valor conocido dejan de marcarse por ese motivo |
+| IP-02 | 5 | **5** | *ver abajo* |
+
+**IP-02 sigue en 5, y eso es el resultado, no un fallo.** Se esperaba que subiera, pero el
+indicador exige `award_amount > 0` y la inmensa mayoría de los procesos reparados están en fase de
+oferta, sin adjudicado. Donde sí hay ambos, adjudicar por encima del referencial sigue siendo casi
+inexistente en estos datos, que es justo lo que la metodología ya declaraba.
+
+**Cadena completa verificada en un proceso con nombre**, `ocds-5wno2w-SIE-CELECEP-2024-04422-238940`:
+presupuesto **536 037,63** (era el texto «USD», y coincide al centavo con lo que se comprobó contra
+la API al empezar la sesión), `enquiry_deadline` puesta, régimen corregido de `LOIP` a
+`LOSNCP_COEFICIENTES`, y el detalle de TR-01 pasó de «Faltan: **valor**, proveedor» a «Faltan:
+proveedor».
+
+### Cómo quedó el rellenado corriendo
 
 Validado con lote chico contra producción antes de soltarlo: **119 pedidos, 119 reparados, 0
 fallos**, y verificado por los datos (en el tramo procesado no queda ni un `"USD"`: 500 numéricos y
