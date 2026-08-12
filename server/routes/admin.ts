@@ -570,6 +570,23 @@ router.post('/reparar', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Boleta de verificación de UN año: re-evalúa TODOS sus procesos con el motor real y cuadra los
+// agregados. Sin muestreo. Es la misma maquinaria del recálculo pero sin escribir.
+router.post('/verificar-anio', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year) || year < 2015 || year > 2100) {
+    return res.status(400).json({ error: 'year requerido (2015-2100)' });
+  }
+  try {
+    const { verificarAnio } = await import('../verificar-anio.js');
+    const { updateJob } = await import('../updater.js');
+    // Con el actualizador escribiendo, media boleta compararía contra un blanco móvil.
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; la boleta compararía contra datos que están cambiando.' });
+    res.json(await verificarAnio(year));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/reparar-nombres', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   try {
