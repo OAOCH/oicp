@@ -1,244 +1,256 @@
 # Prompt para la siguiente sesión del OICP
 
 > Copia TODO lo que está debajo de la línea y pégalo como primer mensaje de una sesión nueva
-> abierta en `C:\Users\oscar\oicp-work\oicp`. Está escrito para ser autosuficiente: no necesita
-> preguntarle nada a la sesión anterior.
+> abierta en `C:\Users\oscar\oicp-work\oicp`. Está escrito para ser autosuficiente.
+>
+> **Escrito el 2026-08-11 a las 23:55 UTC, tras una sesión de auditoría de nueve despliegues y
+> tres recálculos.** Todo lo que afirma como verificado se comprobó ejecutando algo y leyendo la
+> salida. Lo que NO está verificado está marcado como tal, y esa distinción es deliberada: la
+> versión anterior de este archivo daba por buenas cosas que resultaron falsas y eso costó horas.
 
 ---
 
 Retomo el OICP (Observatorio de Integridad de Contratación Pública del Ecuador). Soy Oscar,
 abogado, no técnico: resuelve lo técnico tú y explícame en lenguaje llano.
 
-**El objetivo de esta sesión es que la plataforma quede lista para venderse.** Va a ser auditada
-por un equipo de expertos en desarrollo, datos, metodología, seguridad jurídica y UX. Quiero que
-cuando entren a revisar el código, los datos y la arquitectura, la conclusión sea que la
-plataforma vale lo que dice valer. No quiero "casi listo": quiero cada criterio con su respaldo
-citable, cada cifra verificada contra producción, y cada pantalla probada en caliente.
+**Queda muy poco por hacer y quiero que lo termines.** La sesión anterior cerró casi todo. Lo que
+falta está especificado abajo con precisión suficiente para que no tengas que investigarlo otra
+vez. Lo único que puede quedar pendiente al final es ampliar el volumen de Railway, porque eso
+cuesta dinero y lo decido yo.
 
-## Lee esto primero, en este orden, y no asumas nada que no esté ahí
+## Lee esto primero
 
-1. `CLAUDE.md` — lo estable: stack, estructura, cómo desplegar, las 13 reglas invariantes, qué no
-   tocar nunca.
-2. `ESTADO.md` — lo cambiante: qué está listo, qué quedó a medias, decisiones tomadas con su
-   alternativa descartada, errores conocidos y cómo se resolvieron.
-3. `server/flag-engine.ts` — el motor de los 15 indicadores. Es la fuente de verdad de la
+1. `ESTADO.md` — el estado real, con las tres tandas del 11-ago al inicio.
+2. `server/flag-engine.ts` — el motor de los 15 indicadores. Es la fuente de verdad de la
    metodología. Todo lo que se publica tiene que coincidir con él (regla 10).
+3. `server/ocds-valor.ts` — pequeño, léelo entero: explica el defecto de lectura del presupuesto
+   que es la causa del trabajo pendiente número 1.
 
-## Accesos que tienes disponibles
+## Accesos
 
 - **Repo**: `C:\Users\oscar\oicp-work\oicp`, rama `main`, `github.com/OAOCH/oicp`. El push está
-  autenticado y funciona sin pedir credenciales.
-- **Producción**: https://oicp-production.up.railway.app — desplegar es `git push origin main`.
-  Railway observa el repo. Verifica con `/api/version` que el commit desplegado sea el tuyo.
+  autenticado y despliega solo: Railway observa el repo.
+- **Producción**: https://oicp-production.up.railway.app — verifica con `/api/version` que el
+  commit desplegado sea el tuyo, y con `/api/health`.
 - **Conector MCP "oicp"**: 10 herramientas de solo lectura sobre producción. Úsalo para consultar
-  datos reales. Si aparece desconectado, dime y lo reconecto.
-- **Mi navegador Chrome con mi sesión activa** (herramientas `mcp__claude-in-chrome__*`). Con eso
-  puedes: entrar al panel de administración, ver cualquier pantalla como la ve un usuario, y
-  consultar rutas de la API que exigen sesión. Úsalo para probar en caliente.
-- **Mi cuenta de Lexis Ecuador**: https://app.lexis.com.ec/sistema/inicio — sesión activa en ese
-  Chrome. **Todo criterio que dependa de norma debes verificarlo ahí, vigente a hoy.** No te
-  conformes con búsqueda web para normativa ecuatoriana.
-- **Endpoint de diagnóstico**: `GET /api/admin/db-size` (y `?detalle=1` para el desglose por tabla,
-  que bloquea unos segundos). Mide antes de decidir.
+  datos reales.
+- **Mi navegador Chrome con mi sesión activa** (`mcp__claude-in-chrome__*`): panel de
+  administración, cualquier pantalla, y **mi cuenta de Lexis** en
+  https://app.lexis.com.ec/sistema/inicio. Todo criterio que dependa de norma verifícalo ahí.
+  Si Lexis se cae a la web pública, es que se cerró la sesión: pídemelo y vuelvo a entrar.
+- **Token de sincronización**: archivo `.sync-token` en la raíz del repo. Es lo que autentica el
+  barrido local contra producción (cabecera `x-sync-token`).
 
-## Estado exacto al cerrar la sesión anterior
+## Estado exacto, medido el 2026-08-11 23:50 UTC
 
-Producción en `commit 109cd90`, corte de datos 2026-08-07, 1 470 321 procesos, **123 pruebas en
-verde**, typecheck y build limpios. Todas las rutas responden entre 196 y 400 ms.
+Producción en **`dd1737a`**, health ok, **1 470 321 procesos**, corte de datos 2026-08-07,
+**143 pruebas en verde**, typecheck y build limpios, árbol de trabajo limpio y todo subido.
 
-Se corrigieron y desplegaron, en dos días de trabajo: los vectores por los que una sola consulta
-congelaba la plataforma; la revocación de acceso de administración; las cifras de dinero
-(web y MCP daban totales distintos); la calibración de las banderas de concentración, que marcaban
-con el porcentaje de un año distinto al del proceso; el respaldo, que podía producir copias
-incompletas en silencio; y una docena de defectos de interfaz. `ESTADO.md` tiene el inventario
-completo con archivo y línea.
+Disparos por bandera tras los tres recálculos:
 
-## Lo que falta, y es exactamente tu trabajo
+| | | | |
+|---|---|---|---|
+| IT-01 58 541 | TR-01 52 940 | IC-01 50 581 | TR-03 45 969 |
+| IC-02 44 064 | CC-03 39 417 | IP-01 16 140 | CC-02 1 836 |
+| CC-05 1 734 | IT-02 1 223 | TR-02 1 579 | CC-01 129 |
+| CC-04 23 | **IP-02 5** | IP-03 0 (inactiva) | |
 
-### 1. Aplicar el recálculo pendiente (bloqueante, hazlo primero)
+Riesgo: crítico **10 079**, alto **46 524**, moderado **78 008**, bajo **1 335 710**.
+Los cuatro suman 1 470 321 exacto; si alguna vez no suman, algo se rompió.
 
-Hay **cuatro correcciones de metodología desplegadas en el código pero NO aplicadas a los datos**,
-porque cambian las banderas de 1,47 M procesos y requieren un recálculo:
+---
 
-- IC-02 ahora excluye el catálogo electrónico (eran 65 497 de sus 109 642 disparos).
-- IT-02 evalúa la exclusión de ínfima por monto (antes no excluía nada; 23% de sus disparos).
-- IP-02 estaba **invertido** y ahora solo marca el exceso sobre el presupuesto.
-- El umbral de ínfima salta a USD 10 000 el **7 de julio** de 2025, no el 7 de octubre.
+# LO QUE FALTA
 
-Para aplicarlo: `/admin/auditoria` → botón "Re-normalizar banderas", desde mi Chrome con mi sesión.
-Tarda 10-15 min y el proxy corta con un 502 a los 300 s aunque el trabajo siga bien: verifica por
-los datos, no por la respuesta HTTP. La memoria y el WAL ya están acotados, así que es seguro.
+## 1. El rellenado de la fuente — hazlo primero, desbloquea al 2 y al 3
 
-**Verifica después, en producción, con evidencia:**
-- Un proceso de catálogo electrónico con monto alto ya no debe tener IC-02.
-- `SELECT COUNT(*) FROM procedures WHERE source_year=2024 AND flags LIKE '%IP-02%'` debe bajar
-  drásticamente desde 1 704, y los que queden deben tener `award_amount > budget_amount`.
-- Los disparos de IC-02 deben bajar cerca de un 60%.
+**El problema, ya diagnosticado y con la causa corregida.** La ingesta leía el presupuesto
+referencial de `tender.value`, que el SERCOP publica **vacío** en muchos procesos, cuando el monto
+vive en **`tender.lots[].value.amount`**. Resultado: **174 547 procesos (11,9%)** tienen el TEXTO
+`"USD"` en el campo del monto en vez de una cifra. Se llegó a creer que el dato era irrecuperable
+y **es falso**: la fuente sí lo publica.
 
-### 2. Arreglar las citas a la metodología OCP (el riesgo de credibilidad más alto)
+Comprobado contra la API del SERCOP, cinco procesos de esa bolsa, cinco de cinco con
+`tender.value` vacío y el monto en los lotes:
 
-La plataforma cita **13 referencias** a la *Red Flags in Public Procurement Guide 2024* de la Open
-Contracting Partnership (R018, R055, R003, R061, R011, R059, R069, R051, R070, R011, R001, R013,
-R039). Una investigación previa concluyó que **8 de las 13 apuntan a una bandera que mide otra
-cosa**, y dos sin ningún parecido conceptual. Además la URL publicada en `Methodology.tsx`
-devuelve **404** y el pie mezcla el título de la edición 2016 con el año 2024.
+```
+SIE-DD01D04S-2024-00003 ->  40 105,69     SIE-CELECEP-2024-04422 -> 536 037,63
+SIE-GADMCG-2024-071     ->  26 057,94     SIE-EMAPAACEP-2024-015 ->  18 033,59
+SIE-GADGIRON-2024-20    ->  16 812,60
+```
 
-**No des por buena esa conclusión: verifícala tú.** Abre el PDF de la guía
-(https://www.open-contracting.org/wp-content/uploads/2024/12/OCP2024-RedFlagProcurement-1.pdf),
-localiza cada código y compáralo con lo que hace el indicador en `flag-engine.ts`. Corrige las que
-estén mal, quita la cita de las que no tengan equivalente en la guía, y arregla la URL y el título.
-Una cita falsa es peor que ninguna cita: un auditor la comprueba en treinta segundos.
+La lectura ya está corregida en `server/ocds-valor.ts` y la usan los dos caminos de ingesta, así
+que **todo lo que entre desde ahora trae su presupuesto**. Falta releer los 174 547 anteriores.
 
-### 3. Cerrar el cómputo de días hábiles con norma citada
+En la misma llamada viene **`tender.enquiryPeriod.endDate`**, que es la fecha desde la que corre
+el término del Art. 96 del Reglamento. La columna `enquiry_deadline` ya existe y ya se mapea, pero
+está en **0 de 1 470 321** filas porque solo se llena al ingerir. El mismo rellenado la llena.
 
-`businessDays()` en `flag-engine.ts` tiene tres defectos, y la norma ya está verificada:
+### Cómo hacerlo, con la arquitectura ya investigada
 
-- **Cuenta el día inicial y no debe.** El COA Art. 158 es expreso: los términos se computan "a
-  partir del día hábil siguiente". Hoy, publicar y adjudicar el mismo día devuelve 1 en vez de 0,
-  así que "menos de 3 días hábiles" equivale en la práctica a menos de 2 días transcurridos.
-- **No descuenta feriados y debe.** COA Art. 159: "Se excluyen del cómputo de términos los días
-  sábados, domingos y los declarados feriados". Y el COGEP Art. 78 añade que rige también el
-  **traslado** de feriados, no la fecha nominal.
-- **Depende de la hora del servidor.** Usa `getDay()`/`setDate()` sin truncar a medianoche,
-  mientras las fechas del SERCOP traen offset `-05:00`. Medido: con el mismo intervalo de un día
-  calendario, 395 procesos reportan "1 día hábil" y 616 reportan "2".
+**Railway NO puede llegar al SERCOP**: la API bloquea IPs de datacenter. Por eso existe
+`server/local-sync.ts`, que corre en mi PC (tarea programada de Windows, martes y jueves 08:00) y
+empuja a producción. El rellenado tiene que ir por ahí.
 
-Los feriados nacionales son los del **Código del Trabajo Art. 65** (texto vigente reformado por la
-Ley de R.O. Suplemento 906 de 20-dic-2016): 1 de enero, lunes y martes de Carnaval, Viernes Santo,
-1 y 24 de mayo, 10 de agosto, 9 de octubre, 2 y 3 de noviembre, 25 de diciembre. Tres son móviles
-(atados a la Pascua). Traslada a lunes si cae martes, a viernes si cae miércoles o jueves, y en
-fines de semana al viernes anterior o lunes posterior, **excepto** 1 de enero, 25 de diciembre y
-martes de Carnaval. **Verifica ese artículo en Lexis** y contrasta el calendario generado contra el
-calendario oficial de cada año antes de usarlo, porque el Código no resuelve los solapamientos.
+Lo que ya existe y puedes reutilizar tal cual:
 
-### 4. Decidir y arreglar los mínimos de plazo de IT-01
+- `POST /api/admin/ingest` con `{procs: [...]}`, máximo 500 por llamada. **Hace upsert por ocid**,
+  así que sirve igual para reparar que para insertar. Autentica con `x-sync-token`.
+- `POST /api/admin/ingest-finalize` con `{year}`: reconstruye concentración, re-evalúa banderas y
+  sincroniza los agregados.
+- `sercopFetch()` en `local-sync.ts`: ya tiene throttle de ~3 req/s y respeto del 429.
+- `releaseToProc()` en `server/updater.ts`: convierte el release OCDS al formato de la tabla, y ya
+  usa `valorReferencial()` y mapea `enquiry_deadline`.
 
-Los 9/13/17 días que usa IT-01 **corresponden al tramo publicación→adjudicación** (suma de los
-mínimos de los Arts. 91, 96 y 111 del Reglamento vigente), pero IT-01 mide
-**publicación→límite de ofertas**, y para ese tramo los mínimos son **6/10/14/18**. Falta además el
-cuarto tramo (más de USD 1 000 000).
+Lo único que falta construir:
 
-Y hay un problema mayor: **esos mínimos escalonados no existían antes del 28 de octubre de 2025**.
-El Reglamento anterior remitía a los pliegos. Aplicarlos a procesos de 2019 a 2025 es un
-anacronismo normativo que un auditor va a marcar. Verifica las tablas en Lexis (Reglamento vigente,
-Decreto 193, R.O. 9.º Suplemento 153 de 28-oct-2025, Arts. 91, 96 y 111) y propóndeme dos opciones
-con su consecuencia antes de tocar nada.
+1. **Un endpoint nuevo** que devuelva una página de ocid a reparar. Algo como
+   `POST /api/admin/ocids-a-reparar` con `{limite, desde}` que devuelva los ids donde
+   `typeof(budget_amount) = 'text'` o `enquiry_deadline IS NULL`, ordenados por id para que el
+   cursor sea estable. Autentícalo con `checkAuthOrSync`, igual que `/api/admin/ingest`.
+2. **Un modo nuevo en `local-sync.ts`**, por ejemplo `--reparar`, que pida esa lista, traiga cada
+   record de SERCOP, lo pase por `releaseToProc()` y lo empuje por `/api/admin/ingest` en lotes de
+   500. Guarda cursor en un archivo, igual que `.sync-cursor.json`, para que sea resumible.
+3. Al terminar cada año, `ingest-finalize`.
 
-### 5. Corregir la cita legal del fraccionamiento
+**Pruébalo con un lote chico primero** (100 o 200 ocid), comprueba con el MCP que esos procesos
+pasaron de `typeof(budget_amount)='text'` a un número y que ya traen `enquiry_deadline`, y recién
+ahí suéltalo sobre los 174 547.
 
-CC-05 cita el **Art. 50 de la LOSNCP**. Eso ya no es correcto: hoy la prohibición general está en
-la **Disposición General Tercera** (agregada el 7-oct-2025) y antes estaba en la Disposición General
-Segunda. El Art. 50 era "Procedimiento de Cotización" y no hablaba de fraccionamiento. Verifícalo
-en Lexis y corrige la cita en las tres superficies.
+**Cuánto tarda**: son ~174 mil peticiones a 3 por segundo, o sea **unas 16 horas**. No cabe en una
+sesión de chat. Déjalo corriendo en mi PC como tarea y dime cómo verifico el avance; yo no ejecuto
+comandos, así que déjamelo listo para que arranque solo o con un clic.
 
-### 6. Usar el mandato de IA como respaldo normativo
+**Al terminar**: el recálculo. Con presupuestos nuevos, IP-02 puede pasar de 5 disparos a bastantes
+más, y eso es correcto: hoy no dispara en esos procesos porque no tiene con qué comparar.
 
-El **Decreto Ejecutivo 461** (R.O. 3.º Suplemento 337 de 30-jul-2026) agregó los Arts. 426 y 426.1
-al Reglamento, que ordenan al SERCOP usar inteligencia artificial y minería de datos para detectar
-riesgos, y enumeran criterios objetivos: "identificación de vinculaciones, inhabilidades, indicios
-de colusión o subdivisión de contratos" y "análisis de patrones históricos y recurrencia".
-El Art. 426.1 exige además "evidencia objetiva y verificable, prescindiendo de valoraciones
-subjetivas", que es exactamente lo que hace un motor de reglas deterministas.
+## 2. IT-01: decide conmigo y aplícalo
 
-**Lee el texto completo en Lexis** y úsalo para respaldar los indicadores que hoy no tienen fuente.
-Cambia mi posición: no soy un tercero opinando sobre entidades públicas, soy un observatorio que
-aplica los criterios que la norma manda aplicar al regulador.
+Los mínimos que usa IT-01 hoy (9/13/17 días hábiles) **no corresponden a lo que mide**. Verificado
+en Lexis sobre el texto vigente del Reglamento (Decreto Ejecutivo 193, R.O. Noveno Suplemento 153
+de **28-oct-2025**, última reforma 30-jul-2026):
 
-### 7. Documentar la trazabilidad de cada indicador
+> «Art. 96.- **Términos para la entrega de ofertas.**- De conformidad al presupuesto referencial
+> del procedimiento, la entidad contratante, para establecer la fecha límite de entrega de ofertas
+> técnicas, observará los términos previstos a continuación, **contados a partir de fenecer la
+> fecha límite para contestar respuestas y aclaraciones**»
 
-Este es el entregable que convence a un auditor de metodología. Cada uno de los 15 indicadores debe
-declarar de dónde viene su criterio y su umbral, con tres orígenes posibles y bien distinguidos:
+Tres cosas de ahí:
 
-- **Derivado de norma ecuatoriana** (el más fuerte): cita artículo y Registro Oficial.
-- **Tomado de un estándar reconocido**: cita documento, página y código.
-- **Calibrado sobre los datos**: legítimo, pero **hay que declararlo como tal** y explicar el
-  criterio de calibración.
+- El término **no arranca en la publicación**, arranca al cerrar el período de preguntas. Ese dato
+  es `enquiry_deadline`, que tendrás después del punto 1.
+- La tabla de plazos está en un anexo que Lexis no renderiza: «ver Registro Oficial Suplemento 153
+  de 28 de octubre de 2025, página 69». **Tienes que abrir ese Registro Oficial y leer la tabla.**
+  No la inventes ni la copies de un resumen.
+- El Reglamento es de octubre de 2025, así que aplicar esos mínimos a procesos de 2019 a 2025 es un
+  anacronismo que un auditor va a marcar.
 
-Hoy la plataforma mezcla los tres sin distinguirlos, y ese es el hueco real, más que cualquier
-umbral concreto. Varios umbrales no tienen fuente declarada: el 40% de CC-02, los 5 años de CC-03,
-los 30 caracteres de TR-02, el 15% de IP-02, los 3 días de IT-02, los 2 consorcios de CC-04. Y la
-escala de pesos 3/8/18/30 y los cortes de riesgo 0-10/11-30/31-60/61-100 tampoco.
+**Tráeme dos opciones en pocas líneas y yo elijo**, sin bloquear el resto del trabajo:
+(A) declarar IT-01 como indicador referencial de plazo corto, manteniendo los disparos actuales y
+diciendo con claridad que no reproduce el término del Art. 96; o (B) aplicar el término real solo
+desde el 28-oct-2025 con el dato de `enquiry_deadline`, y declarar los años anteriores como no
+evaluables por ese criterio.
 
-### 8. Resolver el respaldo (pendiente operativo)
+## 3. El día inicial del cómputo (COA Art. 158)
 
-El volumen está al **54%** (4,69 GB totales, 2,16 GB libres; la base pesa 2,51 GB y no tiene
-páginas libres, así que un VACUUM no recuperaría nada). El respaldo no puede correr porque un
-snapshot completo pesaría lo mismo que la base y no cabe. Tres salidas, mi orden de preferencia:
-respaldo lógico comprimido al vuelo sin archivo intermedio; ampliar el volumen a 10 GB (toca mi
-tope de $20/mes, decisión mía); o dejarlo. **Quiero el respaldo funcionando y una copia en mi
-Google Drive.** No tengo Google Drive de escritorio instalado, así que usa mi Chrome para subirla.
+El Código Orgánico Administrativo dispone que los términos corren «a partir del día hábil
+siguiente» y hoy `businessDays()` cuenta el día inicial. **Está así a propósito**: cambiarlo mueve
+el significado de los mínimos de IT-01, así que se resuelve junto con el punto 2, no antes.
 
-### 9. Pendientes menores ya inventariados
+Los feriados **ya se descuentan** desde el 11-ago-2026, con el calendario del Art. 65 del Código
+del Trabajo verificado textualmente en Lexis. Eso ya está hecho; no lo rehagas.
 
-- El tope de 300 páginas por término en `local-sync.ts` deja huecos de datos silenciosos.
-- `railway.toml` con `ON_FAILURE` no recupera un proceso vivo pero colgado.
-- Tras una corrupción, la app arranca con base vacía y el healthcheck queda en verde.
-- El descuento por correlación que se publica está mal puesto: IC-01 e IC-02 **co-ocurren cero
-  veces**, así que el 50% de ese par nunca se aplica, mientras IC-02 y TR-03 co-ocurren en el 99,8%
-  de los casos sumando 48 puntos por el mismo hecho **sin** descuento. Verifícalo con datos y
-  replantéalo.
+## 4. Verificar CC-01 ejecutando el motor
 
-## Cómo quiero que trabajes
+CC-01 (129 disparos) está verificada **por predicado SQL** (un par con 6 ínfimas ≥5, montos que
+cuadran al centavo) pero **no re-ejecutada con el motor real y su contexto de concentración**. Las
+otras cuatro CC sí. Ciérralo así:
 
-**Usa subagentes para el trabajo pesado y sé tú el verificador.** Funciona así:
+- Usa el arnés que ya existe: `server/verificar-lote.mjs`. Se ejecuta con
+  `npx tsx server/verificar-lote.mjs archivo.json` y compara, proceso por proceso, lo que produce
+  el motor real contra lo que la plataforma tiene guardado.
+- El archivo es un array de procesos con el campo `esperadas` (códigos activos separados por coma)
+  y, para las CC-*, un campo `concentracion` con las filas de `concentration_index` de **todos los
+  proveedores y todos los años de ese comprador**. Si el contexto viene incompleto, el resultado
+  es falso: elige compradores chicos o pagina.
+- Busca procesos con CC-01 así: `WHERE source_year = X AND flags LIKE '%CC-01%' AND
+  json_array_length(suppliers) = 1`.
 
-- `Agent` para tareas acotadas: inventariar todos los puntos donde el código lee algo, investigar
-  una norma, revisar un archivo grande. Pasa `run_in_background: false` cuando necesites el
-  resultado para seguir. Fija `model` explícito en cada agente, porque heredar el modelo de la
-  sesión ha causado choques con límites de crédito.
-- `Workflow` para investigaciones o revisiones en paralelo con varias líneas y una síntesis. En los
-  scripts, `parallel()` espera **funciones**, no promesas: envuelve cada llamada como
-  `() => agent(...)`. Usa `schema` para que devuelvan datos estructurados en vez de prosa.
-- **Nunca tomes el resultado de un subagente como verdad.** En esta sesión un informe de
-  metodología acertó en lo esencial pero traía una cifra desactualizada, y una revisión de código
-  anterior fue parcialmente injusta con una función. Verifica las afirmaciones que vayan a cambiar
-  código o datos, leyendo el código o consultando producción. **Un resultado de verificación vacío
-  nunca es una aprobación.**
-- Si un agente reporta un hallazgo, pon otro a **refutarlo** antes de actuar. Ese patrón encontró
-  30 defectos reales y descartó 6 falsos positivos.
+---
 
-**Skills que te van a servir**, invócalas cuando apliquen: `anthropic-skills:esfuerzo-maximo` para
-elevar el estándar de verificación; `anthropic-skills:seguridad` si tocas autenticación o datos
-personales; `anthropic-skills:verificar-logica` cuando generes cálculos o clasificaciones que
-dependan de norma; `data:validate-data` antes de presentarme cualquier cifra;
-`superpowers:verification-before-completion` antes de decirme que algo está listo. Y si vas a
-investigar norma, la disciplina es la de un investigador jurídico: cita artículo, Registro Oficial y
-fecha, y lo que no puedas confirmar va a una lista de "no confirmado" en vez de suponerse.
+# Trampas que ya costaron tiempo. Léelas antes de tocar nada
 
-## Reglas que no quiero repetirte
+1. **El panel de administración tiene un `confirm()` nativo que la automatización descarta sola.**
+   Hacer clic por coordenadas no hace nada y el botón se queda en «Ejecutar» sin dar error. Hay que
+   ejecutar `window.confirm = () => true` con `javascript_tool` y luego invocar el handler.
+2. **No selecciones la tarjeta del panel por texto.** Un selector tipo
+   `querySelectorAll('div').find(d => d.textContent.includes('Re-normalizar'))` agarra el
+   contenedor de las TRES tarjetas y su primer botón es «Reparar budget_amount». Así se ejecutó por
+   error la operación equivocada. Lo seguro: filtrar los botones cuyo texto sea exactamente
+   `Ejecutar`, subir por el DOM hasta el ancestro que contenga UNA sola vez esa palabra, y
+   **verificar el rótulo antes de hacer clic, abortando si no coincide**. El índice 2 es el bueno.
+3. **El recálculo corta con `upstream error` a los 300 s y el trabajo SIGUE.** Nunca concluyas por
+   la respuesta HTTP. Señal real de que terminó: `/api/version` vuelve a responder rápido (durante
+   el trabajo tarda 4-8 s, después 0,5-1,5 s) y las cifras de `a_flag_year` dejan de moverse. Dura
+   entre 5 y 11 minutos. **Captura la línea base con `oicp_flag_stats` antes de correrlo.**
+4. **`oicp_sql` tiene un tope de 300 filas, pero se pagina con `LIMIT ... OFFSET`.** Está probado.
+   Y desde el 11-ago el campo `truncado` **por fin dice la verdad**: antes salía siempre `false`
+   aunque devolviera 300 de 11 430. Si ves `truncado: true`, hay más filas y no puedes sacar
+   conclusiones de lo que recibiste.
+5. **El tope de costo de `oicp_sql` rechaza recorridos completos y auto-joins.** Filtra por columna
+   indexada (`id`, `buyer_id`, `source_year`, `risk_level`, `score`, `published_date`, `status`,
+   `procurement_method_details`) o usa los agregados `a_*`. Para cruzar una tabla consigo misma,
+   usa una función de ventana en vez de un JOIN.
+6. **174 547 procesos tienen el TEXTO `"USD"` en `budget_amount`.** Cualquier código que evalúe
+   banderas tiene que normalizar con `Number(...) || 0` antes, como hace `updater.ts`. Sin eso, la
+   cadena es *truthy* en JavaScript y TR-01 deja de marcar el valor como faltante. El arnés de
+   verificación tuvo ese defecto y producía discrepancias falsas.
+7. **Lexis**: el buscador es de palabras, no de códigos. Buscar «RE-SERCOP-2025-0152» da cero
+   resultados; buscar el nombre de la norma sí. Dentro de una norma, la pestaña **Art** tiene un
+   campo de número de artículo, y la pestaña **Afectación** trae el historial de reformas con sus
+   fechas. Lexis **no indexa las resoluciones del SERCOP**: esas están en
+   `portal.compraspublicas.gob.ec`, y sus PDF llevan capa de texto que `WebFetch` no extrae pero un
+   script de Node que infle los streams del PDF sí.
 
-1. **Typecheck, tests y build limpios ANTES de cada push, y verificación en producción después.**
-   Encadena los comandos de forma que **aborten si una compuerta falla**: en la sesión anterior un
-   comando encadenado subió un commit con un import faltante porque el typecheck falló y el push se
-   ejecutó igual. Eso rompió la portada unos minutos.
-2. **Hay un usuario externo real** usando la plataforma. Nada puede romperse para él.
-3. **Ninguna cifra sin verificar.** En la sesión anterior se me estimó el uso del volumen en 93%
-   cuando era 54%, y el peso de una columna diez veces por encima. Ambas se corrigieron midiendo.
-   Mide antes de afirmar.
-4. **Escribe pruebas de cada corrección**, sobre todo de las que fallan en silencio. Las pruebas de
-   esta plataforma han atrapado defectos reales durante el propio desarrollo, incluido uno donde el
-   orden de un spread hacía lo contrario de lo buscado.
-5. **Actualiza `ESTADO.md`** con lo que hagas: es el mecanismo de continuidad entre sesiones.
-6. **Regla 10**: si cambias una regla, un umbral o un peso en `flag-engine.ts`, actualiza en el
-   MISMO commit `client/src/pages/Methodology.tsx` y el objeto `METHODOLOGY` de `mcp-server.ts`.
-7. **Regla 11**: una sola definición de monto. `MONTO_SQL` y `montoPlausible()` deben ser
-   equivalentes; web y MCP nunca pueden dar cifras distintas.
+# Reglas que no quiero repetir
+
+1. **Typecheck, pruebas y build limpios ANTES de cada push, y verificación en producción después.**
+   Encadena los comandos de forma que aborten si una compuerta falla.
+2. **NO hagas push mientras un recálculo esté corriendo**: el despliegue reinicia el servidor y lo
+   mata. Espera a que termine.
+3. **Hay un usuario externo real.** Nada puede romperse para él.
+4. **Ninguna cifra sin verificar.** Si la afirmas, mídela. En la sesión anterior se publicó «524»
+   cuando eran 525, y el recálculo lo confirmó al restar exactamente 525.
+5. **Escribe pruebas de cada corrección.** Y que la prueba compruebe lo que su nombre promete: el
+   defecto del aviso de truncamiento sobrevivió porque la prueba se llamaba «avisa cuando trunca» y
+   solo verificaba el largo de la respuesta.
+6. **Regla 10**: si cambias una regla, umbral o peso en `flag-engine.ts`, actualiza en el MISMO
+   commit `client/src/pages/Methodology.tsx` y el objeto `METHODOLOGY` de `mcp-server.ts`.
+7. **Regla 11**: una sola definición de cada cosa. Ya lo cumplen `MONTO_SQL`/`montoPlausible()`,
+   `SQL_ES_INFIMA_POR_MONTO`/`isInfimaByAmount()` y `valorReferencial()`. Si duplicas una
+   definición, el defecto va a estar en las dos copias, que es exactamente lo que pasó con el
+   presupuesto.
 8. **No me pases tareas de terminal.** Yo solo doy el OK inicial y las decisiones de negocio.
-   Si algo requiere una acción mía (aprobar un permiso, decidir precios o accesos), pídemelo en una
-   línea y explícame por qué solo yo puedo hacerlo.
-9. **Prueba en caliente cada pantalla** con mi Chrome: portada, búsqueda con sus filtros y
-   ordenamientos, ficha de proceso, perfiles de comprador y proveedor, rankings con sus tres
-   pestañas, metodología, y las tres pantallas de administración. Y las 10 herramientas del MCP.
+9. **NUNCA pruebes escrituras contra producción.** En la sesión anterior un subagente lanzó
+   `DELETE`, `UPDATE` y `DROP TABLE` contra la base real para "probar las defensas". Las defensas
+   aguantaron y no se perdió nada, pero esa prueba va contra una base de prueba.
+10. Si usas subagentes, **fija `model` explícito** y ten en cuenta que pueden chocar con el límite
+    de sesión. Un resultado de verificación vacío nunca es una aprobación.
 
-## Decisiones mías que están pendientes
+# Qué está verificado y qué no
 
-- Los mínimos de plazo de IT-01 (punto 4): dame las dos opciones con su consecuencia.
-- Si excluimos o mantenemos algo más del catálogo electrónico en otros indicadores.
-- El modelo de cobro de la plataforma.
-- Ampliar el volumen de Railway (cuesta dinero).
-- `xgonzalez14@hotmail.com` tiene acceso `viewer` y nunca ha ingresado. Déjalo, ya lo decidí.
-- La rama `feat/auth-hardening` en el remoto no tiene ningún commit que no esté en `main` y va 27
-  commits atrasada: se puede borrar sin perder nada.
+**Verificado ejecutando algo y leyendo la salida**: las cuatro correcciones de metodología con la
+regla 10 en las tres superficies · la definición única de ínfima · las citas OCP contra el PDF
+oficial de la guía 2024 · el umbral de ínfima del 7-jul-2025 contra la Resolución
+R.E-SERCOP-2025-0152 · el Art. 50 de la LOSNCP y el Art. 65 del Código del Trabajo en Lexis · los
+feriados contra el calendario que Ecuador observó de verdad · el descuento por correlación
+(IC-02+TR-03 co-ocurre en el 96%) · tres recálculos con sus invariantes · **100 procesos reales
+re-evaluados con el motor real, 0 discrepancias** · CC-02, CC-03, CC-04 y CC-05 · nueve pantallas
+en caliente · las 10 herramientas del MCP.
 
-Empieza leyendo los tres archivos, dime en pocas líneas qué encontraste y cuál es tu plan, y
-arranca por el recálculo del punto 1.
+**NO verificado, y no lo des por bueno**: CC-01 por ejecución del motor (ver punto 4) · la tabla de
+plazos del Art. 96, que está en un anexo del Registro Oficial que nadie ha abierto · el
+comportamiento de la plataforma después del rellenado, que habrá que volver a comprobar.
+
+Empieza por leer `ESTADO.md`, dime en pocas líneas qué encontraste y cuál es tu plan, y arranca por
+el punto 1.
