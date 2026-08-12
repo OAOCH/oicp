@@ -25,6 +25,9 @@ export type Control = { ok: boolean; detalle: string; ejemplos?: string[] };
 export type Boleta = {
   anio: number;
   procesos: number;
+  /** Filas cuyo texto de catálogo guardado quedó viejo. NO afecta a lo que ve el usuario (se
+   *  renderiza del catálogo vigente); solo indica que un reflag dejaría la base ordenada. */
+  texto_catalogo_viejo: number;
   veredicto: 'APROBADO' | 'FALLA';
   controles: Record<string, Control>;
   segundos: number;
@@ -68,7 +71,7 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
   let sinFecha = 0, fechaFuera = 0; const ejFecha: string[] = [];
   let riesgoInconsistente = 0; const ejRiesgo: string[] = [];
   let nombreMal = 0; const ejNombre: string[] = [];
-  let flagsIlegibles = 0;
+  let flagsIlegibles = 0, textoViejo = 0;
   const conteoBanderas = new Map<string, number>();
   const conteoRiesgo = new Map<string, number>();
 
@@ -139,16 +142,29 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
       const proc = { ...row, budget_amount: Number(row.budget_amount) || 0,
         suppliers: suppliersArr, has_amendments: !!row.has_amendments };
       const { flags, score, riskLevel } = evaluateAllFlags(proc, ctx);
-      const flagsJson = JSON.stringify(flags);
-      if (flagsJson !== row.flags || score !== row.score || riskLevel !== row.risk_level) {
+
+      // Qué se compara y qué NO. Se compara lo SUSTANTIVO: qué banderas están activas, el
+      // `detail` de cada una (que es lo que el usuario lee), el score y el nivel de riesgo.
+      // NO se comparan `name_es`, `description_es` ni `severity`, que son texto del CATÁLOGO:
+      // la plataforma los vuelve a renderizar al mostrar (`hidratarBanderas`), decisión tomada a
+      // propósito para que corregir la metodología no exija reescribir 1,47 M de filas. Comparar
+      // el JSON entero hacía que la boleta gritara FALLA en los ocho años por un cambio de nombre
+      // de indicador que el usuario ni siquiera ve. La staleness del texto se cuenta aparte.
+      const sustancia = (fs: any[]) => JSON.stringify(
+        fs.filter(f => f?.active).map(f => [f.code, f.detail ?? null]));
+      let guardadas: any[] = [];
+      try { guardadas = JSON.parse(row.flags || '[]'); } catch { /* contado en flagsIlegibles */ }
+      if (sustancia(guardadas) !== sustancia(flags) || score !== row.score || riskLevel !== row.risk_level) {
         discrepancias++;
         if (ejDiscrepancia.length < 10) {
-          const activasGuardadas = (() => { try { return JSON.parse(row.flags || '[]').filter((f: any) => f.active).map((f: any) => f.code).join(',');} catch { return '(ilegible)'; } })();
-          const activasMotor = flags.filter(f => f.active).map(f => f.code).join(',');
-          ejDiscrepancia.push(`${row.id}: guardado [${activasGuardadas}] score ${row.score}/${row.risk_level} · ` +
-            `motor [${activasMotor}] score ${score}/${riskLevel}`);
+          const act = (fs: any[]) => fs.filter(f => f?.active).map(f => f.code).join(',');
+          ejDiscrepancia.push(`${row.id}: guardado [${act(guardadas)}] score ${row.score}/${row.risk_level} · ` +
+            `motor [${act(flags)}] score ${score}/${riskLevel}`);
         }
       }
+      // Informativo, no es FALLA: cuántas filas llevan texto de catálogo viejo. No afecta a lo
+      // que ve el usuario, pero dice si conviene un reflag para dejar la base ordenada.
+      if (JSON.stringify(flags) !== row.flags) textoViejo++;
 
       // 8. El nivel de riesgo tiene que corresponder al score.
       if (getRiskLevel(row.score || 0) !== row.risk_level) {
@@ -219,5 +235,6 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
   };
 
   const veredicto = Object.values(controles).every(c => c.ok) ? 'APROBADO' : 'FALLA';
-  return { anio: year, procesos, veredicto, controles, segundos: Math.round((Date.now() - t0) / 100) / 10 };
+  return { anio: year, procesos, texto_catalogo_viejo: textoViejo, veredicto, controles,
+    segundos: Math.round((Date.now() - t0) / 100) / 10 };
 }

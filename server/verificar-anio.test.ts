@@ -165,6 +165,46 @@ test('caza una fecha de publicación fuera del año', async () => {
   }
 });
 
+test('el texto de CATÁLOGO viejo NO es falla, pero se cuenta', async () => {
+  // La plataforma re-renderiza name_es/description_es desde el catálogo vigente al mostrar
+  // (`hidratarBanderas`), decisión tomada a propósito para que corregir la metodología no exija
+  // reescribir 1,47 M de filas. Así que un nombre de indicador viejo guardado NO afecta a lo que
+  // ve el usuario. La primera versión de esta boleta comparaba el JSON entero y gritaba FALLA en
+  // los ocho años por un cambio de nombre: una alarma que no correspondía a ningún daño.
+  const db = getDb();
+  // Se BUSCA un proceso que tenga banderas en vez de dar por hecho cuál las tiene: dando por
+  // hecho, la prueba fallaba por su propia suposición y no por el comportamiento que mide.
+  const fila = db.prepare(
+    `SELECT id, flags FROM procedures WHERE source_year=? AND flags != '[]' LIMIT 1`).get(ANIO) as any;
+  assert.ok(fila, 'la preparación tiene que haber dejado algún proceso con banderas');
+  const conTextoViejo = JSON.parse(fila.flags).map((f: any) => ({ ...f, name_es: 'NOMBRE ANTIGUO DEL INDICADOR' }));
+  db.prepare(`UPDATE procedures SET flags=? WHERE id=?`).run(JSON.stringify(conTextoViejo), fila.id);
+  try {
+    const b = await verificarAnio(ANIO);
+    assert.equal(b.controles.motor.ok, true, 'un nombre de catálogo viejo no puede ser FALLA');
+    assert.ok(b.texto_catalogo_viejo >= 1, 'pero tiene que contarse para saber que conviene un reflag');
+  } finally {
+    db.prepare(`UPDATE procedures SET flags=? WHERE id=?`).run(fila.flags, fila.id);
+  }
+});
+
+test('un DETALLE distinto SÍ es falla: es lo que lee el usuario en la ficha', async () => {
+  const db = getDb();
+  const fila = db.prepare(
+    `SELECT id, flags FROM procedures WHERE source_year=? AND flags != '[]' LIMIT 1`).get(ANIO) as any;
+  assert.ok(fila, 'la preparación tiene que haber dejado algún proceso con banderas');
+  const guardadas = JSON.parse(fila.flags);
+  guardadas[0].detail = 'un detalle que el motor no produce';
+  db.prepare(`UPDATE procedures SET flags=? WHERE id=?`).run(JSON.stringify(guardadas), fila.id);
+  try {
+    const b = await verificarAnio(ANIO);
+    assert.equal(b.controles.motor.ok, false, 'el detalle es lo que se publica en la ficha');
+    assert.ok(b.controles.motor.ejemplos!.join(' ').includes(fila.id), 'tiene que decir cuál');
+  } finally {
+    db.prepare(`UPDATE procedures SET flags=? WHERE id=?`).run(fila.flags, fila.id);
+  }
+});
+
 test('tras deshacer todos los sabotajes, el año vuelve a APROBADO', async () => {
   const b = await verificarAnio(ANIO);
   const fallidos = Object.entries(b.controles).filter(([, c]) => !c.ok).map(([k]) => k);
