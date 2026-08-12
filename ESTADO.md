@@ -18,6 +18,39 @@ contra la API del SERCOP y no reparara ni una sola fila, sin error y sin aviso.*
    de martes y jueves seguía guardando el texto `"USD"` y `enquiry_deadline` en nulo.** Regla 11
    rota en el mismo sitio donde ya había costado horas.
 
+### Otros cuatro defectos encontrados ejercitando la plataforma, todos corregidos y verificados
+
+1. **627 834 procesos publicaban un marco legal FALSO.** Una vía de ingesta antigua escribió el
+   identificador `LOIP` en todo 2023 (190 539), 2024 (219 185), 2025 (173 210) y 2026 (44 900).
+   `LOIP` no existe en el resto del código y la ficha lo traducía a «LOSNCP reformada (desde el
+   7-oct-2025)»: un proceso de mayo de 2023 declaraba regirse por una reforma de octubre de 2025.
+   2023 quedaba además partido entre dos identificadores según por qué vía hubiera entrado cada
+   proceso. **Recomputado desde la fecha con `getRegime()`, la misma función de la ingesta**, en
+   1m39s: 2025 queda partido en 142 464 / 30 746 exactamente en el corte del 7-oct. No mueve
+   ningún score (el motor usa `YEAR_DATA` por año, no esta columna): corrige lo que se publica.
+2. **Un proveedor con USD 38,9 M se publicaba llamándose «null»** en el top 10 de CELEC EP. La
+   fuente publica la cadena `"null"` como nombre y pasaba tal cual a los agregados. Eran 111
+   procesos y 48 agregados. Ahora la ingesta lo normaliza, el dato guardado queda vacío (que es la
+   verdad) y al mostrarlo cae al RUC. **Verificado: 0 proveedores sin nombre útil.**
+3. **El MCP no encadenaba.** `oicp_buyer_profile` rechazaba el `buyer_id` que devuelve
+   `oicp_top_buyers`: se quedaba solo con los dígitos y `EC-RUC-1768152800001-238940` se convertía
+   en `1768152800001238940`, que no casa con ningún id (llevan guiones). Encadenar las dos
+   herramientas, que es el uso natural, daba «Comprador no encontrado» para el primer comprador del
+   ranking.
+4. **La metodología publicaba dos versiones opuestas de la misma regla.** En la misma sección:
+   «los feriados sí se descuentan desde el 11-ago-2026» y, tres párrafos más abajo, «aquí se cuenta
+   el día inicial y NO se descuentan feriados». Encontrado leyendo la página renderizada, no el
+   código. Ahora separa las dos condiciones del COA: el Art. 159 ya se cumple, el Art. 158 no.
+
+### Ninguna cifra publicada vuelve a envejecer sola
+
+Las tres superficies llevaban «174.547 procesos sin presupuesto (11,9%)» escrito a mano, y el
+rellenado baja ese número cada hora: en pocas horas la metodología habría estado publicando un dato
+falso sin que nadie lo notara. Ahora se **mide al responder** desde una sola definición
+(`estadoPresupuesto()` en `db.ts`, cacheada 5 min porque recorre la tabla), `/api/version` la
+publica, y la web y el MCP la leen de ahí. El texto incluso cambia solo cuando el rellenado termina.
+Si la llamada falla, la web **no inventa cifras**: redacta la sección sin números.
+
 ### Lo que se construyó y quedó desplegado (`adbda4a`, `6543817`)
 
 - **`server/ocds-proc.ts`**: el mapeo OCDS → fila, en UNA sola definición, importado por
@@ -102,12 +135,39 @@ Está en curso la búsqueda del cronograma público del SERCOP, que sí publica 
 respuestas y aclaraciones» y «fecha límite de entrega de ofertas». **Decisión pendiente de Oscar**
 hasta saber si esas fechas se pueden obtener de forma automatizable.
 
-### El rendimiento de la fuente, medido
+### El rendimiento de la fuente, medido, y el defecto que apareció al paralelizar
 
-`record?ocid=` da **0,13 peticiones por segundo sostenidas** (p50 7,3 s, máximo 10,7 s), no las 3
-que suponía el traspaso. A ese ritmo los 174 547 no son 17 horas sino ~15 días. El límite de tasa
-es duro: 36 peticiones con concurrencia 3 produjeron **21 respuestas 429 con `Retry-After: 24`**.
-Está en curso la búsqueda de una vía más rápida.
+`record?ocid=` da **0,08-0,13 peticiones por segundo en serie** (p50 7-12 s, máximo 18 s), no las 3
+que suponía el traspaso: a ese ritmo son ~15-25 días, no 17 horas. **Y esa lentitud NO es límite de
+tasa**: tras 12 minutos de reposo sigue igual y devuelve cero 429. Es latencia por petición, así que
+**la concurrencia la multiplica**: 3 hilos → 0,25 req/s; 12 hilos → 0,78; 20 hilos → 0,9, siempre
+con cero 429. El barrido corre ahora con 20 hilos, o sea **unas 54 horas** para los 174 547.
+
+Al paralelizar apareció un defecto que habría hecho que bloqueen la IP de Oscar, que es la única
+desde la que este proyecto puede leer la fuente. El limitador era
+`gap = 350 - (ahora - ultima); if (gap>0) esperar; ultima = ahora`: correcto en serie y roto en
+paralelo, porque los N hilos leen la MISMA `ultima`, duermen lo mismo y despiertan juntos. Medido
+con la reproducción literal del código viejo: **12 emisiones en 50 ms (~240/s)**, donde el correcto
+tarda 449 ms. Y ~8 por segundo es justo el ritmo que produjo 21 respuestas 429 con `Retry-After: 24`.
+Ahora el turno se **reserva** en vez de consultarse, vive en `server/limitador.ts` con sus pruebas, y
+un 429 frena a **todos** los hilos.
+
+### El rellenado está CORRIENDO
+
+Validado con lote chico contra producción antes de soltarlo: **119 pedidos, 119 reparados, 0
+fallos**, y verificado por los datos (en el tramo procesado no queda ni un `"USD"`: 500 numéricos y
+3 nulos, que son los que la fuente de verdad no publica). El reflag movió 22 procesos en 49 s.
+
+Corre por la tarea de Windows **«OICP Rellenado presupuestos»**, diaria a las 21:00, con las cuatro
+protecciones verificadas en el objeto de la tarea (despertar el equipo, tolerar batería, no
+detenerse al pasar a batería, 4 reintentos) y límite de 11 h. Es reanudable: cursor en
+`.sync-repair-cursor.json`, y al terminar un criterio el cursor **vuelve al inicio** para que un
+proceso que entre mañana con el defecto no quede por detrás y se pierda.
+
+**Cómo verificar el avance sin ejecutar nada:** abrir con sesión iniciada
+`https://oicp-production.up.railway.app/api/admin/avance-reparacion?fresco=1` y ver bajar
+`con_texto_usd` desde 174 547 hacia 0. O leer `rellenado.log`. La página de Metodología publica la
+misma cifra, medida al cargar.
 
 ## 2026-08-11 (tarde) — auditoría de verificación y cierre de la regla 10
 
