@@ -111,7 +111,19 @@ export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
   // escapado como \n). Así que un `{` a principio de línea, sin sangría, siempre es el comienzo
   // de un paquete de primer nivel; los objetos anidados van sangrados. Si un paquete resulta
   // ilegible se pierde SOLO ese, porque la siguiente línea que empiece por `{` resincroniza.
-  const BLOQUE = /^\{/;
+  // ── Y por qué tampoco basta con partir por líneas ────────────────────────────────────────
+  // La segunda corrida murió con «Cannot create a string longer than 0x1fffffe8 characters»
+  // procesando otro año: no todos los volcados vienen con formato bonito. Algunos traen el array
+  // ENTERO en una sola línea, así que esperar un salto de línea hace crecer el buffer medio giga.
+  //
+  // La forma que sobrevive a las dos es contar llaves CON RESINCRONIZACIÓN por salto de línea, y
+  // se apoya en una garantía del propio JSON: un salto de línea CRUDO no puede aparecer dentro de
+  // una cadena, tiene que ir escapado. Entonces:
+  //   - si aparece un `\n` mientras creemos estar dentro de una cadena, sabemos con certeza que
+  //     perdimos la sincronía (una comilla sin escapar, como la del volcado de 2020);
+  //   - y un `\n` seguido de `{` es, sin lugar a dudas, el comienzo de un paquete nuevo, así que
+  //     se descarta lo que hubiera a medias y se retoma limpio.
+  // En un fichero de una sola línea nunca se usa la resincronización y funciona el conteo puro.
   // `StringDecoder` y no `trozo.toString('utf8')`: los trozos del flujo cortan por bytes, no por
   // caracteres, así que una tilde o una eñe partida entre dos trozos se convertía en el carácter
   // de reemplazo y CORROMPÍA el texto. Con 111 MB de castellano eso pasa muchas veces, y basta
@@ -123,43 +135,68 @@ export async function* objetosDeArray(flujo: Readable): AsyncGenerator<any> {
   // Si la profundidad no vuelve a cero, algo está mal en el fichero o en este recorrido: mejor
   // fallar con un mensaje claro que consumir memoria hasta reventar.
   const TOPE_OBJETO = 128 * 1024 * 1024;
-  let resto = '';           // último trozo de línea, aún incompleto
-  let pendiente: string[] = [];   // líneas del paquete que se está armando
+  let buf = '';          // texto pendiente de recorrer
+  let pos = 0;           // hasta dónde se recorrió YA (sin él se recontarían las llaves)
+  let prof = 0, inicio = -1, enCadena = false, escapado = false;
 
-  const emitir = function* (): Generator<any> {
-    if (!pendiente.length) return;
-    const crudoBruto = pendiente.join('\n');
-    pendiente = [];
-    // Se recorta al objeto: desde la primera `{` hasta la ÚLTIMA `}`. Así se quitan de un golpe
-    // el `[` de apertura, la coma separadora y el `]` de cierre, que se pegaba al último paquete
-    // del fichero y hacía que se perdiera justo ese (49 de 50 en la prueba).
-    const ini = crudoBruto.indexOf('{');
-    const fin = crudoBruto.lastIndexOf('}');
-    if (ini < 0 || fin < ini) return;
-    const crudo = crudoBruto.slice(ini, fin + 1);
-    try { yield JSON.parse(crudo); } catch { /* paquete ilegible: se pierde SOLO este */ }
+  const objetos: any[] = [];
+  const cerrar = (hasta: number) => {
+    if (inicio < 0) return;
+    const crudo = buf.slice(inicio, hasta);
+    try { objetos.push(JSON.parse(crudo)); } catch { /* paquete ilegible: se pierde SOLO este */ }
+  };
+
+  const procesar = function* (): Generator<any> {
+    while (pos < buf.length) {
+      const c = buf[pos];
+
+      // Resincronización: un salto de línea CRUDO es imposible dentro de una cadena JSON.
+      if (c === '\n') {
+        if (enCadena) { enCadena = false; escapado = false; }
+        // `\n{` es el comienzo indudable de un paquete nuevo: lo que hubiera a medias se descarta.
+        if (buf[pos + 1] === '{') {
+          if (prof === 0 && inicio >= 0) cerrar(pos);
+          buf = buf.slice(pos + 1); pos = 0;
+          prof = 0; inicio = 0; enCadena = false; escapado = false;
+          prof = 1; pos = 1;   // ya consumimos la `{` de apertura
+          for (const o of objetos.splice(0)) yield o;
+          continue;
+        }
+        pos++; continue;
+      }
+
+      if (enCadena) {
+        if (escapado) escapado = false;
+        else if (c === '\\') escapado = true;
+        else if (c === '"') enCadena = false;
+        pos++; continue;
+      }
+      if (c === '"') { enCadena = true; pos++; continue; }
+      if (c === '{') { if (prof === 0) inicio = pos; prof++; pos++; continue; }
+      if (c === '}') {
+        prof--;
+        if (prof === 0 && inicio >= 0) {
+          cerrar(pos + 1);
+          buf = buf.slice(pos + 1); pos = 0; inicio = -1;
+          for (const o of objetos.splice(0)) yield o;
+          continue;
+        }
+        pos++; continue;
+      }
+      pos++;
+    }
+    if (prof === 0 && !enCadena && inicio < 0) { buf = ''; pos = 0; }
   };
 
   for await (const trozo of flujo) {
-    resto += decodificador.write(Buffer.isBuffer(trozo) ? trozo : Buffer.from(trozo));
-    const lineas = resto.split('\n');
-    resto = lineas.pop() ?? '';       // la última puede estar cortada
-    for (const linea of lineas) {
-      if (BLOQUE.test(linea) && pendiente.length) yield* emitir();
-      // El `[` de apertura del array no pertenece a ningún paquete.
-      if (linea.trim() === '[') continue;
-      pendiente.push(linea);
-      if (pendiente.reduce((n, l) => n + l.length, 0) > TOPE_OBJETO) {
-        throw new Error(`paquete JSON de más de ${TOPE_OBJETO} bytes: el volcado no tiene la forma esperada`);
-      }
+    buf += decodificador.write(Buffer.isBuffer(trozo) ? trozo : Buffer.from(trozo));
+    if (buf.length > TOPE_OBJETO) {
+      throw new Error(`paquete JSON de más de ${TOPE_OBJETO} bytes sin cerrar: el volcado no tiene la forma esperada`);
     }
+    yield* procesar();
   }
-  resto += decodificador.end();
-  if (resto) {
-    if (BLOQUE.test(resto) && pendiente.length) yield* emitir();
-    pendiente.push(resto);
-  }
-  yield* emitir();
+  buf += decodificador.end();
+  yield* procesar();
 }
 
 /** Todos los releases de un volcado, uno a uno. `origen` es una URL o un fichero local. */

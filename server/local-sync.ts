@@ -343,6 +343,10 @@ async function repararMasivo(desdeAnio: number, hastaAnio: number) {
   };
 
   for (let anio = desdeAnio; anio <= hastaAnio; anio++) {
+    // Respiro entre volcados: pedirlos seguidos hizo que la fuente cortara la conexión a mitad de
+    // la descarga varias veces. Con la pausa y los reintentos, el barrido entero son 12 peticiones
+    // grandes; no hay ninguna prisa que justifique apurarlas.
+    if (anio > desdeAnio) await sleep(30000);
     const declarado = await totalDeclarado(anio);
     const tAnio = Date.now();
     let delAnio = 0, coincidencias = 0;

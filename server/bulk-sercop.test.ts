@@ -2,13 +2,13 @@
  * Pruebas del lector de volcados masivos del SERCOP.
  *
  * Lo que se prueba es el recorrido del JSON, no la red: se arma un ZIP en memoria con la misma
- * forma que el fichero real (una entrada deflate con un array JSON con formato bonito) y se
- * comprueba que salen todos los objetos.
+ * forma que el fichero real y se comprueba que salen todos los objetos.
  *
- * La prueba del objeto partido en varias líneas existe porque el primer intento de leer estos
- * volcados partía el texto por saltos de línea, y en el fichero real de julio de 2026 eso dejó
- * UN paquete sin parsear de 7.472. Un fallo del 0,01% que habría pasado inadvertido y habría
- * dejado procesos sin reparar sin que nada lo dijera.
+ * Cada prueba de aquí corresponde a un fallo REAL que costó una corrida sobre los ficheros de
+ * verdad, y por eso están todas: partir por líneas perdía un paquete de 7.472 en julio de 2026;
+ * `toString('utf8')` por trozo corrompía el texto en los 111 MB de 2019; el conteo de llaves solo
+ * se descuadraba para siempre con la comilla sin escapar de 2020; y esperar saltos de línea
+ * reventaba la memoria en los años que vienen en una sola línea.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -101,18 +101,28 @@ test('UNA COMILLA SIN ESCAPAR no se come el resto del fichero', async () => {
     'el paquete roto tiene que costar solo ese paquete');
 });
 
-test('LÍMITE DECLARADO: el lector exige un paquete por línea, y si no lo hay no inventa nada', async () => {
-  // El contrato es el formato real de estos volcados: array con formato bonito, un paquete de
-  // primer nivel por línea, empezando en la columna cero. Si algún día la fuente lo entregara todo
-  // en una sola línea, este lector devolvería CERO paquetes en vez de devolver datos a medias.
-  // Eso es deliberado: `repararMasivo` compara lo leído contra lo que declara `get-totals` y avisa
-  // de que el volcado está incompleto, así que un cambio de formato se nota en vez de pasar por
-  // bueno con la mitad de los procesos.
+test('un array ENTERO en una sola línea también se lee', async () => {
+  // No todos los volcados vienen con formato bonito. Esperar un salto de línea para delimitar
+  // hacía crecer el buffer medio giga y mataba la corrida con «Cannot create a string longer
+  // than 0x1fffffe8 characters». Con conteo de llaves, un fichero de una sola línea se lee igual.
+  const paquetes = Array.from({ length: 40 }, (_, i) => ({ releases: [{ ocid: `U-${i}` }] }));
+  const texto = '[' + paquetes.map(p => JSON.stringify(p)).join(',') + ']';
+  const salidos: any[] = [];
+  for await (const r of releasesDelVolcado(flujoDe(zipDeTexto('r.json', texto), 23))) salidos.push(r);
+  assert.equal(salidos.length, 40);
+  assert.equal(salidos[39].ocid, 'U-39');
+});
+
+test('el lector no depende del formato: con y sin saltos de línea da lo mismo', async () => {
+  // Las dos formas conviven en la fuente: unos años vienen con formato bonito y otros en una sola
+  // línea. El lector tiene que dar el mismo resultado con ambas. Y, además de esto, `repararMasivo`
+  // compara lo leído contra lo que declara `get-totals`, así que un cambio de formato que sí
+  // rompiera algo se notaría en vez de pasar por bueno con la mitad de los procesos.
   const bueno = JSON.stringify({ releases: [{ ocid: 'ok' }] });
   const todoEnUnaLinea = `[${bueno},${bueno.replace('ok', 'ok2')}]`;
   const salidos: any[] = [];
   for await (const o of objetosDeArray(Readable.from([Buffer.from(todoEnUnaLinea, 'utf8')]))) salidos.push(o);
-  assert.equal(salidos.length, 0, 'sin un paquete por línea no debe devolver datos a medias');
+  assert.equal(salidos.length, 2, "ahora tambien se leen los que vienen en una sola linea");
 
   // Y con el formato real sí salen los dos.
   const bienFormado = `[\n${bueno},\n${bueno.replace('ok', 'ok2')}\n]`;
