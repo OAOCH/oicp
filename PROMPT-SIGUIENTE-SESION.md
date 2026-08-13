@@ -103,7 +103,38 @@ a propósito, porque sus mínimos de 9/13/17 se calibraron así y cambiarlo move
 ganar nada: esa regla ya se publica declarando que no reproduce ningún término legal. Los feriados
 del Art. 65 se descuentan en las dos desde el 11-ago-2026; no lo rehagas.
 
-## 4. Ampliar el volumen de Railway
+## 4. DECIDIDO por Oscar (13-ago-2026): concentración por unidad + contexto consolidado por RUC
+
+Contexto: el mismo RUC aparece como VARIOS compradores (uno por unidad de compra, más un formato
+«pelado» sin sufijo que viene de la vía del catálogo). Verificado con el Cuerpo de Bomberos de
+Quito: `EC-RUC-1768097950001-2525` (951 procesos, $122 M, 131 críticos y altos) y
+`EC-RUC-1768097950001` (1 270 procesos, $14 M, 0 banderas, casi todo catálogo).
+
+**Decisión de Oscar: opciones 1+2, y NO la 3.**
+
+1. **Declarar en la metodología** (una frase, en las TRES superficies por la regla 10:
+   `flag-engine.ts` como comentario del catálogo CC, `Methodology.tsx`, y `METHODOLOGY` de
+   `mcp-server.ts`): las banderas de concentración (CC-01/CC-02/CC-05) miden la concentración
+   **por unidad de compra** (`buyer_id`), que es quien decide la contratación; la dominancia a
+   nivel de INSTITUCIÓN (RUC consolidado) no se evalúa como bandera. Un proveedor repartido entre
+   muchas unidades de la misma institución puede no disparar CC-02 aunque concentre mucho a nivel
+   institucional: limitación declarada.
+2. **Añadir contexto consolidado por RUC en el perfil del comprador** (web `getBuyerProfile` en
+   `db.ts` + `oicp_buyer_profile` en `mcp-server.ts`), SIN tocar banderas ni scores: extraer el
+   RUC del `buyer_id` (los 13 dígitos tras `EC-RUC-`), consultar `a_buyers WHERE buyer_id LIKE
+   'EC-RUC-<ruc>%'` y publicar `unidades_de_compra: N` y `consolidado_ruc: {n_procs, total_usd}`.
+   Es un cálculo al vuelo sobre 7 mil filas: no hace falta agregado nuevo ni recálculo.
+   OJO: hay RUC con >100 unidades (es legítimo, una por unidad de compra). Y algunos buyer_id NO
+   empiezan por `EC-RUC-` (formato `EC-` + nombre truncado, generado por la ingesta cuando la
+   fuente no trae id): para esos no hay consolidado y el campo va en null, no inventado.
+3. **NO cambiar la definición de CC-02 a RUC consolidado**: un proveedor nacional que atiende a
+   100 hospitales independientes del mismo ministerio saldría «dominante» sin que ningún decisor
+   lo haya favorecido. Decisión tomada, no volver a proponerla.
+
+Pruebas: la del perfil con dos unidades del mismo RUC (sumar bien, contar bien), la del buyer_id
+sin formato RUC (null, no basura), y regla 10 verificada leyendo la página renderizada.
+
+## 5. Ampliar el volumen de Railway
 
 Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espacio.
 
