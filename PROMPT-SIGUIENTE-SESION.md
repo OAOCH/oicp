@@ -111,6 +111,23 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
 
 # Trampas que ya costaron tiempo. Léelas antes de tocar nada
 
+0. **Si una cifra del OICP se ve vieja, mira el TOTAL antes de depurar el servidor.** Si los
+   niveles de riesgo suman 1 460 511 (o el corte dice 2026-05-14 o 2026-07-11), NO es un bug de
+   producción: es el «gemelo», una copia local congelada de julio que algún dispositivo todavía
+   tiene registrada como MCP junto al conector remoto. Ya reapareció TRES veces (la última, el
+   13-ago: una investigación desde el chat mezcló las dos fuentes y reportó `oicp_info`
+   «desactualizado» con 16 405 críticos = los 16 407 de scratch.db ± la deriva documentada de ±2).
+   El código de producción consulta en vivo y no puede servir eso.
+0b. **Toda tabla derivada necesita deltas en TODAS las vías de mutación Y un control en la
+   boleta.** `a_supplier_critical` sirvió scores viejos por el MCP porque su mantenimiento estaba
+   anidado bajo «solo si cambió el nivel». Si creas un agregado nuevo: (1) generarlo en
+   buildAnalytics, (2) mantenerlo en patchAggregatesForNew Y en reflagChanged, (3) añadirlo a
+   TABLAS_CHICAS del guardián o oicp_sql no podrá leerlo, y (4) control en verificar-anio.ts.
+   Cada paso de esa lista se olvidó una vez y costó un ciclo entero de despliegue.
+0c. **`/api/admin/build-analytics` es SÍNCRONO y NO se puede hacer push mientras corre**: el
+   redespliegue mata la regeneración a mitad, con los DROP ya hechos. Regla 2 aplicada también a
+   esto. Primero aterrizan todos los commits, después se regenera.
+
 1. **`/api/admin/ingest` NO repara: SALTA los ocid que ya existen** (`updater.ts`, `ingestProcs`).
    La versión anterior de este archivo afirmaba que hacía upsert. Para reparar existe
    `/api/admin/reparar`, que escribe SOLO `budget_amount` y `enquiry_deadline`.
