@@ -18,7 +18,7 @@
 import type Database from 'better-sqlite3';
 import { getDb, MONTO_SQL, SQL_ES_INFIMA_POR_MONTO } from './db.js';
 import { evaluateAllFlags, getRegime, getRiskLevel, isInfimaByAmount, getInfimaThreshold } from './flag-engine.js';
-import { buildConcentrationContext } from './updater.js';
+import { buildConcentrationContext, uniqueRuc10 } from './updater.js';
 import { limpiarNombre } from './ocds-proc.js';
 
 export type Control = { ok: boolean; detalle: string; ejemplos?: string[] };
@@ -74,6 +74,7 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
   let flagsIlegibles = 0, textoViejo = 0;
   const conteoBanderas = new Map<string, number>();
   const conteoRiesgo = new Map<string, number>();
+  const conteoSrisk = new Map<string, [number, number]>();
 
   for (;;) {
     const filas = leer.all(year, cursor, LOTE) as any[];
@@ -174,6 +175,11 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
 
       // Conteos para cuadrar contra los agregados.
       conteoRiesgo.set(row.risk_level || 'low', (conteoRiesgo.get(row.risk_level || 'low') || 0) + 1);
+      for (const { r10 } of uniqueRuc10(suppliersArr)) {
+        const k = `${r10}|${row.risk_level || 'low'}`;
+        const v = conteoSrisk.get(k);
+        if (!v) conteoSrisk.set(k, [1, montoJs]); else { v[0]++; v[1] += montoJs; }
+      }
       try {
         for (const f of JSON.parse(row.flags || '[]')) {
           if (f?.active) conteoBanderas.set(f.code, (conteoBanderas.get(f.code) || 0) + 1);
@@ -219,6 +225,35 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
     ejMuestra.push(`no se pudo evaluar: ${e.message}`);
   }
 
+  // 12. El agregado proveedor × riesgo × año dice lo mismo que la base. Es la respuesta a
+  //     «¿cuánto dinero movió cada proveedor en procesos críticos?» y se mantiene incremental,
+  //     así que hereda el mismo riesgo de deriva que mató a la muestra de críticos.
+  let sriskMal = 0; const ejSrisk: string[] = [];
+  try {
+    const enTabla = new Map<string, [number, number]>();
+    for (const r of db.prepare(`SELECT ruc10, risk_level, n_procs, total_usd
+        FROM a_supplier_risk WHERE year = ?`).all(year) as any[]) {
+      enTabla.set(`${r.ruc10}|${r.risk_level}`, [r.n_procs, r.total_usd]);
+    }
+    for (const [k, [n, t]] of conteoSrisk) {
+      const fila = enTabla.get(k);
+      if (!fila || fila[0] !== n || Math.abs(fila[1] - t) > 0.02) {
+        sriskMal++;
+        if (ejSrisk.length < 6) ejSrisk.push(`${k}: tabla ${fila ? `${fila[0]}/${fila[1]}` : '(ausente)'} vs real ${n}/${Math.round(t * 100) / 100}`);
+      }
+    }
+    for (const k of enTabla.keys()) {
+      if (!conteoSrisk.has(k)) {
+        // Filas en cero son residuo legítimo del movimiento entre niveles; con conteo no.
+        const fila = enTabla.get(k)!;
+        if (fila[0] !== 0) { sriskMal++; if (ejSrisk.length < 6) ejSrisk.push(`${k}: tabla ${fila[0]} vs real 0`); }
+      }
+    }
+  } catch (e: any) {
+    sriskMal = -1;
+    ejSrisk.push(`no se pudo evaluar: ${e.message}`);
+  }
+
   const controles: Record<string, Control> = {
     motor: discrepancias === 0
       ? ok(`${procesos} procesos re-evaluados con el motor real, 0 discrepancias`)
@@ -259,6 +294,12 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
           ? 'el control no se pudo evaluar: sin veredicto no hay verificación'
           : `${muestraMal} ejemplos de a_supplier_critical con score o nivel VIEJO (los sirve oicp_supplier_profile)`,
         ejMuestra),
+    riesgo_proveedor: sriskMal === 0
+      ? ok('a_supplier_risk cuadra con la base en conteo y monto por proveedor y nivel')
+      : falla(sriskMal < 0
+          ? 'el control no se pudo evaluar: sin veredicto no hay verificación'
+          : `${sriskMal} pares proveedor-nivel donde a_supplier_risk no cuadra con la base`,
+        ejSrisk),
   };
 
   const veredicto = Object.values(controles).every(c => c.ok) ? 'APROBADO' : 'FALLA';

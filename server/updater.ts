@@ -141,8 +141,18 @@ export function refreshDataCutoff() {
 }
 
 // ── Agregados: upsert incremental (mismo resultado que buildAnalytics) ──
+// `a_supplier_risk` nació después que el resto de agregados. Entre el despliegue del código y la
+// regeneración completa (`buildAnalytics`) la tabla puede no existir, y `prepare()` sobre una
+// tabla ausente revienta ANTES de ejecutar nada: el reflag entero quedaría roto. Se asegura vacía
+// y la regeneración inmediata la llena; la boleta por año grita si alguien omite ese paso.
+function ensureSupplierRisk(db: Database.Database) {
+  db.exec(`CREATE TABLE IF NOT EXISTS a_supplier_risk (ruc10 TEXT, risk_level TEXT, year INTEGER,
+    n_procs INTEGER, total_usd REAL, PRIMARY KEY (ruc10, risk_level, year))`);
+}
+
 export function patchAggregatesForNew(db: Database.Database, procs: any[]) {
   if (!analyticsReady(db) || !procs.length) return;
+  ensureSupplierRisk(db);
   const upSup = db.prepare(`INSERT INTO a_suppliers (ruc10,name,n_procs,total_usd,first_year,last_year,n_buyers,n_critical,n_high,n_moderate,n_low)
     VALUES (@r,@name,1,@m,@y,@y,1,@c,@h,@mo,@lo)
     ON CONFLICT(ruc10) DO UPDATE SET
@@ -162,6 +172,9 @@ export function patchAggregatesForNew(db: Database.Database, procs: any[]) {
     ON CONFLICT(risk,year) DO UPDATE SET n=n+1, total_usd=ROUND(total_usd+@m,2)`);
   const upFy = db.prepare(`INSERT INTO a_flag_year (code,year,n) VALUES (@code,@y,1)
     ON CONFLICT(code,year) DO UPDATE SET n=n+1`);
+  const upSrisk = db.prepare(`INSERT INTO a_supplier_risk (ruc10,risk_level,year,n_procs,total_usd)
+    VALUES (@r,@rl,@y,1,@m)
+    ON CONFLICT(ruc10,risk_level,year) DO UPDATE SET n_procs=n_procs+1, total_usd=ROUND(total_usd+@m,2)`);
   const nBuyers = db.prepare(`SELECT COUNT(*) AS n FROM a_supplier_buyer WHERE ruc10=?`);
   const setNb = db.prepare(`UPDATE a_suppliers SET n_buyers=? WHERE ruc10=?`);
   const insFts = db.prepare(`INSERT INTO a_fts (ocid,texto) VALUES (?,?)`);
@@ -177,6 +190,7 @@ export function patchAggregatesForNew(db: Database.Database, procs: any[]) {
       for (const { r10, name } of sups) {
         // El nombre se guarda ya resuelto: si la fuente publica basura ("null"), cae al RUC.
         upSup.run({ r: r10, name: nombreVisible(name, r10), m: monto, y, ...cnt });
+        upSrisk.run({ r: r10, rl, y, m: monto });
         if (p.buyer_id) {
           upSb.run({ r: r10, b: p.buyer_id, bn: p.buyer_name || '', m: monto, y });
           setNb.run((nBuyers.get(r10) as any).n, r10);
@@ -313,6 +327,8 @@ export function buildConcentrationContext(db: Database.Database) {
 //    (fila de procedures y sus deltas de agregados en la misma transacción) ──
 export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
   const db = dbIn || getDb();
+  const hasAggInicial = analyticsReady(db);
+  if (hasAggInicial) ensureSupplierRisk(db);
   const ctx = buildConcentrationContext(db);
   type Change = { id: string; flags: string; score: number; rl: string;
     oldRl: string; oldFlags: string; year: number; suppliers: string; monto: number };
@@ -325,6 +341,11 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
   const iFy = hasAgg ? db.prepare(`INSERT OR IGNORE INTO a_flag_year (code,year,n) VALUES (?,?,0)`) : null;
   const dSup = hasAgg ? db.prepare(`UPDATE a_suppliers SET n_critical=n_critical+@dc, n_high=n_high+@dh,
     n_moderate=n_moderate+@dm, n_low=n_low+@dl WHERE ruc10=@r`) : null;
+  // Cuando el nivel cambia, el proceso se MUEVE de una fila a otra de a_supplier_risk: se resta
+  // del nivel viejo y se suma al nuevo, con upsert porque la fila destino puede no existir.
+  const dSrisk = hasAgg ? db.prepare(`INSERT INTO a_supplier_risk (ruc10,risk_level,year,n_procs,total_usd)
+    VALUES (@r,@rl,@y,@dn,@dm)
+    ON CONFLICT(ruc10,risk_level,year) DO UPDATE SET n_procs=n_procs+@dn, total_usd=ROUND(total_usd+@dm,2)`) : null;
   const delCrit = hasAgg ? db.prepare(`DELETE FROM a_supplier_critical WHERE ocid=?`) : null;
   const insCrit = hasAgg ? db.prepare(`INSERT INTO a_supplier_critical (ruc10,ocid,score,risk_level,year,monto_usd) VALUES (?,?,?,?,?,?)`) : null;
   const updCrit = hasAgg ? db.prepare(`UPDATE a_supplier_critical SET score=?, risk_level=? WHERE ocid=?`) : null;
@@ -346,6 +367,8 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
         const oldC = cnt(c.oldRl), newC = cnt(c.rl);
         for (const { r10 } of sups) {
           dSup!.run({ r: r10, dc: newC.dc - oldC.dc, dh: newC.dh - oldC.dh, dm: newC.dm - oldC.dm, dl: newC.dl - oldC.dl });
+          dSrisk!.run({ r: r10, rl: c.oldRl, y: c.year, dn: -1, dm: -c.monto });
+          dSrisk!.run({ r: r10, rl: c.rl, y: c.year, dn: 1, dm: c.monto });
         }
       }
       // La muestra de ejemplos críticos se mantiene FUERA del `if` de arriba, a propósito.

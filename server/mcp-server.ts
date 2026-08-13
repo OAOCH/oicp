@@ -84,6 +84,7 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     DROP TABLE IF EXISTS a_supplier_year; DROP TABLE IF EXISTS a_buyers;
     DROP TABLE IF EXISTS a_flag_year; DROP TABLE IF EXISTS a_risk_year;
     DROP TABLE IF EXISTS a_supplier_critical; DROP TABLE IF EXISTS a_fts;
+    DROP TABLE IF EXISTS a_supplier_risk;
     CREATE TABLE a_suppliers (ruc10 TEXT PRIMARY KEY, name TEXT, n_procs INTEGER, total_usd REAL,
       first_year INTEGER, last_year INTEGER, n_buyers INTEGER,
       n_critical INTEGER, n_high INTEGER, n_moderate INTEGER, n_low INTEGER);
@@ -97,6 +98,8 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     CREATE TABLE a_risk_year (risk TEXT, year INTEGER, n INTEGER, total_usd REAL, PRIMARY KEY (risk, year));
     CREATE TABLE a_supplier_critical (ruc10 TEXT, ocid TEXT, score INTEGER, risk_level TEXT,
       year INTEGER, monto_usd REAL);
+    CREATE TABLE a_supplier_risk (ruc10 TEXT, risk_level TEXT, year INTEGER,
+      n_procs INTEGER, total_usd REAL, PRIMARY KEY (ruc10, risk_level, year));
     CREATE VIRTUAL TABLE a_fts USING fts5(ocid UNINDEXED, texto);
   `);
 
@@ -108,6 +111,12 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
   const buy = new Map<string, [string, number, number, number, number]>();
   const ry = new Map<string, [number, number]>();
   const fy = new Map<string, number>();
+  // Monto y conteo por proveedor × nivel de riesgo × año. Existe porque la pregunta central de
+  // un observatorio de integridad («¿cuánto dinero movió cada proveedor en procesos críticos?»)
+  // no tenía NINGUNA ruta: a_suppliers da conteos por nivel pero no montos, y el guardián de
+  // costos rechaza el json_each sobre `procedures` que haría falta para calcularlo al vuelo.
+  // Carencia señalada por una investigación externa el 13-ago-2026 (hallazgo 4).
+  const srisk = new Map<string, [number, number]>();
 
   const scan = db.prepare(`SELECT id, flags, risk_level, score, source_year, buyer_id, buyer_name,
     description, title, final_amount, contract_amount, award_amount, suppliers FROM procedures`);
@@ -156,6 +165,9 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
         const ky = r10 + '|' + yr;
         const vy = sy.get(ky);
         if (!vy) sy.set(ky, [1, monto]); else { vy[0]++; vy[1] += monto; }
+        const kk = r10 + '|' + rl + '|' + yr;
+        const vk = srisk.get(kk);
+        if (!vk) srisk.set(kk, [1, monto]); else { vk[0]++; vk[1] += monto; }
       }
     }
     if (row.buyer_id) {
@@ -212,11 +224,16 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
   const insBuy = wdb.prepare(`INSERT INTO a_buyers VALUES (?,?,?,?,?,?)`);
   const insRy = wdb.prepare(`INSERT INTO a_risk_year VALUES (?,?,?,?)`);
   const insFy = wdb.prepare(`INSERT INTO a_flag_year VALUES (?,?,?)`);
+  const insSrisk = wdb.prepare(`INSERT INTO a_supplier_risk VALUES (?,?,?,?,?)`);
   wdb.transaction(() => {
     for (const [k, v] of sy) { const [r10, y] = k.split('|'); insSy.run(r10, Number(y), v[0], Math.round(v[1] * 100) / 100); }
     for (const [bid, v] of buy) insBuy.run(bid, v[0], v[1], Math.round(v[2] * 100) / 100, v[3], v[4]);
     for (const [k, v] of ry) { const [r, y] = k.split('|'); insRy.run(r, Number(y), v[0], Math.round(v[1] * 100) / 100); }
     for (const [k, v] of fy) { const [c, y] = k.split('|'); insFy.run(c, Number(y), v); }
+    for (const [k, v] of srisk) {
+      const [r10, rl, y] = k.split('|');
+      insSrisk.run(r10, rl, Number(y), v[0], Math.round(v[1] * 100) / 100);
+    }
   })();
   wdb.exec(`
     CREATE INDEX IF NOT EXISTS idx_a_sup_total ON a_suppliers(total_usd DESC);

@@ -246,6 +246,53 @@ test('el reflag actualiza la muestra aunque el nivel NO cambie (la causa raíz d
     'y la muestra tiene que seguirlo AUNQUE el nivel no cambie: aquí vivía el bug');
 });
 
+test('caza un desfase en a_supplier_risk, el agregado de monto por proveedor y nivel', async () => {
+  const db = getDb();
+  const fila = db.prepare(`SELECT ruc10, risk_level, n_procs FROM a_supplier_risk WHERE year=? LIMIT 1`).get(ANIO) as any;
+  assert.ok(fila, 'buildAnalytics tiene que haber generado a_supplier_risk');
+  db.prepare(`UPDATE a_supplier_risk SET n_procs = n_procs + 3 WHERE ruc10=? AND risk_level=? AND year=?`)
+    .run(fila.ruc10, fila.risk_level, ANIO);
+  try {
+    const b = await verificarAnio(ANIO);
+    assert.equal(b.controles.riesgo_proveedor.ok, false, 'un agregado inflado tiene que salir');
+  } finally {
+    db.prepare(`UPDATE a_supplier_risk SET n_procs = ? WHERE ruc10=? AND risk_level=? AND year=?`)
+      .run(fila.n_procs, fila.ruc10, fila.risk_level, ANIO);
+  }
+});
+
+test('cuando el reflag CAMBIA el nivel, a_supplier_risk mueve el proceso de fila (incremental)', async () => {
+  // El flujo real de la ingesta: el proceso entra con banderas sin evaluar (low, score 0) y el
+  // reflag lo sube a su nivel verdadero. Ese salto de nivel tiene que MOVER el conteo y el monto
+  // de la fila `low` a la fila del nivel real, para el ruc de cada proveedor.
+  const db = getDb();
+  const RUC = '3333333333';
+  upsertProcedure(fila(500, {
+    id: 'p0500', ocid: `ocds-5wno2w-RE-NUEVO-${ANIO}-500-1`,
+    procurement_method: 'direct', procurement_method_details: 'Régimen Especial',
+    award_amount: 50000, contract_amount: 50000, budget_amount: 51000,
+    suppliers: [{ id: `EC-RUC-${RUC}001-9`, name: 'PROVEEDOR NUEVO AISLADO' }],
+    flags: [], score: 0, risk_level: 'low',
+  }));
+  // Simula el patch de la ingesta para el estado inicial (low).
+  const { patchAggregatesForNew } = await import('./updater.js');
+  patchAggregatesForNew(db, [{ ...fila(500), id: 'p0500', risk_level: 'low', score: 0, flags: [],
+    suppliers: [{ id: `EC-RUC-${RUC}001-9`, name: 'PROVEEDOR NUEVO AISLADO' }],
+    award_amount: 50000, contract_amount: 50000 }]);
+  const antes = db.prepare(`SELECT risk_level, n_procs FROM a_supplier_risk WHERE ruc10=?`).all(RUC) as any[];
+  assert.deepEqual(antes, [{ risk_level: 'low', n_procs: 1 }], 'el estado inicial es una fila low');
+
+  await reflagChanged(db);   // el motor lo sube a su nivel real (direct + 50k => IC-02 y compañía)
+
+  const despues = db.prepare(`SELECT risk_level, n_procs, total_usd FROM a_supplier_risk
+      WHERE ruc10=? AND n_procs != 0 ORDER BY risk_level`).all(RUC) as any[];
+  const nivelReal = (db.prepare(`SELECT risk_level FROM procedures WHERE id='p0500'`).get() as any).risk_level;
+  assert.notEqual(nivelReal, 'low', 'la preparación exige que el motor lo suba de nivel');
+  assert.deepEqual(despues.map(r => ({ rl: r.risk_level, n: r.n_procs })),
+    [{ rl: nivelReal, n: 1 }],
+    'el proceso tiene que haberse MOVIDO de la fila low a la fila de su nivel real');
+});
+
 test('tras deshacer todos los sabotajes, el año vuelve a APROBADO', async () => {
   const b = await verificarAnio(ANIO);
   const fallidos = Object.entries(b.controles).filter(([, c]) => !c.ok).map(([k]) => k);
