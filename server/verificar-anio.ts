@@ -198,6 +198,27 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
   for (const [nivel, n] of conteoRiesgo) if ((aRisk.get(nivel) || 0) !== n) difRiesgo.push(`${nivel}: a_risk_year ${aRisk.get(nivel) || 0} vs real ${n}`);
   const sumaRiesgo = [...conteoRiesgo.values()].reduce((a, b) => a + b, 0);
 
+  // 11. La MUESTRA de ejemplos críticos dice lo mismo que la base. `a_supplier_critical` es lo
+  //     que `oicp_supplier_profile` sirve como `procesos_criticos_ejemplo`, y quedó con scores
+  //     VIEJOS tras los recálculos del 11-12-ago (el mantenimiento incremental estaba anidado
+  //     bajo «solo si cambió el nivel»). Lo encontró una investigación externa consultando el
+  //     MCP; esta boleta no lo cazó porque no cubría la tabla. Ahora la cubre.
+  let muestraMal = 0; const ejMuestra: string[] = [];
+  try {
+    for (const r of db.prepare(`
+        SELECT m.ocid, m.score AS ms, m.risk_level AS mrl, p.score AS ps, p.risk_level AS prl
+        FROM a_supplier_critical m JOIN procedures p ON p.id = m.ocid
+        WHERE m.year = ?`).all(year) as any[]) {
+      if (r.ms !== r.ps || r.mrl !== r.prl) {
+        muestraMal++;
+        if (ejMuestra.length < 6) ejMuestra.push(`${r.ocid}: muestra ${r.ms}/${r.mrl} vs real ${r.ps}/${r.prl}`);
+      }
+    }
+  } catch (e: any) {
+    muestraMal = -1;
+    ejMuestra.push(`no se pudo evaluar: ${e.message}`);
+  }
+
   const controles: Record<string, Control> = {
     motor: discrepancias === 0
       ? ok(`${procesos} procesos re-evaluados con el motor real, 0 discrepancias`)
@@ -232,6 +253,12 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
     datos_legibles: flagsIlegibles === 0
       ? ok('todos los JSON de proveedores y banderas se pudieron leer')
       : falla(`${flagsIlegibles} procesos con JSON ilegible`),
+    muestra_criticos: muestraMal === 0
+      ? ok('los ejemplos críticos de la muestra coinciden con la base en score y nivel')
+      : falla(muestraMal < 0
+          ? 'el control no se pudo evaluar: sin veredicto no hay verificación'
+          : `${muestraMal} ejemplos de a_supplier_critical con score o nivel VIEJO (los sirve oicp_supplier_profile)`,
+        ejMuestra),
   };
 
   const veredicto = Object.values(controles).every(c => c.ok) ? 'APROBADO' : 'FALLA';

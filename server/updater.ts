@@ -347,12 +347,20 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
         for (const { r10 } of sups) {
           dSup!.run({ r: r10, dc: newC.dc - oldC.dc, dh: newC.dh - oldC.dh, dm: newC.dm - oldC.dm, dl: newC.dl - oldC.dl });
         }
-        const wasCrit = c.oldRl === 'critical' || c.oldRl === 'high';
-        const isCrit = c.rl === 'critical' || c.rl === 'high';
-        if (wasCrit && !isCrit) delCrit!.run(c.id);
-        else if (!wasCrit && isCrit) for (const { r10 } of sups) insCrit!.run(r10, c.id, c.score, c.rl, c.year, Math.round(c.monto * 100) / 100);
-        else if (wasCrit && isCrit) updCrit!.run(c.score, c.rl, c.id);
       }
+      // La muestra de ejemplos críticos se mantiene FUERA del `if` de arriba, a propósito.
+      // Estuvo adentro, y esa anidación dejó scores VIEJOS servidos por oicp_supplier_profile:
+      // un proceso que bajaba de 100 a 95 sin cambiar de nivel (ambos `critical`) jamás tocaba
+      // `a_supplier_critical`, así que los recálculos de metodología del 11 y 12-ago-2026
+      // actualizaron `procedures` y dejaron la muestra con los puntajes de antes. Lo encontró
+      // una investigación externa consultando el MCP en producción: 8 de 8 filas muestreadas
+      // con score 100 tenían otro valor en `procedures`. La boleta por año no lo cazó porque
+      // no cubría esta tabla; ahora la cubre (control `muestra_criticos` en verificar-anio.ts).
+      const wasCrit = c.oldRl === 'critical' || c.oldRl === 'high';
+      const isCrit = c.rl === 'critical' || c.rl === 'high';
+      if (wasCrit && !isCrit) delCrit!.run(c.id);
+      else if (!wasCrit && isCrit) for (const { r10 } of sups) insCrit!.run(r10, c.id, c.score, c.rl, c.year, Math.round(c.monto * 100) / 100);
+      else if (wasCrit && isCrit) updCrit!.run(c.score, c.rl, c.id);
       try {
         const oldCodes = new Set<string>(JSON.parse(c.oldFlags).map((f: any) => f.code));
         const newCodes = new Set<string>(JSON.parse(c.flags).map((f: any) => f.code));

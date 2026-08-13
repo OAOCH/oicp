@@ -205,6 +205,47 @@ test('un DETALLE distinto SÍ es falla: es lo que lee el usuario en la ficha', a
   }
 });
 
+test('caza un score VIEJO en la muestra de ejemplos críticos', async () => {
+  // Es el hallazgo real del 13-ago-2026: los recálculos cambiaron scores en `procedures` sin
+  // cambiar el nivel, y `a_supplier_critical` (lo que sirve oicp_supplier_profile) se quedó con
+  // los puntajes de antes. Esta boleta no lo cazó porque no cubría la tabla.
+  const db = getDb();
+  const fila = db.prepare(`SELECT ocid, score FROM a_supplier_critical WHERE year=? LIMIT 1`).get(ANIO) as any;
+  assert.ok(fila, 'la preparación tiene que haber dejado ejemplos críticos para este año');
+  db.prepare(`UPDATE a_supplier_critical SET score = score + 9 WHERE ocid=?`).run(fila.ocid);
+  try {
+    const b = await verificarAnio(ANIO);
+    assert.equal(b.controles.muestra_criticos.ok, false, 'un score viejo en la muestra tiene que salir');
+    assert.ok(b.controles.muestra_criticos.ejemplos!.join(' ').includes(fila.ocid));
+  } finally {
+    db.prepare(`UPDATE a_supplier_critical SET score = ? WHERE ocid=?`).run(fila.score, fila.ocid);
+  }
+});
+
+test('el reflag actualiza la muestra aunque el nivel NO cambie (la causa raíz del hallazgo)', async () => {
+  // Reproduce el escenario real: la base y la muestra comparten un score VIEJO, el motor produce
+  // otro, y el nivel no cambia. Con el código anterior el reflag corregía `procedures` y dejaba
+  // `a_supplier_critical` con el puntaje de antes, porque su mantenimiento estaba anidado bajo
+  // «solo si cambió el nivel».
+  const db = getDb();
+  const fila = db.prepare(`
+      SELECT m.ocid, p.score AS real FROM a_supplier_critical m JOIN procedures p ON p.id=m.ocid
+      WHERE m.year=? AND p.score BETWEEN 34 AND 59 LIMIT 1`).get(ANIO) as any;
+  assert.ok(fila, 'hace falta un ejemplo en la banda alta con margen para no cambiar de nivel');
+  const falso = fila.real + 1;   // sigue dentro de 31-60: mismo nivel, distinto score
+
+  db.prepare(`UPDATE procedures SET score=? WHERE id=?`).run(falso, fila.ocid);
+  db.prepare(`UPDATE a_supplier_critical SET score=? WHERE ocid=?`).run(falso, fila.ocid);
+
+  await reflagChanged(db);   // el motor recalcula el score real; el nivel no cambia
+
+  const p = db.prepare(`SELECT score FROM procedures WHERE id=?`).get(fila.ocid) as any;
+  const m = db.prepare(`SELECT score FROM a_supplier_critical WHERE ocid=?`).get(fila.ocid) as any;
+  assert.equal(p.score, fila.real, 'el reflag tiene que devolver el score verdadero a la base');
+  assert.equal(m.score, fila.real,
+    'y la muestra tiene que seguirlo AUNQUE el nivel no cambie: aquí vivía el bug');
+});
+
 test('tras deshacer todos los sabotajes, el año vuelve a APROBADO', async () => {
   const b = await verificarAnio(ANIO);
   const fallidos = Object.entries(b.controles).filter(([, c]) => !c.ok).map(([k]) => k);
