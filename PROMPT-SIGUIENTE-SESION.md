@@ -103,7 +103,19 @@ a propósito, porque sus mínimos de 9/13/17 se calibraron así y cambiarlo move
 ganar nada: esa regla ya se publica declarando que no reproduce ningún término legal. Los feriados
 del Art. 65 se descuentan en las dos desde el 11-ago-2026; no lo rehagas.
 
-## 4. DECIDIDO por Oscar (13-ago-2026): concentración por unidad + contexto consolidado por RUC
+## 4. HECHO el 13-ago-2026 (commit `d98ac61`, verificado en producción): concentración por unidad + contexto consolidado por RUC
+
+> **Este punto ya está implementado y verificado; no lo rehagas.** Las tres superficies de la
+> regla 10 declaran la limitación; el perfil del comprador (web y MCP) publica
+> `unidades_de_compra` y `consolidado_ruc`; Bomberos de Quito verificado en producción: 2
+> unidades, 2 221 procesos, $132 938 469,26 (la cifra «~$136 M» de abajo quedó vieja tras los
+> recálculos de la mañana del 13-ago: el consolidado real medido es ese). Boleta 8-13 controles
+> APROBADA en 2024 y 2025 después del deploy. HALLAZGO que cambió la especificación de abajo: el
+> sufijo de unidad puede venir PEGADO al RUC sin guion (337 compradores, 11 035 procesos,
+> $406,5 M; p. ej. unidades de CNT), así que el RUC son los 13 PRIMEROS dígitos tras `EC-RUC-` y
+> el consolidado va por prefijo, exactamente como decía la especificación original. Las pruebas
+> en `server/consolidado-ruc.test.ts` fijan ese caso, el del buyer sin formato (null) y la
+> identidad web = MCP. Se conserva el texto original como registro de la decisión:
 
 Contexto: el mismo RUC aparece como VARIOS compradores (uno por unidad de compra, más un formato
 «pelado» sin sufijo que viene de la vía del catálogo). Verificado con el Cuerpo de Bomberos de

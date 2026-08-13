@@ -1,5 +1,30 @@
 # ESTADO — actualizado 2026-08-13
 
+## 2026-08-13 (tarde) — concentración por unidad declarada + consolidado por RUC (decisión 1+2, no 3)
+
+Commit `d98ac61`, verificado en producción. Las banderas CC-01/CC-02/CC-05 siguen midiendo por
+unidad de compra y la limitación quedó declarada en las TRES superficies de la regla 10 (leída la
+página renderizada). El perfil del comprador (web y MCP) publica `unidades_de_compra` y
+`consolidado_ruc {n_procs, total_usd}` desde `a_buyers`, con UNA definición compartida
+(`server/consolidado-ruc.ts`) y sin tocar banderas ni scores. Bomberos de Quito en producción:
+2 unidades, 2 221 procesos, $132 938 469,26 (web = MCP al centavo). Boleta APROBADA en 2024
+(219 185 procesos, 13/13 controles) y 2025 (173 210, 13/13) tras el deploy.
+
+**Hallazgo de datos**: el sufijo de unidad puede venir PEGADO al RUC sin guion. Medido: 337
+compradores, 11 035 procesos y $406,5 M (p. ej. `EC-RUC-17681528000014-240717` es una unidad de
+CNT). Un diseño intermedio que exigía guion tras los 13 dígitos dejaba esos $406 M fuera del
+consolidado; la prueba de `consolidado-ruc.test.ts` fija el caso. Lección de método: la primera
+revisión adversarial (4 lentes) APROBÓ ese diseño defectuoso porque revisaba coherencia interna
+sin datos; la consulta a `a_buyers` en producción lo tumbó en una sola query. Verificar supuestos
+de FORMATO contra la base real antes de dar por buena una revisión.
+
+**Colateral anotado, sin tocar (fuera del alcance del día)**: la sección «Cómo se cuentan los
+días hábiles» de Methodology.tsx y la limitación (3) de `limitaciones_del_dato` del MCP describen
+IT-01/IT-02 como si el conteo siempre incluyera el día inicial; desde el 12-ago el régimen (A)
+del Art. 96 cuenta desde el día siguiente (la regla de IT-01 del propio METHODOLOGY lo dice
+bien). Las dos superficies son consistentes entre sí pero la matización del régimen (A) les
+falta. Decidir si se reescriben.
+
 ## 2026-08-13 — una investigación externa auditó el MCP y encontró cosas de verdad
 
 Oscar usó el MCP desde un chat para una investigación real de proveedores y el chat produjo un
