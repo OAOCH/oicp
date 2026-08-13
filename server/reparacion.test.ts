@@ -283,6 +283,21 @@ test('oicp_buyer_profile acepta el buyer_id que devuelve oicp_top_buyers (encade
   assert.equal(perfil.buyer_id, buyerId, 'y tiene que ser el MISMO comprador, no otro que se le parezca');
 });
 
+test('la descripción de oicp_sql no vuelve a tender las tres trampas del hallazgo externo', async () => {
+  // La descripción recomendaba json_each sobre procedures (el guardián lo rechaza siempre), no
+  // decía que a_supplier_critical es una muestra top-5 con nivel high adentro, y no documentaba
+  // que las columnas de nombre difieren por tabla. Quien siguió la doc al pie de la letra chocó
+  // con el guardián y casi construye un ranking nacional sobre la muestra de 5.
+  const { readFileSync } = await import('fs');
+  const src = readFileSync(new URL('./mcp-server.ts', import.meta.url), 'utf-8');
+  const desc = src.split(`name: 'oicp_sql', description:`)[1]?.split('inputSchema')[0] || '';
+  assert.ok(desc.includes('MUESTRA'), 'tiene que declarar que a_supplier_critical es una muestra');
+  assert.ok(desc.includes('a_supplier_risk'), 'tiene que ofrecer la ruta real para montos por riesgo');
+  assert.ok(desc.includes('json_each sobre procedures se rechaza'),
+    'tiene que decir lo que el guardián de verdad hace, no recomendar lo que rechaza');
+  assert.ok(desc.includes('a_buyers(buyer_id, name'), 'tiene que documentar las columnas por tabla');
+});
+
 test('la metodología publica el pendiente MEDIDO, no una cifra clavada que envejece', () => {
   const db = getDb();
   const pendientes = (db.prepare(
