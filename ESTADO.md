@@ -1,4 +1,28 @@
-# ESTADO — actualizado 2026-08-12
+# ESTADO — actualizado 2026-08-13
+
+## 2026-08-13 — una investigación externa auditó el MCP y encontró cosas de verdad
+
+Oscar usó el MCP desde un chat para una investigación real de proveedores y el chat produjo un
+reporte con 8 hallazgos. **Se reprodujo cada uno contra producción antes de tocar nada.** Vale
+leerlo como lección: la plataforma acababa de salir 8/8 en la boleta por año y aun así un usuario
+externo encontró defectos reales, porque miró superficies que la boleta no cubría.
+
+| # | Hallazgo | Veredicto | Qué se hizo |
+|---|---|---|---|
+| 1 | `oicp_info` con distribución vieja | **NO se reproduce.** El código consulta en vivo (mcp-server.ts, `case 'oicp_info'`) y no puede servir otra cosa que la base. Los números que vio suman EXACTAMENTE 1 460 511, el corpus del 9-jul: firma de un SEGUNDO conector apuntando a una copia vieja (el «gemelo» ya documentado). | Pendiente de Oscar: revisar los conectores de ese chat |
+| 2 | `a_supplier_critical` con scores viejos (8 de 8 muestreados) | **CONFIRMADO.** Causa raíz: todo el mantenimiento de la muestra estaba anidado bajo `if (rl !== oldRl)`; un score que baja sin cambiar de nivel jamás la tocaba. Los recálculos del 11-12-ago hicieron exactamente eso en masa. | Fix `eaa258b` + control `muestra_criticos` en la boleta + regeneración |
+| 3 | La tabla es muestra top-5 con `high` adentro y el nombre no lo dice | **CONFIRMADO** (2 708 critical + 24 571 high). Es diseño, mal expuesto. | Documentado en la descripción del tool con su uso correcto (`b362466`) |
+| 4 | No hay ruta para monto por proveedor × riesgo; la doc recomienda lo que el guardián rechaza | **CONFIRMADO.** El guardián falla cerrado A PROPÓSITO; la doc era la equivocada. | Agregado nuevo `a_supplier_risk` con mantenimiento incremental + control `riesgo_proveedor` en la boleta (`1ba4ff0`) + doc |
+| 5 | «BOMBEROS QUITO» no encuentra a los bomberos de Quito | **CONFIRMADO.** El LIKE exigía subcadena contigua. | Match tokenizado en los dos perfiles (`b72d3f1`) |
+| 6 | Columnas de nombre distintas por tabla rompen consultas | **CONFIRMADO.** | Esquema de cada tabla documentado en la descripción (`b362466`) |
+| 7 | 79% del corpus (1 153 794 procesos, $6 944 M) en buyer_id sin sufijo, sin una sola bandera | **Números CONFIRMADOS.** Es casi todo catálogo electrónico (pre-competido, sin fechas ni oferentes): score 0 ahí es coherente con el diseño. | Decisiones de negocio pendientes de Oscar (cobertura publicada, consolidación por RUC) |
+| 8 | `procurement_method_details` truncado ~80 chars de forma inconsistente | No re-verificado a fondo; consistente con el feed de búsqueda del SERCOP que trunca y el record que no. | Anotado; reparable con los volcados si Oscar lo pide |
+
+**La moraleja quedó cableada**: la boleta ahora cubre `a_supplier_critical` y `a_supplier_risk`,
+así que esta clase entera de deriva (agregado que no sigue al recálculo) grita en vez de servirse
+como dato. Y las pruebas de los fixes se verificaron en ROJO contra el código viejo.
+
+---
 
 > **Lee primero esta sección.** Lo que sigue después conserva el historial de las auditorías
 > anteriores y tiene tramos que ya quedaron superados; donde haya contradicción, manda lo de aquí.

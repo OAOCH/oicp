@@ -389,7 +389,8 @@ export const TABLAS_GRANDES = ['procedures', 'concentration_index'];
 // Tablas cuyo recorrido completo es barato: los agregados precalculados (miles de filas,
 // no millones) y el registro de importaciones.
 const TABLAS_CHICAS = new Set(['a_suppliers', 'a_supplier_buyer', 'a_supplier_year',
-  'a_buyers', 'a_flag_year', 'a_risk_year', 'a_supplier_critical', 'a_fts', 'import_log']);
+  'a_buyers', 'a_flag_year', 'a_risk_year', 'a_supplier_critical', 'a_supplier_risk',
+  'a_fts', 'import_log']);
 
 // Los nombres de ÍNDICE sí son globales y no se pueden aliasar, así que identifican la
 // tabla sin ambigüedad aunque la consulta la renombre.

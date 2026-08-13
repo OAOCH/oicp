@@ -43,6 +43,8 @@ function baseDePrueba() {
     CREATE TABLE a_suppliers (ruc10 TEXT PRIMARY KEY, name TEXT, n_procs INTEGER, total_usd REAL);
     CREATE TABLE a_flag_year (code TEXT, year INTEGER, n INTEGER, PRIMARY KEY (code, year));
     CREATE TABLE a_risk_year (risk TEXT, year INTEGER, n INTEGER, total_usd REAL, PRIMARY KEY (risk, year));
+    CREATE TABLE a_supplier_risk (ruc10 TEXT, risk_level TEXT, year INTEGER, n_procs INTEGER,
+      total_usd REAL, PRIMARY KEY (ruc10, risk_level, year));
     CREATE TABLE allowed_users (email TEXT PRIMARY KEY, role TEXT);
     CREATE TABLE access_log (id INTEGER PRIMARY KEY, email TEXT, path TEXT);
   `);
@@ -117,6 +119,11 @@ const PERMITIDAS: [string, string][] = [
   ['filtro por id (clave primaria)', `SELECT id, score FROM procedures WHERE id = 'p3'`],
   ['filtro por comprador (índice)', `SELECT id FROM procedures WHERE buyer_id = 'b1'`],
   ['agregado precalculado completo', `SELECT * FROM a_flag_year`],
+  // a_supplier_risk nacio el 13-ago-2026 y el guardian lo rechazaba por no estar en la lista de
+  // tablas chicas: el agregado que desbloquea el monto por proveedor y nivel no se podia
+  // consultar. Encontrado ejecutando la consulta contra produccion, no leyendo el codigo.
+  ['monto por proveedor y nivel (a_supplier_risk)',
+    `SELECT ruc10, SUM(total_usd) FROM a_supplier_risk WHERE risk_level='critical' GROUP BY ruc10`],
   ['agregado precalculado con alias', `SELECT b.name FROM a_buyers b`],
   ['cruce agregado-grande acotado por índice',
     `SELECT b.name, p.id FROM a_buyers b JOIN procedures p ON p.buyer_id = b.buyer_id WHERE p.source_year = 2020`],
