@@ -266,6 +266,27 @@ const TOOLS = [
  * se convierte en una afirmación falsa publicada en la metodología, que es exactamente lo que la
  * regla 4 prohíbe. Se cuenta con los agregados de tipo, que son baratos, y se cachea 5 minutos.
  */
+/**
+ * Búsqueda por nombre TOKENIZADA para los perfiles.
+ *
+ * La descripción de las herramientas promete «por RUC o nombre parcial», pero el LIKE con la
+ * consulta entera exigía una subcadena CONTIGUA: «BOMBEROS QUITO» no encontraba al «CUERPO DE
+ * BOMBEROS DEL DISTRITO METROPOLITANO DE QUITO», porque entre BOMBEROS y QUITO hay cinco
+ * palabras. Lo encontró una investigación externa usando el MCP (hallazgo 5, 13-ago-2026).
+ *
+ * Ahora cada palabra de la consulta es un LIKE independiente unidos por AND: todas tienen que
+ * aparecer, en cualquier orden y posición. Entre varios candidatos gana el de mayor monto, igual
+ * que antes. Las tablas a_buyers y a_suppliers tienen 7 mil y 52 mil filas: el recorrido es
+ * barato y no necesita FTS.
+ */
+function buscarPorNombre(db: Database.Database, tabla: 'a_buyers' | 'a_suppliers', q: string): any {
+  const tokens = q.toUpperCase().split(/\s+/).map(t => t.trim()).filter(t => t.length > 0).slice(0, 8);
+  if (!tokens.length) return undefined;
+  const cond = tokens.map(() => `name LIKE ?`).join(' AND ');
+  return db.prepare(`SELECT * FROM ${tabla} WHERE ${cond} ORDER BY total_usd DESC`)
+    .get(...tokens.map(t => `%${t}%`));
+}
+
 let cachePendiente: { at: number; texto: string } | null = null;
 function limitacionPresupuesto(db: Database.Database): string {
   if (cachePendiente && Date.now() - cachePendiente.at < 300_000) return cachePendiente.texto;
@@ -503,7 +524,7 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
       const d = digits(q);
       let row: any;
       if (d.length >= 10) row = db.prepare(`SELECT * FROM a_suppliers WHERE ruc10 = ?`).get(d.slice(0, 10));
-      else row = db.prepare(`SELECT * FROM a_suppliers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q.toUpperCase()}%`);
+      else row = buscarPorNombre(db, 'a_suppliers', q);
       if (!row) return { error: `Proveedor no encontrado: '${q}'. Prueba con el RUC o un fragmento del nombre.` };
       row.compradores_top = db.prepare(`SELECT buyer_name, buyer_id, n_procs, total_usd, last_year
         FROM a_supplier_buyer WHERE ruc10 = ? ORDER BY n_procs DESC LIMIT 10`).all(row.ruc10);
@@ -523,8 +544,7 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
       // '1768152800001238940' y ningún buyer_id (que lleva guiones) casaba con ese LIKE.
       let row: any = db.prepare(`SELECT * FROM a_buyers WHERE buyer_id = ?`).get(q);
       if (!row && d.length >= 10) row = db.prepare(`SELECT * FROM a_buyers WHERE buyer_id LIKE ? ORDER BY total_usd DESC`).get(`%${d}%`);
-      if (!row) row = db.prepare(`SELECT * FROM a_buyers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q.toUpperCase()}%`);
-      if (!row) row = db.prepare(`SELECT * FROM a_buyers WHERE name LIKE ? ORDER BY total_usd DESC`).get(`%${q}%`);
+      if (!row) row = buscarPorNombre(db, 'a_buyers', q);
       if (!row) return { error: `Comprador no encontrado: '${q}'` };
       row.proveedores_top = db.prepare(`SELECT s.name, sb.ruc10, sb.n_procs, sb.total_usd FROM a_supplier_buyer sb
         JOIN a_suppliers s USING (ruc10) WHERE sb.buyer_id = ? ORDER BY sb.total_usd DESC LIMIT 10`).all(row.buyer_id);

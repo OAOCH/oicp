@@ -247,6 +247,31 @@ test('reconstruir los agregados no reintroduce el nombre "null"', () => {
   }
 });
 
+test('el nombre parcial encuentra aunque las palabras no sean contiguas (hallazgo 5)', () => {
+  // «BOMBEROS QUITO» no encontraba al «CUERPO DE BOMBEROS DEL DISTRITO METROPOLITANO DE QUITO»:
+  // el LIKE con la consulta entera exigía una subcadena contigua. La descripción del tool
+  // promete «nombre parcial», así que cada palabra tiene que casar por separado.
+  const db = getDb();
+  upsertProcedure(filaRota('bq01', 2024, {
+    buyer_id: 'EC-RUC-1768097950001-2525',
+    buyer_name: 'CUERPO DE BOMBEROS DEL DISTRITO METROPOLITANO DE QUITO',
+    award_amount: 5000,
+  }));
+  buildAnalytics(db);
+
+  const p: any = callTool(db, 'oicp_buyer_profile', { query: 'BOMBEROS QUITO' });
+  assert.ok(!p.error, `"BOMBEROS QUITO" tenía que encontrar a la entidad: ${p.error}`);
+  assert.equal(p.buyer_id, 'EC-RUC-1768097950001-2525');
+
+  // Y el orden de las palabras no importa.
+  const p2: any = callTool(db, 'oicp_buyer_profile', { query: 'quito bomberos' });
+  assert.equal(p2.buyer_id, 'EC-RUC-1768097950001-2525', 'el orden de los tokens no puede importar');
+
+  // Lo mismo en el perfil de proveedor.
+  const s: any = callTool(db, 'oicp_supplier_profile', { query: 'UNO PROVEEDOR' });
+  assert.ok(!s.error, `el perfil de proveedor también tenía que tokenizar: ${s.error}`);
+});
+
 test('oicp_buyer_profile acepta el buyer_id que devuelve oicp_top_buyers (encadenar las herramientas)', () => {
   const db = getDb();
   buildAnalytics(db);
