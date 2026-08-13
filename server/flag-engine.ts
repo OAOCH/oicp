@@ -175,6 +175,16 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
     description_es: 'El contrato recibió enmiendas que incrementan su valor más del 15%.',
     severity: 3, ocp_ref: 'R069',
   },
+  // Las banderas de concentración (CC-01, CC-02, CC-05) miden la concentración por
+  // UNIDAD DE COMPRA (buyer_id), que es quien decide la contratación. La dominancia a
+  // nivel de INSTITUCIÓN (RUC consolidado) NO se evalúa como bandera: un proveedor
+  // repartido entre muchas unidades de la misma institución puede no disparar CC-02
+  // aunque concentre mucho a nivel institucional. Limitación declarada (decisión de
+  // Oscar, 13-ago-2026); el contexto consolidado por RUC se publica en el perfil del
+  // comprador (web y MCP) sin tocar banderas ni scores. Cambiar CC-02 a RUC consolidado
+  // se evaluó y se DESCARTÓ: un proveedor nacional que atiende a 100 hospitales
+  // independientes del mismo ministerio saldría «dominante» sin que ningún decisor lo
+  // haya favorecido.
   'CC-01': {
     code: 'CC-01', category: 'concentracion', name: 'Recurring Supplier Ínfima',
     name_es: 'Proveedor Recurrente en Ínfima Cuantía',

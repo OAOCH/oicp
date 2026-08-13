@@ -38,6 +38,20 @@ export default function BuyerProfile() {
         <p className="text-sm text-gray-500 font-mono">{profile.buyer_id}</p>
       </div>
 
+      {/* Contexto institucional (13-ago-2026): el mismo RUC aparece como varias unidades de
+          compra y quien mira una sola no ve la institución completa. Solo se muestra cuando
+          hay más de una unidad: con una, el consolidado repetiría las cifras de arriba. */}
+      {profile.consolidado_ruc && (profile.unidades_de_compra || 0) > 1 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900">
+          Esta es una de <strong>{profile.unidades_de_compra}</strong> unidades de compra de la
+          institución con RUC <span className="font-mono">{profile.consolidado_ruc.ruc}</span>:
+          entre todas suman <strong>{formatCount(profile.consolidado_ruc.n_procs)}</strong>{' '}
+          procesos por <strong>{formatCurrency(profile.consolidado_ruc.total_usd)}</strong>. Las
+          banderas de concentración se evalúan por unidad de compra, no por institución (ver{' '}
+          <Link to="/metodologia" className="underline hover:text-blue-700">metodología</Link>).
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Procedimientos" value={formatCount(profile.total_procedures)} />
         <StatCard label="Valor Total" value={formatCurrency(profile.total_value)} />

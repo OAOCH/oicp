@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import DatabaseCtor from 'better-sqlite3';
 import type Database from 'better-sqlite3';
 import { hidratarBanderas } from './flag-engine.js';
+import { consolidadoPorRuc } from './consolidado-ruc.js';
 import { nombreVisible } from './ocds-proc.js';
 
 const PROD = 'https://oicp-production.up.railway.app';
@@ -362,6 +363,7 @@ const METHODOLOGY = {
     'TR-03': { nombre: 'Sin justificación de régimen especial', peso: 18, regla: 'el texto del procedimiento contiene "especial", "emergent" o "contratación directa" (con y sin tilde), O el identificador interno EMPIEZA por "OCDS-5WNO2W-RE-", O el ocid CONTIENE "-RE-" (aquí sí es "contiene", no prefijo), con monto > umbral de la fecha. Las dos últimas coinciden en la práctica porque el identificador interno se toma del ocid, pero el motor las evalúa por separado' },
   },
   exclusion_catalogo: 'Las banderas CC-* no se evalúan en catálogo electrónico (compra centralizada precalificada por SERCOP). IC-02 tampoco desde el 11-ago-2026.',
+  concentracion_por_unidad_de_compra: 'Las banderas de concentración (CC-01, CC-02, CC-05) miden la concentración por UNIDAD DE COMPRA (buyer_id), que es quien decide la contratación. El mismo RUC institucional puede aparecer como varias unidades de compra (más un formato sin sufijo que viene de la vía del catálogo), y la dominancia a nivel de INSTITUCIÓN (RUC consolidado) NO se evalúa como bandera: un proveedor repartido entre muchas unidades de la misma institución puede no disparar CC-02 aunque concentre mucho a nivel institucional. Limitación declarada (13-ago-2026). Como contexto, oicp_buyer_profile y el perfil web publican unidades_de_compra y consolidado_ruc (procesos y monto de todo el RUC), sin afectar banderas ni scores.',
   limitaciones_del_dato: 'Qué NO se puede medir con estos datos: (1) {{PRESUPUESTO_PENDIENTE}} (2) El SERCOP no publica enmiendas en el OCDS de búsqueda: IP-03 está inactiva, 0 casos. (3) Los días hábiles de IT-01 e IT-02 descuentan sábados, domingos y los FERIADOS del Art. 65 del Código del Trabajo (verificado sobre el texto vigente: 1-ene, viernes santo, 1 y 24-may, 10-ago, 9-oct, 2 y 3-nov, 25-dic, y lunes y martes de carnaval, con las reglas de traslado del mismo artículo y las tres fiestas móviles calculadas desde la Pascua). Advertencia: el decreto ejecutivo anual puede apartarse del Código en un año concreto. Lo que TODAVÍA no cumplen es el COA Art. 158, que manda contar "a partir del día hábil siguiente": aquí se cuenta el día inicial, y no se cambió porque mueve el significado de los mínimos de IT-01, pendientes de decisión. Se corrigió además, el 11-ago-2026, que el conteo dependía de la HORA del día: el mismo intervalo de un día calendario daba "1 día hábil" en 311 procesos y "2" en 460. (4) IP-02 tiene 5 disparos en todo 2019-2026 tras corregirse el 11-ago-2026: es el resultado real, no un fallo, porque adjudicar por encima del referencial es casi inexistente en estos datos.',
   disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES,
 };
@@ -578,6 +580,14 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
       const risk: any = {};
       for (const r of db.prepare(`SELECT risk_level, COUNT(*) AS n FROM procedures WHERE buyer_id = ? GROUP BY risk_level`).all(row.buyer_id) as any[]) risk[r.risk_level] = r.n;
       row.riesgo = risk;
+      // Contexto institucional (decisión 13-ago-2026): mismas cifras que la web porque
+      // salen de la misma función (regla 11). Solo contexto: no toca banderas ni scores.
+      const consolidado = consolidadoPorRuc(db, row.buyer_id);
+      row.unidades_de_compra = consolidado.unidades_de_compra;
+      row.consolidado_ruc = consolidado.consolidado_ruc;
+      if (row.consolidado_ruc) {
+        row.consolidado_nota = 'consolidado_ruc suma TODAS las unidades de compra de este RUC. Las banderas de concentración (CC-01, CC-02, CC-05) se evalúan por unidad de compra (buyer_id), no por institución.';
+      }
       row.perfil_web = `${PROD}/comprador/${row.buyer_id}`;
       row.convencion = MONTO_NOTA; row.disclaimer = DISCLAIMER;
       return row;

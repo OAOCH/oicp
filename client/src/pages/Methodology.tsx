@@ -386,6 +386,18 @@ export default function Methodology() {
             15%. Se declara aquí en vez de rellenar el indicador con falsos positivos para que
             «dispare».
           </p>
+          <p>
+            <strong>La concentración se mide por unidad de compra, no por institución.</strong> Las
+            banderas CC-01, CC-02 y CC-05 evalúan la concentración sobre cada comprador
+            (<code>buyer_id</code>), que corresponde a la unidad de compra que decide la
+            contratación; el mismo RUC institucional puede aparecer como varias unidades de compra
+            distintas. La dominancia a nivel de institución (RUC consolidado) no se evalúa como
+            bandera: un proveedor repartido entre muchas unidades de la misma institución puede no
+            disparar CC-02 aunque concentre mucho a nivel institucional. Se declara como
+            limitación, y desde el 13 de agosto de 2026 el perfil de cada comprador publica como
+            contexto cuántas unidades de compra tiene su RUC y el total institucional consolidado,
+            sin afectar banderas ni scores.
+          </p>
         </div>
       </div>
 

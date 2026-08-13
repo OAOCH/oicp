@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 // flag-engine es puro (no importa db), así que no hay ciclo.
 import { hidratarBanderas } from './flag-engine.js';
+import { consolidadoPorRuc } from './consolidado-ruc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'oicp.db');
@@ -448,7 +449,10 @@ export function getBuyerProfile(buyerId: string) {
     SELECT risk_level, COUNT(*) as count FROM procedures WHERE buyer_id = ? GROUP BY risk_level
   `).all(buyerId);
 
-  return { ...info, byYear, topSuppliers, flagDistribution, riskDistribution };
+  // Contexto institucional (decisión 13-ago-2026): el mismo RUC aparece como varias
+  // unidades de compra y quien mira una sola no ve la institución completa. Solo
+  // contexto: no toca banderas ni scores.
+  return { ...info, ...consolidadoPorRuc(db, info.buyer_id), byYear, topSuppliers, flagDistribution, riskDistribution };
 }
 
 // Supplier profile
