@@ -230,6 +230,13 @@ function migrateInternal() {
     CREATE INDEX IF NOT EXISTS idx_proc_risk ON procedures(risk_level);
     CREATE INDEX IF NOT EXISTS idx_proc_status ON procedures(status);
     CREATE INDEX IF NOT EXISTS idx_proc_date ON procedures(published_date DESC);
+    -- Índices PARCIALES para la medición del presupuesto (estadoPresupuesto). Sin ellos,
+    -- contar los NULL y los guardados como texto recorría las 1,47 M filas completas: 16 a
+    -- 28 s medidos en producción el 1-sep-2026, con la plataforma entera congelada mientras
+    -- tanto (better-sqlite3 es síncrono). Son chicos (miles de entradas, no millones) y
+    -- dejan las dos cuentas en milisegundos. Ver estado-presupuesto.test.ts.
+    CREATE INDEX IF NOT EXISTS idx_proc_budget_null ON procedures(id) WHERE budget_amount IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_proc_budget_text ON procedures(id) WHERE typeof(budget_amount) = 'text';
     CREATE INDEX IF NOT EXISTS idx_conc_buyer ON concentration_index(buyer_id, year);
     CREATE INDEX IF NOT EXISTS idx_conc_supplier ON concentration_index(supplier_id, year);
   `);
@@ -714,15 +721,17 @@ export function getFilterOptions() {
 let cachePresupuesto: { at: number; valor: EstadoPresupuesto } | null = null;
 export type EstadoPresupuesto = { total: number; pendientes: number; sin_dato: number; con_dato: number };
 
+// Las tres consultas se exportan para que la prueba de costo (estado-presupuesto.test.ts)
+// haga EXPLAIN QUERY PLAN sobre EXACTAMENTE lo que corre en producción (regla 11).
+export const SQL_PRESUPUESTO_TOTAL = `SELECT COUNT(*) AS n FROM procedures`;
+export const SQL_PRESUPUESTO_PENDIENTES = `SELECT COUNT(*) AS n FROM procedures WHERE typeof(budget_amount) = 'text'`;
+export const SQL_PRESUPUESTO_SIN_DATO = `SELECT COUNT(*) AS n FROM procedures WHERE budget_amount IS NULL`;
+
 export function estadoPresupuesto(): EstadoPresupuesto {
   if (cachePresupuesto && Date.now() - cachePresupuesto.at < 300_000) return cachePresupuesto.valor;
-  const r = db.prepare(`SELECT COUNT(*) AS total,
-      SUM(CASE WHEN typeof(budget_amount)='text' THEN 1 ELSE 0 END) AS pendientes,
-      SUM(CASE WHEN budget_amount IS NULL THEN 1 ELSE 0 END) AS sin_dato
-    FROM procedures`).get() as any;
-  const total = Number(r?.total || 0);
-  const pendientes = Number(r?.pendientes || 0);
-  const sin_dato = Number(r?.sin_dato || 0);
+  const total = Number((db.prepare(SQL_PRESUPUESTO_TOTAL).get() as any)?.n || 0);
+  const pendientes = Number((db.prepare(SQL_PRESUPUESTO_PENDIENTES).get() as any)?.n || 0);
+  const sin_dato = Number((db.prepare(SQL_PRESUPUESTO_SIN_DATO).get() as any)?.n || 0);
   const valor = { total, pendientes, sin_dato, con_dato: total - pendientes - sin_dato };
   cachePresupuesto = { at: Date.now(), valor };
   return valor;
