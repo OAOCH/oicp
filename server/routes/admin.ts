@@ -533,6 +533,41 @@ router.post('/ingest', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Oferentes (participaciones): carga por lotes desde los volcados anuales ─────────────
+// Idempotente (clave ocid+oferente): recargar un año no duplica. Al terminar la carga hay que
+// llamar a /participaciones-finalize para reconstruir el agregado a_participantes.
+router.post('/ingest-participaciones', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  const rows = req.body?.rows;
+  if (!Array.isArray(rows) || !rows.length || rows.length > 2000) {
+    return res.status(400).json({ error: 'rows[] requerido (1 a 2000 por lote)' });
+  }
+  try {
+    const { updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    const { upsertParticipaciones } = await import('../db.js');
+    res.json(upsertParticipaciones(rows));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/participaciones-finalize', async (req, res) => {
+  if (!checkAuthOrSync(req, res)) return;
+  try {
+    const { updateJob } = await import('../updater.js');
+    if (updateJob.running) return res.status(409).json({ error: 'Actualizador en curso; reintenta en unos minutos.' });
+    const { buildParticipantes } = await import('../mcp-server.js');
+    const DatabaseCtor = (await import('better-sqlite3')).default;
+    const db = getDb();
+    const wdb = new DatabaseCtor(db.name);
+    wdb.pragma('journal_mode = WAL');
+    try {
+      const participantes = buildParticipantes(db, wdb);
+      const filas = (db.prepare(`SELECT COUNT(*) AS n FROM participaciones`).get() as any).n;
+      res.json({ participantes, participaciones: filas });
+    } finally { wdb.close(); }
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/ingest-finalize', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   const year = Number(req.body?.year) || new Date().getFullYear();

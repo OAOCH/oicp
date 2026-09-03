@@ -254,6 +254,40 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
     ejSrisk.push(`no se pudo evaluar: ${e.message}`);
   }
 
+  // Oferentes: el agregado a_participantes tiene que cuadrar con la tabla participaciones
+  // (trampa 0b: todo agregado nuevo necesita su control en la boleta o sirve datos viejos sin
+  // que nadie lo note). El agregado es global, no por año, así que se cuadra ENTERO en cada
+  // boleta: es barato (decenas de miles de oferentes) y no depende del año consultado.
+  // Además ninguna participación del año puede apuntar a un proceso que no existe.
+  let partMal = 0; const ejPart: string[] = [];
+  try {
+    const hayPart = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='participaciones'`).get();
+    const hayAgg = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='a_participantes'`).get();
+    if (hayPart && hayAgg) {
+      const huerfanas = (db.prepare(`SELECT COUNT(*) AS n FROM participaciones p
+        WHERE p.source_year = ? AND NOT EXISTS (SELECT 1 FROM procedures q WHERE q.id = p.ocid)`).get(year) as any).n;
+      if (huerfanas > 0) { partMal += huerfanas; ejPart.push(`${huerfanas} participaciones de ${year} apuntan a procesos que no existen`); }
+      const real = new Map<string, [number, number, number]>();
+      for (const r of db.prepare(`SELECT COALESCE(ruc10, oferente_id) AS clave,
+          COUNT(*) AS n, SUM(gano) AS g, SUM(1 - gano) AS p FROM participaciones GROUP BY clave`).all() as any[]) {
+        real.set(r.clave, [r.n, r.g, r.p]);
+      }
+      let enTabla = 0;
+      for (const r of db.prepare(`SELECT clave, n_particip, n_ganadas, n_perdidas FROM a_participantes`).all() as any[]) {
+        enTabla++;
+        const v = real.get(r.clave);
+        if (!v || v[0] !== r.n_particip || v[1] !== r.n_ganadas || v[2] !== r.n_perdidas) {
+          partMal++;
+          if (ejPart.length < 6) ejPart.push(`${r.clave}: tabla ${r.n_particip}/${r.n_ganadas}/${r.n_perdidas} vs real ${v ? v.join('/') : '(ausente)'}`);
+        }
+      }
+      if (enTabla !== real.size) { partMal += Math.abs(enTabla - real.size); ejPart.push(`a_participantes tiene ${enTabla} oferentes y la tabla ${real.size}`); }
+    }
+  } catch (e: any) {
+    partMal = -1;
+    ejPart.push(`no se pudo evaluar: ${e.message}`);
+  }
+
   const controles: Record<string, Control> = {
     motor: discrepancias === 0
       ? ok(`${procesos} procesos re-evaluados con el motor real, 0 discrepancias`)
@@ -300,6 +334,12 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
           ? 'el control no se pudo evaluar: sin veredicto no hay verificación'
           : `${sriskMal} pares proveedor-nivel donde a_supplier_risk no cuadra con la base`,
         ejSrisk),
+    participantes: partMal === 0
+      ? ok('a_participantes cuadra con participaciones en compitió/ganó/perdió, sin filas huérfanas')
+      : falla(partMal < 0
+          ? 'el control no se pudo evaluar: sin veredicto no hay verificación'
+          : `${partMal} discrepancias entre a_participantes y la tabla de oferentes`,
+        ejPart),
   };
 
   const veredicto = Object.values(controles).every(c => c.ok) ? 'APROBADO' : 'FALLA';

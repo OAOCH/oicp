@@ -11,6 +11,7 @@ import DatabaseCtor from 'better-sqlite3';
 import type Database from 'better-sqlite3';
 import { hidratarBanderas } from './flag-engine.js';
 import { consolidadoPorRuc } from './consolidado-ruc.js';
+import { medirPresupuesto } from './presupuesto-sql.js';
 import { nombreVisible } from './ocds-proc.js';
 
 const PROD = 'https://oicp-production.up.railway.app';
@@ -246,8 +247,79 @@ export function buildAnalytics(db: Database.Database): Record<string, number> {
     CREATE INDEX IF NOT EXISTS idx_a_crit_sup ON a_supplier_critical(ruc10);
   `);
   wdb.pragma('wal_checkpoint(TRUNCATE)');
+  const participantes = buildParticipantes(db, wdb);
   wdb.close();
-  return { procesos: n, proveedores: sup.size, compradores: buy.size, segundos: Math.round((Date.now() - t0) / 1000) };
+  return { procesos: n, proveedores: sup.size, compradores: buy.size, participantes, segundos: Math.round((Date.now() - t0) / 1000) };
+}
+
+/**
+ * Agregado de oferentes (a_participantes): por cada oferente, cuántas veces compitió, ganó y
+ * perdió, ante cuántos compradores, y FRENTE A QUIÉN perdió más veces. Es la respuesta a
+ * «¿qué empresas participan mucho y nunca ganan?» sin recorrer la tabla al vuelo. Se
+ * reconstruye entero (es barato: decenas de miles de oferentes) tanto en buildAnalytics
+ * como al terminar una carga de participaciones.
+ */
+export function buildParticipantes(db: Database.Database, wdb: Database.Database): number {
+  const hayTabla = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='participaciones'`).get();
+  wdb.exec(`
+    DROP TABLE IF EXISTS a_participantes;
+    CREATE TABLE a_participantes (
+      clave TEXT PRIMARY KEY, ruc10 TEXT, nombre TEXT,
+      n_particip INTEGER, n_ganadas INTEGER, n_perdidas INTEGER, n_compradores INTEGER,
+      first_year INTEGER, last_year INTEGER,
+      ganador_frecuente_ruc10 TEXT, ganador_frecuente_nombre TEXT, n_frente_ganador INTEGER);
+  `);
+  if (!hayTabla) return 0;
+  type Part = { ruc10: string | null; nombre: string; n: number; g: number; p: number; buyers: Set<string>;
+                fy: number; ly: number; frente: Map<string, [number, string]> };
+  const acc = new Map<string, Part>();
+  const claveDe = (r: any) => r.ruc10 || r.oferente_id;
+  // Ordenado por ocid para tener juntos a todos los oferentes de un proceso y saber quién ganó.
+  const scan = db.prepare(`SELECT ocid, oferente_id, ruc10, nombre, buyer_id, source_year, gano
+    FROM participaciones ORDER BY ocid`);
+  let grupo: any[] = [];
+  const cerrar = () => {
+    if (!grupo.length) return;
+    const ganador = grupo.find(r => r.gano === 1) || null;
+    for (const r of grupo) {
+      const k = claveDe(r);
+      let a = acc.get(k);
+      if (!a) { a = { ruc10: r.ruc10 || null, nombre: r.nombre || '', n: 0, g: 0, p: 0, buyers: new Set(), fy: r.source_year || 0, ly: r.source_year || 0, frente: new Map() }; acc.set(k, a); }
+      if (!a.nombre && r.nombre) a.nombre = r.nombre;
+      a.n++;
+      if (r.gano === 1) a.g++; else a.p++;
+      if (r.buyer_id) a.buyers.add(r.buyer_id);
+      const y = r.source_year || 0;
+      if (y) { a.fy = Math.min(a.fy || y, y); a.ly = Math.max(a.ly, y); }
+      if (r.gano !== 1 && ganador && claveDe(ganador) !== k) {
+        const kg = claveDe(ganador);
+        const v = a.frente.get(kg) || [0, ganador.nombre || ''];
+        v[0]++; a.frente.set(kg, v);
+      }
+    }
+    grupo = [];
+  };
+  let actual: string | null = null;
+  for (const row of scan.iterate() as any) {
+    if (actual !== null && row.ocid !== actual) cerrar();
+    actual = row.ocid;
+    grupo.push(row);
+  }
+  cerrar();
+  // Scan cerrado: ahora sí se escribe.
+  const ins = wdb.prepare(`INSERT INTO a_participantes VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  wdb.transaction(() => {
+    for (const [k, a] of acc) {
+      let gf: [string, [number, string]] | null = null;
+      for (const e of a.frente) if (!gf || e[1][0] > gf[1][0]) gf = e;
+      ins.run(k, a.ruc10, nombreVisible(a.nombre, a.ruc10 || k), a.n, a.g, a.p, a.buyers.size, a.fy, a.ly,
+        gf ? gf[0] : null, gf ? nombreVisible(gf[1][1], gf[0]) : null, gf ? gf[1][0] : 0);
+    }
+  })();
+  wdb.exec(`CREATE INDEX IF NOT EXISTS idx_a_part_perdidas ON a_participantes(n_perdidas DESC);
+            CREATE INDEX IF NOT EXISTS idx_a_part_nombre ON a_participantes(nombre);`);
+  wdb.pragma('wal_checkpoint(TRUNCATE)');
+  return acc.size;
 }
 
 // ── Herramientas ─────────────────────────────────────────────
@@ -260,8 +332,10 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} } },
   { name: 'oicp_top_suppliers', description: "Top proveedores del Estado ('quién ha contratado más'). metric: 'monto' o 'procesos'; year opcional.",
     inputSchema: { type: 'object', properties: { metric: { type: 'string', enum: ['monto', 'procesos'] }, year: { type: 'integer' }, limit: { type: 'integer' } } } },
-  { name: 'oicp_top_buyers', description: 'Top entidades compradoras por monto total o número de procesos.',
+  { name: 'oicp_top_buyers', description: 'Top entidades compradoras por monto total o número de procesos, acumulado 2019-2026 (no filtra por año; para un año concreto usa oicp_sql sobre a_supplier_year o procedures con source_year).',
     inputSchema: { type: 'object', properties: { metric: { type: 'string', enum: ['monto', 'procesos'] }, limit: { type: 'integer' } } } },
+  { name: 'oicp_oferentes', description: 'OFERENTES, incluidos los que PERDIERON. Con query (RUC o nombre parcial): perfil del oferente, cuántas veces compitió, ganó y perdió, frente a quién pierde más y sus derrotas recientes (proceso, comprador, ganador, su puja frente al monto ganador). Sin query: ranking de quienes más veces han perdido con un piso de participaciones (min_participaciones, por defecto 10). Cubre solo procesos con oferentes publicados por el SERCOP (subastas, licitaciones, cotizaciones, menor cuantía); las adjudicaciones directas y el régimen especial no publican oferentes. Perder muchas veces NO es indicio por sí solo: lo que amerita revisión es perder siempre frente al MISMO ganador o ante la misma entidad.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, min_participaciones: { type: 'integer' }, limit: { type: 'integer' } } } },
   { name: 'oicp_supplier_profile', description: 'Perfil de un proveedor por RUC/cédula o nombre parcial: totales, riesgo, compradores top, serie anual y ejemplos críticos.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'oicp_buyer_profile', description: 'Perfil de una entidad compradora por RUC o nombre parcial: totales, proveedores top y distribución de riesgo.',
@@ -281,7 +355,7 @@ const TOOLS = [
   // documentaba que las columnas de nombre difieren por tabla (a_buyers.name vs
   // procedures.buyer_name vs concentration_index.supplier_name), y una consulta razonable
   // fallaba con "no such column".
-  { name: 'oicp_sql', description: `Consulta SQL de SOLO LECTURA (SELECT/WITH). Tablas: procedures(id, ocid, title, description, buyer_id, buyer_name, procurement_method_details, budget_amount, award_amount, contract_amount, final_amount, published_date, submission_deadline, answer_deadline, enquiry_deadline, source_year, regime, suppliers JSON, flags JSON, score, risk_level). La columna flags es un array cuyos objetos traen el CÓDIGO de la bandera, si está activa y su detalle; nombres, severidades y reglas están en oicp_methodology. REGLAS DEL GUARDIÁN DE COSTOS: json_each sobre procedures se rechaza SIEMPRE (aunque el filtro sea selectivo); para filtrar por una bandera usa flags LIKE '%"CC-01"%' junto a una columna indexada (id, buyer_id, source_year, risk_level, score, published_date, status, procurement_method_details); para contar banderas usa a_flag_year; para montos por proveedor y nivel usa a_supplier_risk. concentration_index(buyer_id, supplier_id, supplier_name, year, contract_count, total_value, infima_count, infima_total_value, share_of_buyer; indexada solo por buyer_id). Agregados y SUS COLUMNAS DE NOMBRE (difieren por tabla): a_suppliers(ruc10, name, n_procs, total_usd, first_year, last_year, n_buyers, n_critical, n_high, n_moderate, n_low) · a_supplier_risk(ruc10, risk_level, year, n_procs, total_usd) para monto por proveedor × nivel × año · a_supplier_buyer(ruc10, buyer_id, buyer_name, n_procs, total_usd, last_year) · a_supplier_year(ruc10, year, n_procs, total_usd) · a_buyers(buyer_id, name, n_procs, total_usd, first_year, last_year) · a_flag_year(code, year, n) · a_risk_year(risk, year, n, total_usd) · a_fts(FTS5). OJO: a_supplier_critical(ruc10, ocid, score, risk_level, year, monto_usd) es una MUESTRA de máximo 5 ejemplos por proveedor e incluye critical Y high: sirve para citar ejemplos, NUNCA para sumar la exposición de un proveedor (para eso está a_supplier_risk). ${MONTO_NOTA} Máximo 300 filas.`,
+  { name: 'oicp_sql', description: `Consulta SQL de SOLO LECTURA (SELECT/WITH). Tablas: procedures(id, ocid, title, description, buyer_id, buyer_name, procurement_method_details, budget_amount, award_amount, contract_amount, final_amount, published_date, submission_deadline, answer_deadline, enquiry_deadline, source_year, regime, suppliers JSON, flags JSON, score, risk_level). La columna flags es un array cuyos objetos traen el CÓDIGO de la bandera, si está activa y su detalle; nombres, severidades y reglas están en oicp_methodology. REGLAS DEL GUARDIÁN DE COSTOS: json_each sobre procedures se rechaza SIEMPRE (aunque el filtro sea selectivo); para filtrar por una bandera usa flags LIKE '%"CC-01"%' junto a una columna indexada (id, buyer_id, source_year, risk_level, score, published_date, status, procurement_method_details); para contar banderas usa a_flag_year; para montos por proveedor y nivel usa a_supplier_risk. concentration_index(buyer_id, supplier_id, supplier_name, year, contract_count, total_value, infima_count, infima_total_value, share_of_buyer; indexada solo por buyer_id). Agregados y SUS COLUMNAS DE NOMBRE (difieren por tabla): a_suppliers(ruc10, name, n_procs, total_usd, first_year, last_year, n_buyers, n_critical, n_high, n_moderate, n_low) · a_supplier_risk(ruc10, risk_level, year, n_procs, total_usd) para monto por proveedor × nivel × año · a_supplier_buyer(ruc10, buyer_id, buyer_name, n_procs, total_usd, last_year) · a_supplier_year(ruc10, year, n_procs, total_usd) · a_buyers(buyer_id, name, n_procs, total_usd, first_year, last_year) · a_flag_year(code, year, n) · a_risk_year(risk, year, n, total_usd) · a_fts(FTS5). OFERENTES (desde 2-sep-2026): participaciones(ocid, oferente_id, ruc10, nombre, buyer_id, source_year, gano 0/1, n_pujas, puja_min, puja_ultima) es GRANDE y se filtra por ruc10, buyer_id o source_year (una fila por proceso y oferente, incluidos los que perdieron; solo procesos con oferentes publicados) · a_participantes(clave, ruc10, nombre, n_particip, n_ganadas, n_perdidas, n_compradores, first_year, last_year, ganador_frecuente_ruc10, ganador_frecuente_nombre, n_frente_ganador) es el resumen por oferente; para perfiles y rankings de perdedores usa oicp_oferentes. OJO: a_supplier_critical(ruc10, ocid, score, risk_level, year, monto_usd) es una MUESTRA de máximo 5 ejemplos por proveedor e incluye critical Y high: sirve para citar ejemplos, NUNCA para sumar la exposición de un proveedor (para eso está a_supplier_risk). ${MONTO_NOTA} Máximo 300 filas.`,
     inputSchema: { type: 'object', properties: { sql: { type: 'string' }, max_rows: { type: 'integer' } }, required: ['sql'] } },
 ];
 
@@ -306,11 +380,14 @@ const TOOLS = [
  * que antes. Las tablas a_buyers y a_suppliers tienen 7 mil y 52 mil filas: el recorrido es
  * barato y no necesita FTS.
  */
-function buscarPorNombre(db: Database.Database, tabla: 'a_buyers' | 'a_suppliers', q: string): any {
+function buscarPorNombre(db: Database.Database, tabla: 'a_buyers' | 'a_suppliers' | 'a_participantes', q: string): any {
   const tokens = q.toUpperCase().split(/\s+/).map(t => t.trim()).filter(t => t.length > 0).slice(0, 8);
   if (!tokens.length) return undefined;
-  const cond = tokens.map(() => `name LIKE ?`).join(' AND ');
-  return db.prepare(`SELECT * FROM ${tabla} WHERE ${cond} ORDER BY total_usd DESC`)
+  // a_participantes nació con su columna de nombre en español y sin montos: se ordena por derrotas.
+  const col = tabla === 'a_participantes' ? 'nombre' : 'name';
+  const orden = tabla === 'a_participantes' ? 'n_perdidas DESC, n_particip DESC' : 'total_usd DESC';
+  const cond = tokens.map(() => `${col} LIKE ?`).join(' AND ');
+  return db.prepare(`SELECT * FROM ${tabla} WHERE ${cond} ORDER BY ${orden}`)
     .get(...tokens.map(t => `%${t}%`));
 }
 
@@ -319,13 +396,11 @@ function limitacionPresupuesto(db: Database.Database): string {
   if (cachePendiente && Date.now() - cachePendiente.at < 300_000) return cachePendiente.texto;
   let texto: string;
   try {
-    // Misma consulta que `estadoPresupuesto()` de db.ts, pero contra la conexión que recibe el
-    // MCP (que puede ser una copia de solo lectura), por eso no se reutiliza aquella.
-    const r = db.prepare(`SELECT COUNT(*) AS total,
-        SUM(CASE WHEN typeof(budget_amount)='text' THEN 1 ELSE 0 END) AS pendientes,
-        SUM(CASE WHEN budget_amount IS NULL THEN 1 ELSE 0 END) AS sin_dato
-      FROM procedures`).get() as any;
-    const pend = Number(r?.pendientes || 0), sin = Number(r?.sin_dato || 0), tot = Number(r?.total || 1);
+    // MISMA medición que `estadoPresupuesto()` de db.ts (presupuesto-sql.ts, regla 11), contra
+    // la conexión que recibe el MCP. Antes había aquí una copia del SELECT con SUM(CASE typeof)
+    // que recorría las 1,47 M filas y congelaba la plataforma al vencer la caché.
+    const r = medirPresupuesto(db);
+    const pend = r.pendientes, sin = r.sin_dato, tot = r.total || 1;
     const pct = (n: number) => (n * 100 / tot).toFixed(1).replace('.', ',');
     texto = pend > 0
       ? `el presupuesto referencial todavía falta en ${pend.toLocaleString('es-EC')} procesos (${pct(pend)}% del corpus), y es un defecto de la plataforma, no de la fuente: la ingesta lo leía de tender.value, que el SERCOP publica vacío en esos procesos, cuando el monto vive en tender.lots[].value. La lectura se corrigió el 11-ago-2026 y el rellenado desde la fuente está EN CURSO, así que esta cifra baja sola; se mide al responder, no está clavada. Otros ${sin.toLocaleString('es-EC')} procesos (${pct(sin)}%) no tienen presupuesto porque la fuente no lo publica. Afecta a los indicadores que dependen del referencial, sobre todo IP-02.`
@@ -386,18 +461,18 @@ const MONTO_SQL = `CASE
 // único hilo de Node, así que una sola consulta pesada deja sin respuesta la web, el
 // MCP y hasta /api/health, y no hay forma de abortarla (esta compilación no expone
 // progress handler ni interrupt). Ya ocurrió en producción.
-export const TABLAS_GRANDES = ['procedures', 'concentration_index'];
+export const TABLAS_GRANDES = ['procedures', 'concentration_index', 'participaciones'];
 
 // Tablas cuyo recorrido completo es barato: los agregados precalculados (miles de filas,
 // no millones) y el registro de importaciones.
 const TABLAS_CHICAS = new Set(['a_suppliers', 'a_supplier_buyer', 'a_supplier_year',
   'a_buyers', 'a_flag_year', 'a_risk_year', 'a_supplier_critical', 'a_supplier_risk',
-  'a_fts', 'import_log']);
+  'a_participantes', 'a_fts', 'import_log']);
 
 // Los nombres de ÍNDICE sí son globales y no se pueden aliasar, así que identifican la
 // tabla sin ambigüedad aunque la consulta la renombre.
 const INDICE_DE_TABLA_GRANDE =
-  /\b(idx_proc_|idx_conc_|sqlite_autoindex_procedures|sqlite_autoindex_concentration_index)/i;
+  /\b(idx_proc_|idx_conc_|idx_part_|sqlite_autoindex_procedures|sqlite_autoindex_concentration_index|sqlite_autoindex_participaciones)/i;
 
 /**
  * Mapa alias -> tabla real. Es imprescindible porque EXPLAIN QUERY PLAN reporta el
@@ -547,6 +622,45 @@ function callToolInterno(db: Database.Database, name: string, args: any): any {
       const rows = db.prepare(`SELECT buyer_id, name, n_procs, total_usd, first_year, last_year
         FROM a_buyers ORDER BY ${order} DESC LIMIT ?`).all(limit);
       return { metric: args?.metric || 'monto', convencion: MONTO_NOTA, top: rows, disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES };
+    }
+    case 'oicp_oferentes': {
+      const NOTA = 'Cubre solo procesos con oferentes publicados por el SERCOP (competitivos). Perder muchas veces no es indicio por sí solo: lo que amerita revisión es perder siempre frente al MISMO ganador o ante la misma entidad.';
+      const hay = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='a_participantes'`).get();
+      if (!hay) return { error: 'Los oferentes todavía no están cargados en esta base.' };
+      const q = String(args?.query || '').trim();
+      const limit = Math.max(1, Math.min(Number(args?.limit) || 20, 100));
+      if (!q) {
+        const min = Math.max(1, Number(args?.min_participaciones) || 10);
+        const ranking = db.prepare(`SELECT ruc10, nombre, n_particip, n_ganadas, n_perdidas, n_compradores,
+            first_year, last_year, ganador_frecuente_ruc10, ganador_frecuente_nombre, n_frente_ganador
+          FROM a_participantes WHERE n_particip >= ? ORDER BY n_perdidas DESC, n_particip DESC LIMIT ?`).all(min, limit);
+        return { min_participaciones: min, ranking, nota: NOTA, disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES };
+      }
+      const d = digits(q);
+      let row: any = null;
+      if (d.length >= 10) row = db.prepare(`SELECT * FROM a_participantes WHERE ruc10 = ?`).get(d.slice(0, 10));
+      if (!row) row = buscarPorNombre(db, 'a_participantes', q);
+      if (!row) return { error: `Oferente no encontrado: '${q}'. Prueba con el RUC o un fragmento del nombre.` };
+      const propias = row.ruc10
+        ? db.prepare(`SELECT ocid, buyer_id, source_year, puja_min FROM participaciones WHERE ruc10 = ? AND gano = 0 ORDER BY source_year DESC, ocid DESC LIMIT ?`).all(row.ruc10, limit)
+        : db.prepare(`SELECT ocid, buyer_id, source_year, puja_min FROM participaciones WHERE oferente_id = ? AND gano = 0 ORDER BY source_year DESC, ocid DESC LIMIT ?`).all(row.clave, limit);
+      const ganadorDe = db.prepare(`SELECT ruc10, nombre, puja_min FROM participaciones WHERE ocid = ? AND gano = 1 LIMIT 1`);
+      const procDe = db.prepare(`SELECT buyer_name, award_amount, procurement_method_details FROM procedures WHERE id = ?`);
+      const perdidas_recientes = (propias as any[]).map(p => {
+        const g: any = ganadorDe.get(p.ocid) || {};
+        const pr: any = procDe.get(p.ocid) || {};
+        return { ocid: p.ocid, anio: p.source_year, comprador: pr.buyer_name || p.buyer_id, procedimiento: pr.procurement_method_details || null,
+          ganador_ruc10: g.ruc10 || null, ganador_nombre: g.nombre || null, monto_ganador: pr.award_amount ?? g.puja_min ?? null,
+          mi_puja: p.puja_min, detalle: `${PROD}/proceso/${p.ocid}` };
+      });
+      return {
+        clave: row.clave, ruc10: row.ruc10, nombre: row.nombre,
+        n_particip: row.n_particip, n_ganadas: row.n_ganadas, n_perdidas: row.n_perdidas, n_compradores: row.n_compradores,
+        first_year: row.first_year, last_year: row.last_year,
+        ganador_frecuente: row.ganador_frecuente_ruc10 ? { ruc10: row.ganador_frecuente_ruc10, nombre: row.ganador_frecuente_nombre, n: row.n_frente_ganador } : null,
+        perdidas_recientes, perfil_proveedor_web: row.ruc10 ? `${PROD}/proveedor/${row.ruc10}` : null,
+        nota: NOTA, disclaimer: DISCLAIMER, datos_no_confiables: AVISO_DATOS_NO_CONFIABLES,
+      };
     }
     case 'oicp_supplier_profile': {
       const q = String(args?.query || '');

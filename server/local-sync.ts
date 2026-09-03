@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { releaseFrom, releaseToProc } from './ocds-proc.js';
 import { crearLimitador } from './limitador.js';
 import { descargarVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
+import { participacionesDeRelease } from './ocds-proc.js';
 import { parsearFicha, urlFicha } from './soce-ficha.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -301,6 +302,56 @@ async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 
   process.exit(0);
 }
 
+// ── OFERENTES (`--participaciones`) ──────────────────────────────────────────
+// Los oferentes que PERDIERON y las pujas de las subastas están en la fuente (tender.tenderers,
+// parties con rol tenderer, auctions[].stages[].bids) pero nunca se guardaron. Se cargan desde
+// los volcados anuales con el MISMO mapeo que el resto (participacionesDeRelease, regla 11),
+// por lotes idempotentes, y al final se reconstruye el agregado a_participantes.
+async function cargarParticipaciones(desdeAnio: number, hastaAnio: number) {
+  const t0 = Date.now();
+  log(`OFERENTES: años ${desdeAnio} a ${hastaAnio}`);
+  let buffer: any[] = [];
+  let enviadas = 0, vistos = 0, conOferentes = 0;
+  const empujar = async () => {
+    if (!buffer.length) return;
+    const r = await prod('/api/admin/ingest-participaciones', { rows: buffer });
+    enviadas += r.insertadas || 0;
+    buffer = [];
+  };
+  for (let anio = desdeAnio; anio <= hastaAnio; anio++) {
+    if (anio > desdeAnio) await sleep(30000);
+    const declarado = await totalDeclarado(anio);
+    const tAnio = Date.now();
+    let delAnio = 0, delAnioConOf = 0, filasAnio = 0;
+    const ruta = resolve(ROOT, `.volcado-${anio}.zip`);
+    try { await descargarVolcado(anio, ruta, 0, 4, log); }
+    catch (e: any) { log(`  ${anio}: no se pudo descargar (${e.message}); se salta`); continue; }
+    for await (const rel of releasesDelVolcado(createReadStream(ruta))) {
+      delAnio++; vistos++;
+      try {
+        const proc = releaseToProc(rel, null, anio);
+        const filas = participacionesDeRelease(rel, proc);
+        if (!filas.length) continue;
+        delAnioConOf++; conOferentes++; filasAnio += filas.length;
+        for (const f of filas) buffer.push(f);
+        if (buffer.length >= 1500) await empujar();
+      } catch (e: any) { log(`  mapeo ${rel?.ocid}: ${e.message}`); }
+    }
+    await empujar();
+    try { unlinkSync(ruta); } catch { /* mejor esfuerzo */ }
+    const seg = ((Date.now() - tAnio) / 1000).toFixed(1);
+    const falta = declarado !== null ? declarado - delAnio : null;
+    const aviso = falta !== null && Math.abs(falta) > Math.max(10, declarado! * 0.001)
+      ? `  ⚠ el volcado parece INCOMPLETO: la fuente declara ${declarado} y se leyeron ${delAnio}` : '';
+    log(`  ${anio}: ${delAnio} releases (declarados ${declarado ?? '?'}) · ${delAnioConOf} con oferentes · ${filasAnio} participaciones · ${seg}s${aviso}`);
+  }
+  log(`OFERENTES: ${vistos} releases recorridos, ${conOferentes} con oferentes, ${enviadas} participaciones enviadas, en ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+  log('reconstruyendo el agregado de oferentes en producción…');
+  try { log(`agregado: ${JSON.stringify(await prod('/api/admin/participaciones-finalize', {}, 1))}`); }
+  catch (e: any) { log(`la respuesta HTTP se cortó (${e.message}); el servidor sigue trabajando.`); }
+  log('OK');
+}
+
 // ── RELLENADO MASIVO (`--reparar-masivo`) ────────────────────────────────────
 // El SERCOP publica volcados por año que su propia documentación no menciona. Medido:
 // releer los 174.547 uno por uno son ~54 horas y 174.547 peticiones; por volcados son unos
@@ -544,6 +595,12 @@ async function main() {
   // proceso por proceso y baja la carga sobre la fuente de 174.547 peticiones a 8.
   if (args.includes('--reparar-masivo')) {
     await repararMasivo(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
+    process.exit(0);
+  }
+
+  // Oferentes (incluidos los que perdieron) y pujas, desde los volcados anuales.
+  if (args.includes('--participaciones')) {
+    await cargarParticipaciones(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
     process.exit(0);
   }
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 // flag-engine es puro (no importa db), así que no hay ciclo.
 import { hidratarBanderas } from './flag-engine.js';
 import { consolidadoPorRuc } from './consolidado-ruc.js';
+import { medirPresupuesto, type EstadoPresupuesto } from './presupuesto-sql.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'oicp.db');
@@ -237,6 +238,34 @@ function migrateInternal() {
     -- dejan las dos cuentas en milisegundos. Ver estado-presupuesto.test.ts.
     CREATE INDEX IF NOT EXISTS idx_proc_budget_null ON procedures(id) WHERE budget_amount IS NULL;
     CREATE INDEX IF NOT EXISTS idx_proc_budget_text ON procedures(id) WHERE typeof(budget_amount) = 'text';
+    -- Oferentes de cada proceso, incluidos los que PERDIERON (desde el 2-sep-2026). Una fila
+    -- por (proceso, oferente). Mide competencia: un proceso sin oferentes publicados no tiene
+    -- filas. Se carga desde los volcados anuales con participacionesDeRelease (ocds-proc.ts).
+    CREATE TABLE IF NOT EXISTS participaciones (
+      ocid TEXT NOT NULL,
+      oferente_id TEXT NOT NULL,                -- id completo de la fuente (EC-RUC-...-unidad, cédula, pasaporte)
+      ruc10 TEXT,                               -- diez primeros dígitos, misma clave que a_suppliers; NULL si no hay
+      nombre TEXT,
+      buyer_id TEXT,
+      source_year INTEGER,
+      gano INTEGER NOT NULL DEFAULT 0,
+      n_pujas INTEGER DEFAULT 0,
+      puja_min REAL,
+      puja_ultima TEXT,
+      PRIMARY KEY (ocid, oferente_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_part_ruc ON participaciones(ruc10);
+    CREATE INDEX IF NOT EXISTS idx_part_buyer ON participaciones(buyer_id);
+    CREATE INDEX IF NOT EXISTS idx_part_year ON participaciones(source_year);
+    -- El agregado nace vacío aquí para que oicp_oferentes no reviente entre el despliegue y la
+    -- primera reconstrucción (misma lección que a_supplier_risk en updater.ts).
+    CREATE TABLE IF NOT EXISTS a_participantes (
+      clave TEXT PRIMARY KEY,                   -- ruc10, o el oferente_id cuando no hay RUC
+      ruc10 TEXT, nombre TEXT,
+      n_particip INTEGER, n_ganadas INTEGER, n_perdidas INTEGER, n_compradores INTEGER,
+      first_year INTEGER, last_year INTEGER,
+      ganador_frecuente_ruc10 TEXT, ganador_frecuente_nombre TEXT, n_frente_ganador INTEGER
+    );
     CREATE INDEX IF NOT EXISTS idx_conc_buyer ON concentration_index(buyer_id, year);
     CREATE INDEX IF NOT EXISTS idx_conc_supplier ON concentration_index(supplier_id, year);
   `);
@@ -719,22 +748,41 @@ export function getFilterOptions() {
 // una foto de hace cinco minutos vale igual para un trabajo que dura días, y sin caché cualquiera
 // que recargara la metodología forzaría un recorrido de 1,47 M filas en el hilo único de Node.
 let cachePresupuesto: { at: number; valor: EstadoPresupuesto } | null = null;
-export type EstadoPresupuesto = { total: number; pendientes: number; sin_dato: number; con_dato: number };
-
-// Las tres consultas se exportan para que la prueba de costo (estado-presupuesto.test.ts)
-// haga EXPLAIN QUERY PLAN sobre EXACTAMENTE lo que corre en producción (regla 11).
-export const SQL_PRESUPUESTO_TOTAL = `SELECT COUNT(*) AS n FROM procedures`;
-export const SQL_PRESUPUESTO_PENDIENTES = `SELECT COUNT(*) AS n FROM procedures WHERE typeof(budget_amount) = 'text'`;
-export const SQL_PRESUPUESTO_SIN_DATO = `SELECT COUNT(*) AS n FROM procedures WHERE budget_amount IS NULL`;
+// La definición (las tres consultas y el tipo) vive en presupuesto-sql.ts, compartida con el
+// MCP (regla 11). Se re-exporta para que la prueba de costo haga EXPLAIN QUERY PLAN sobre
+// EXACTAMENTE lo que corre en producción.
+export { SQL_PRESUPUESTO_TOTAL, SQL_PRESUPUESTO_PENDIENTES, SQL_PRESUPUESTO_SIN_DATO } from './presupuesto-sql.js';
+export type { EstadoPresupuesto } from './presupuesto-sql.js';
 
 export function estadoPresupuesto(): EstadoPresupuesto {
   if (cachePresupuesto && Date.now() - cachePresupuesto.at < 300_000) return cachePresupuesto.valor;
-  const total = Number((db.prepare(SQL_PRESUPUESTO_TOTAL).get() as any)?.n || 0);
-  const pendientes = Number((db.prepare(SQL_PRESUPUESTO_PENDIENTES).get() as any)?.n || 0);
-  const sin_dato = Number((db.prepare(SQL_PRESUPUESTO_SIN_DATO).get() as any)?.n || 0);
-  const valor = { total, pendientes, sin_dato, con_dato: total - pendientes - sin_dato };
+  const valor = medirPresupuesto(db);
   cachePresupuesto = { at: Date.now(), valor };
   return valor;
+}
+
+// ── Oferentes (participaciones) ─────────────────────────────────────────────
+// Carga por lotes e idempotente: la clave es (ocid, oferente_id), así que recargar un
+// volcado no duplica. WAL acotado (regla 2) como en toda ruta de escritura masiva.
+export function upsertParticipaciones(rows: any[]): { insertadas: number } {
+  const ins = db.prepare(`INSERT OR REPLACE INTO participaciones
+    (ocid, oferente_id, ruc10, nombre, buyer_id, source_year, gano, n_pujas, puja_min, puja_ultima)
+    VALUES (@ocid, @oferente_id, @ruc10, @nombre, @buyer_id, @source_year, @gano, @n_pujas, @puja_min, @puja_ultima)`);
+  let n = 0;
+  db.transaction((lote: any[]) => {
+    for (const r of lote) {
+      if (!r || typeof r.ocid !== 'string' || !r.ocid || typeof r.oferente_id !== 'string' || !r.oferente_id) continue;
+      ins.run({
+        ocid: r.ocid, oferente_id: r.oferente_id, ruc10: r.ruc10 ?? null, nombre: r.nombre ?? '',
+        buyer_id: r.buyer_id ?? null, source_year: Number(r.source_year) || null,
+        gano: r.gano ? 1 : 0, n_pujas: Number(r.n_pujas) || 0,
+        puja_min: r.puja_min == null ? null : Number(r.puja_min), puja_ultima: r.puja_ultima ?? null,
+      });
+      n++;
+    }
+  })(rows);
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  return { insertadas: n };
 }
 
 // Upsert procedure

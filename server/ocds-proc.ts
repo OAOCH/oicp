@@ -55,6 +55,83 @@ export function releaseFrom(recData: any): any | null {
   return rels ? rels[rels.length - 1] : null;
 }
 
+/** Una fila por (proceso, oferente): quién compitió, si ganó, y sus pujas si hubo subasta. */
+export type Participacion = {
+  ocid: string; buyer_id: string | null; source_year: number;
+  oferente_id: string; ruc10: string | null; nombre: string;
+  gano: 0 | 1; n_pujas: number; puja_min: number | null; puja_ultima: string | null;
+};
+
+/**
+ * Los oferentes de un proceso viven en TRES sitios del release del SERCOP, y en ninguno de
+ * ellos está `release.bids`, que es donde el estándar los pondría y por eso pasaron
+ * inadvertidos hasta el 2-sep-2026:
+ *   - tender.tenderers[]          todos los que ofertaron
+ *   - parties[] con rol tenderer  idem (el que además tiene rol supplier es el ganador)
+ *   - auctions[].stages[].bids[]  cada puja de la subasta inversa, con oferente, monto y hora
+ * Un proceso sin oferentes publicados (régimen especial, directa) no produce filas: la tabla
+ * mide COMPETENCIA (quién compitió y perdió), no adjudicaciones.
+ */
+export function participacionesDeRelease(
+  release: any, proc: { ocid: string; buyer_id: string | null; source_year: number },
+): Participacion[] {
+  const t = release?.tender || {};
+  const porId = new Map<string, { nombre: string; gano: 0 | 1 }>();
+  const alta = (id: any, nombre: any) => {
+    const k = String(id || '').trim();
+    if (!k) return;
+    if (!porId.has(k)) porId.set(k, { nombre: limpiarNombre(nombre) || '', gano: 0 });
+    else if (!porId.get(k)!.nombre && nombre) porId.get(k)!.nombre = limpiarNombre(nombre) || '';
+  };
+  for (const x of (t.tenderers || [])) alta(x?.id || x?.identifier?.id, x?.name);
+  for (const p of (release?.parties || [])) {
+    const roles: string[] = p?.roles || [];
+    if (roles.includes('tenderer')) alta(p?.id || p?.identifier?.id, p?.name);
+  }
+  if (!porId.size) return [];
+
+  // Ganó quien figura como proveedor adjudicado (awards) o lleva el rol supplier en parties.
+  const ganadores = new Set<string>();
+  for (const a of (release?.awards || [])) for (const s of (a?.suppliers || [])) {
+    const id = String(s?.id || s?.identifier?.id || '').trim();
+    if (id) ganadores.add(id);
+  }
+  for (const p of (release?.parties || [])) {
+    const roles: string[] = p?.roles || [];
+    if (roles.includes('supplier')) { const id = String(p?.id || '').trim(); if (id) ganadores.add(id); }
+  }
+  for (const [id, v] of porId) if (ganadores.has(id)) v.gano = 1;
+
+  // Pujas por oferente: cuenta, mínimo y hora de la última.
+  const pujas = new Map<string, { n: number; min: number | null; ultima: string | null }>();
+  for (const au of (release?.auctions || [])) for (const st of (au?.stages || [])) for (const b of (st?.bids || [])) {
+    const monto = Number(b?.value?.amount);
+    for (const x of (b?.tenderers || [])) {
+      const id = String(x?.id || '').trim();
+      if (!id) continue;
+      if (!porId.has(id)) alta(id, x?.name);   // pujó pero no está listado: igual compitió
+      const p = pujas.get(id) || { n: 0, min: null, ultima: null };
+      p.n++;
+      if (Number.isFinite(monto)) p.min = p.min === null ? monto : Math.min(p.min, monto);
+      const f = typeof b?.date === 'string' ? b.date : null;
+      if (f && (!p.ultima || f > p.ultima)) p.ultima = f;
+      pujas.set(id, p);
+    }
+  }
+
+  const filas: Participacion[] = [];
+  for (const [id, v] of porId) {
+    const digitos = (id.match(/\d{10,13}/) || [null])[0];
+    const p = pujas.get(id) || { n: 0, min: null, ultima: null };
+    filas.push({
+      ocid: proc.ocid, buyer_id: proc.buyer_id, source_year: proc.source_year,
+      oferente_id: id, ruc10: digitos ? digitos.slice(0, 10) : null, nombre: v.nombre,
+      gano: v.gano, n_pujas: p.n, puja_min: p.min, puja_ultima: p.ultima,
+    });
+  }
+  return filas;
+}
+
 export function releaseToProc(release: any, sr: any, year: number) {
   const t = release.tender || {}, aw = release.awards || [], co = release.contracts || [];
   const buyer = release.buyer || t.procuringEntity || {};
