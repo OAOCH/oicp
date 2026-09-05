@@ -26,6 +26,7 @@ import { releaseFrom, releaseToProc } from './ocds-proc.js';
 import { crearLimitador } from './limitador.js';
 import { descargarVolcado, releasesDelVolcado, totalDeclarado } from './bulk-sercop.js';
 import { participacionesDeRelease } from './ocds-proc.js';
+import { LOTE_PARTICIPACIONES, lotesDe } from './lotes.js';
 import { parsearFicha, urlFicha } from './soce-ficha.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -313,10 +314,14 @@ async function cargarParticipaciones(desdeAnio: number, hastaAnio: number, conex
   let buffer: any[] = [];
   let enviadas = 0, vistos = 0, conOferentes = 0;
   const empujar = async () => {
-    if (!buffer.length) return;
-    const r = await prod('/api/admin/ingest-participaciones', { rows: buffer });
-    enviadas += r.insertadas || 0;
-    buffer = [];
+    // El servidor acepta hasta TOPE_LOTE_INGESTA filas por petición y un solo proceso puede traer
+    // cientos de oferentes (ver lotes.ts): el búfer va SIEMPRE en lotes fijos. Lo que el servidor
+    // acepta sale del búfer; si prod() lanza, el resto queda para el siguiente intento.
+    for (const lote of lotesDe(buffer, LOTE_PARTICIPACIONES)) {
+      const r = await prod('/api/admin/ingest-participaciones', { rows: lote });
+      enviadas += r.insertadas || 0;
+      buffer = buffer.slice(lote.length);
+    }
   };
   for (let anio = desdeAnio; anio <= hastaAnio; anio++) {
     if (anio > desdeAnio) await sleep(30000);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { TOPE_LOTE_INGESTA } from '../lotes.js';
 import express from 'express';
 import { migrate, upsertProcedure, rebuildConcentrationIndex, replaceDatabase, getDb, closeDbForReplace } from '../db.js';
 import { buildAnalytics, analyticsReady, mintMcpToken } from '../mcp-server.js';
@@ -539,8 +540,8 @@ router.post('/ingest', async (req, res) => {
 router.post('/ingest-participaciones', async (req, res) => {
   if (!checkAuthOrSync(req, res)) return;
   const rows = req.body?.rows;
-  if (!Array.isArray(rows) || !rows.length || rows.length > 2000) {
-    return res.status(400).json({ error: 'rows[] requerido (1 a 2000 por lote)' });
+  if (!Array.isArray(rows) || !rows.length || rows.length > TOPE_LOTE_INGESTA) {
+    return res.status(400).json({ error: `rows[] requerido (1 a ${TOPE_LOTE_INGESTA} por lote)` });
   }
   try {
     const { updateJob } = await import('../updater.js');
