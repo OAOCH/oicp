@@ -310,3 +310,42 @@ test('por debajo de 10.000 el Art. 96 no asigna término y no se evalúa por ese
     answer_deadline: '2025-11-03 17:00:00', submission_deadline: '2025-11-04 12:00:00' });
   assert.equal(f.length, 0, 'la tabla del Art. 96 empieza en «superior a 10.000»');
 });
+
+// TR-01 y el estado del proceso (corrección del 5-sep-2026). Un proceso en etapa de
+// convocatoria (status tender/active) todavía NO tiene proveedor: exigirlo marcaba como
+// «información incompleta crítica» a TODOS los procesos en curso (34.835 en status tender y
+// 18.624 en status active sin proveedor, medidos en producción el 5-sep-2026), o sea que la
+// bandera medía «no adjudicado aún», no falta de información. El proveedor solo se exige
+// desde la adjudicación (award, contract, complete). Comprador, valor y método se exigen siempre.
+const BASE_TR01 = { id: 'x', buyer_id: 'b', budget_amount: 500, procurement_method: 'open', procurement_method_details: 'Subasta Inversa Electrónica', description: 'Objeto suficientemente largo para no ser genérico' };
+
+test('TR-01: un proceso en convocatoria (tender) sin proveedor NO es información incompleta', () => {
+  const f = evaluateIndividualFlags({ ...BASE_TR01, status: 'tender', suppliers: [] });
+  assert.ok(!codes(f).includes('TR-01'), `no debe marcar TR-01 en tender: ${JSON.stringify(f.map(x => x.detail))}`);
+});
+
+test('TR-01: un proceso activo (active) sin proveedor tampoco', () => {
+  const f = evaluateIndividualFlags({ ...BASE_TR01, status: 'active', suppliers: [] });
+  assert.ok(!codes(f).includes('TR-01'));
+});
+
+test('TR-01: adjudicado (award) sin proveedor SÍ es información incompleta', () => {
+  const f = evaluateIndividualFlags({ ...BASE_TR01, status: 'award', award_amount: 450, suppliers: [] });
+  const t = f.find(x => x.code === 'TR-01');
+  assert.ok(t, 'debe marcar TR-01');
+  assert.match(String(t!.detail), /proveedor/);
+});
+
+test('TR-01: finalizado (complete) sin proveedor SÍ es información incompleta', () => {
+  const f = evaluateIndividualFlags({ ...BASE_TR01, status: 'complete', award_amount: 450, suppliers: [] });
+  assert.ok(codes(f).includes('TR-01'));
+});
+
+test('TR-01: en convocatoria, comprador, valor y método se siguen exigiendo', () => {
+  const f = evaluateIndividualFlags({ ...BASE_TR01, status: 'tender', suppliers: [], buyer_id: undefined, budget_amount: undefined });
+  const t = f.find(x => x.code === 'TR-01');
+  assert.ok(t, 'debe marcar TR-01 por comprador y valor');
+  assert.match(String(t!.detail), /comprador/);
+  assert.match(String(t!.detail), /valor/);
+  assert.doesNotMatch(String(t!.detail), /proveedor/, 'en convocatoria el proveedor no cuenta como faltante');
+});

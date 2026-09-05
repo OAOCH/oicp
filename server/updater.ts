@@ -407,7 +407,7 @@ export async function reflagChanged(dbIn?: Database.Database): Promise<number> {
   // El `.all()` de abajo NO viola la regla 3: está acotado a LOTE filas, no a la tabla.
   const LOTE = 5000;
   const leerLote = db.prepare(`
-    SELECT id, ocid, procurement_method, procurement_method_details, buyer_id,
+    SELECT id, ocid, status, procurement_method, procurement_method_details, buyer_id,
            budget_amount, award_amount, contract_amount, final_amount,
            published_date, submission_deadline, answer_deadline, award_date, number_of_tenderers,
            title, description, items_classification, has_amendments, amendment_count,

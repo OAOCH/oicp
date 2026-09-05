@@ -62,9 +62,9 @@ const FLAGS = [
     legal: 'Art. 50 LOSNCP (prohibición subdivisión); Art. 270 Reglamento (regla agregación anual); Disposición General Tercera LOSNCP',
     logic: 'NO es catálogo electrónico AND ínfimas(comprador, proveedor, AÑO DEL PROCESO) >= 2 AND suma_de_ínfimas_de_ese_año > umbral_ínfima(fecha del proceso)' },
   { code: 'TR-01', category: 'transparencia', severity: 1, ocp: '', name: 'Información Incompleta Crítica',
-    desc: 'Faltan campos esenciales: comprador, valor, proveedor o método de contratación.',
+    desc: 'Faltan campos esenciales: comprador, valor o método de contratación; el proveedor solo se exige desde la adjudicación. CORREGIDO EL 5-SEP-2026: hasta esa fecha se exigía proveedor también a los procesos en convocatoria, que por definición no lo tienen todavía, así que la bandera marcaba «información incompleta» en todos los procesos en curso (53.459 medidos en producción) cuando lo que medía era «no adjudicado aún».',
     legal: 'Art. 17 Reglamento (obligación publicar en Portal)',
-    logic: 'falta buyer_id OR falta valor OR no hay proveedores OR no hay ni procurement_method ni procurement_method_details' },
+    logic: 'falta buyer_id OR falta valor OR no hay ni procurement_method ni procurement_method_details OR (status es award/contract/complete AND no hay proveedores)' },
   { code: 'TR-02', category: 'transparencia', severity: 0, ocp: '', name: 'Descripción Genérica',
     desc: 'La descripción del proceso tiene entre 1 y 29 caracteres.',
     legal: 'Principio de transparencia Art. 6 LOSNCP',
@@ -151,18 +151,17 @@ export default function Methodology() {
               11-ago-2026 que sí los descuenta. Publicar dos versiones opuestas de la misma regla
               es peor que publicar la incompleta: quien la cite no sabe cuál rige (regla 10). */}
           <p>
-            <strong>Lo que este conteo todavía NO es:</strong> el término legal. El Código Orgánico
-            Administrativo dispone en su Art. 158 que los términos corren «a partir del día hábil
-            siguiente», y en su Art. 159 que se excluyen los feriados.{' '}
-            <strong>La segunda condición ya se cumple</strong> desde el 11 de agosto de 2026, con el
-            calendario del Art. 65 descrito arriba. <strong>La primera no:</strong> aquí se cuenta el
-            día inicial, así que estos dos indicadores miden un intervalo de días laborables y no un
-            término administrativo, y sobreestiman el término en un día. No se cambió porque mueve el
-            significado de los mínimos de IT-01 (9/13/17), que están pendientes de una decisión sobre
-            a qué tramo del procedimiento corresponden y desde qué fecha aplican; las dos cosas se
-            resuelven juntas o el indicador queda a medio camino. Se declara aquí en vez de
-            esconderse: <strong>al citar IT-01 o IT-02 conviene verificar las fechas en el portal
-            oficial</strong>.
+            <strong>Dos cómputos distintos, y cuál es cuál.</strong> El Código Orgánico Administrativo
+            dispone en su Art. 158 que los términos corren «a partir del día hábil siguiente», y en su
+            Art. 159 que se excluyen los feriados. <strong>El término legal del Art. 96</strong>, que
+            IT-01 aplica en su régimen (A) desde el 12 de agosto de 2026 a los procesos publicados
+            desde el 28 de octubre de 2025 con las dos fechas reales del cronograma, cumple las dos
+            condiciones: cuenta desde el día hábil siguiente al cierre de respuestas y descuenta los
+            feriados. <strong>El intervalo de días laborables</strong> descrito arriba, que usan IT-02
+            y el régimen (B) referencial de IT-01, incluye el día inicial: no es un término
+            administrativo y no reproduce ninguna norma, y así lo dice el detalle de cada bandera.
+            Se declara aquí en vez de esconderse: <strong>al citar IT-01 o IT-02 conviene verificar
+            las fechas en el portal oficial</strong>.
           </p>
         </div>
       </div>
@@ -180,7 +179,7 @@ export default function Methodology() {
           co-ocurrencias en los ocho años y no puede tenerlas: IC-01 exige un método competitivo e
           IC-02 exige contratación directa, así que son excluyentes por construcción y el descuento
           publicado nunca se aplicaba. En cambio faltaba el par que sí importa:{' '}
-          <strong>IC-02 + TR-03 co-ocurre en 42.321 de los 44.064 disparos de IC-02, el 96,0%</strong>.
+          <strong>IC-02 + TR-03 co-ocurría, medido el 11 de agosto de 2026, en 42.321 de los 44.064 disparos de IC-02, el 96,0%</strong>.
           Los dos exigen que el monto supere el umbral de ínfima y los dos se activan con la
           contratación directa o el régimen especial: era una sola observación cobrada dos veces,
           30 + 18 = 48 de los 100 puntos posibles, sin ningún descuento.
@@ -372,12 +371,14 @@ export default function Methodology() {
             que IP-03 no registra ningún caso y se declara inactiva.
           </p>
           <p>
-            <strong>Los días hábiles todavía no son el término legal.</strong> Desde el 11 de agosto
-            de 2026 sí descuentan los feriados del Art. 65 del Código del Trabajo, pero el cómputo
-            sigue incluyendo el día inicial, mientras que el COA Art. 158 manda contar «a partir del
-            día hábil siguiente». No se cambió porque mueve el significado de los mínimos de IT-01
-            (9/13/17), que están pendientes de una decisión sobre a qué tramo del procedimiento
-            corresponden y desde qué fecha aplican. Las dos cosas se resuelven juntas.
+            <strong>El término legal solo se evalúa donde hay datos para hacerlo.</strong> IT-01
+            aplica el término del Art. 96 (contado desde el día hábil siguiente, como manda el COA
+            Art. 158, y sin feriados) únicamente a los procesos publicados desde el 28 de octubre de
+            2025 cuyo cronograma real se conoce por la ficha del SOCE; ese índice se sigue
+            construyendo, así que la cobertura del régimen legal crece con el tiempo. En el resto de
+            procesos, IT-01 usa mínimos referenciales (9/13/17 días laborables, incluido el día
+            inicial) que no salen de ninguna norma, e IT-02 mide un intervalo de días laborables, no un
+            término. El detalle de cada bandera dice cuál de los dos cómputos se aplicó.
           </p>
           <p>
             <strong>IP-02 dispara muy poco y eso es el resultado, no un fallo.</strong> Tras la

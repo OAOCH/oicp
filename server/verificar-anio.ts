@@ -53,7 +53,7 @@ export async function verificarAnio(year: number, dbIn?: Database.Database): Pro
 
   const LOTE = 5000;
   const leer = db.prepare(`
-    SELECT id, ocid, procurement_method, procurement_method_details, buyer_id, buyer_name,
+    SELECT id, ocid, status, procurement_method, procurement_method_details, buyer_id, buyer_name,
            budget_amount, typeof(budget_amount) AS tipo_budget, award_amount, contract_amount, final_amount,
            published_date, submission_deadline, answer_deadline, award_date, number_of_tenderers,
            title, description, items_classification, has_amendments, amendment_count,

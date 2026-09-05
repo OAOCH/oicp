@@ -154,7 +154,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'IT-02': {
     code: 'IT-02', category: 'tiempo', name: 'Lightning Award',
     name_es: 'Adjudicación Relámpago',
-    description_es: 'La adjudicación ocurrió en menos de 3 días hábiles desde la publicación.',
+    description_es: 'La adjudicación ocurrió en menos de 3 días hábiles desde la publicación. No aplica a ínfima cuantía.',
     severity: 2, ocp_ref: 'R061',
   },
   'IP-01': {
@@ -218,7 +218,7 @@ export const FLAG_CATALOG: Record<string, Omit<Flag, 'active' | 'detail'>> = {
   'TR-01': {
     code: 'TR-01', category: 'transparencia', name: 'Critical Missing Information',
     name_es: 'Información Incompleta Crítica',
-    description_es: 'Faltan campos esenciales: comprador, valor, proveedor o método de contratación.',
+    description_es: 'Faltan campos esenciales: comprador, valor o método de contratación; el proveedor solo se exige desde la adjudicación (en convocatoria todavía no existe).',
     severity: 1,   // sin ocp_ref: R001 es la ausencia de documentos de PLANIFICACIÓN
   },
   'TR-02': {
@@ -360,6 +360,7 @@ interface ProcedureData {
   /** Fecha límite para que la entidad CONTESTE preguntas: de aquí arranca el término del Art. 96.
    *  No está en los datos abiertos; sale de la ficha pública del SOCE. */
   answer_deadline?: string | null;
+  status?: string | null;                 // tender|active|award|contract|complete: TR-01 exige proveedor solo desde award
   award_date?: string | null;
   number_of_tenderers?: number | null;
   title?: string;
@@ -740,10 +741,16 @@ export function evaluateIndividualFlags(proc: ProcedureData): Flag[] {
   }
 
   // TR-01: Critical missing information
+  // El PROVEEDOR solo se exige desde la adjudicación. Un proceso en convocatoria (status
+  // tender/active) no lo tiene todavía por definición; exigirlo marcaba «información
+  // incompleta crítica» en TODOS los procesos en curso (53.459 medidos en producción el
+  // 5-sep-2026: 34.835 en tender y 18.624 en active), o sea que la bandera medía «no
+  // adjudicado aún» y no una falta de transparencia. Sin status conocido se sigue exigiendo.
   const missingFields: string[] = [];
   if (!proc.buyer_id) missingFields.push('comprador');
   if (!value) missingFields.push('valor');
-  if (!proc.suppliers?.length) missingFields.push('proveedor');
+  const enConvocatoria = proc.status === 'tender' || proc.status === 'active';
+  if (!enConvocatoria && !proc.suppliers?.length) missingFields.push('proveedor');
   if (!proc.procurement_method && !proc.procurement_method_details) missingFields.push('método');
   if (missingFields.length > 0) {
     flags.push({
