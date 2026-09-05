@@ -54,6 +54,19 @@ Y para el presupuesto, la verificación sigue siendo:
 
 ---
 
+# Arranque de la sesión (en este orden, sin saltarte nada)
+
+1. `ESTADO.md` (la sección del 5-sep va primero) y este archivo entero.
+2. Salud: `/api/version` (commit `d2e8e5a` o posterior, corte de datos, `processes` ==
+   `presupuesto.total`) y `/api/health`. Si difieren, lee la memoria «sync a medias».
+3. Estado de la carga de oferentes: `participaciones-vigilante.log` (última línea: velocidad
+   medida o ABORTADO/FIN) y `participaciones.log`. Si la carga corrió: verifica con
+   `oicp_oferentes` (ranking y un RUC) y una boleta. Si no: mide la velocidad del SERCOP con un
+   curl al volcado mensual 2026-08 y decide si lanzar (`--participaciones`, ver punto 6).
+4. Tareas de la PC: `schtasks /query /tn "OICP Sync SERCOP"`, `"OICP Rellenado presupuestos"`,
+   `"OICP Indice SOCE Art96"` (Last Run, Last Result; -1073741510 = matada por apagado).
+5. Recién entonces, el trabajo del día. Dime en pocas líneas qué encontraste y el plan.
+
 # LO QUE FALTA
 
 ## 1. El índice del SOCE, que es lo único grande que sigue en marcha
@@ -257,6 +270,16 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
    defensas con `DELETE`/`DROP` va contra una base de prueba.
 10. Si usas subagentes, **fija `model` explícito**. Un resultado de verificación vacío nunca es una
     aprobación.
+11. **Modelo operativo (decisión de Oscar, 4-sep-2026): tú diseñas, instruyes y verificas; los
+    modelos baratos ejecutan.** Lo operativo y acotado (leer logs, correr una lista de comandos de
+    solo lectura, comparar textos, medir cifras contra el MCP) va a un Workflow con `model:
+    'sonnet'` o `'haiku'`, con esquema de salida y evidencia textual obligatoria; tú contrastas
+    sus cifras antes de reportar. Lo que NO se delega: decisiones de metodología, cambios de
+    código, y las esperas largas (a un modelo barato le das una tarea que termina, no una espera
+    de horas: la última vez delegó la espera a un proceso de fondo y cerró su turno). Las esperas
+    van a vigilantes sin tokens: scripts en la PC que escriben su log, con `trap` y stderr a un
+    `.err`, vigilados por sondeo (`cat` cada 60 s), NUNCA con `tail -F` sobre un log que escribe
+    PowerShell (bloquea el archivo y mata al script en silencio; costó nueve horas el 4-sep).
 
 # Qué está verificado y qué no
 

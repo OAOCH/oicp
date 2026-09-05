@@ -19,3 +19,6 @@ rellenado.log
 # Cursor del indice del SOCE (estado local)
 .soce-cursor.json
 masivo*.log
+
+# logs de error de vigilantes locales
+*.err
