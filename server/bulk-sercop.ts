@@ -229,6 +229,145 @@ export async function abrirVolcado(year: number, month = 0): Promise<Readable> {
 }
 
 /**
+ * Descarga por RANGOS con varias conexiones a la vez.
+ *
+ * Desde el 3-sep-2026 la fuente entrega cada conexión a 1-20 KB/s (el 12-ago iba a ~600 KB/s):
+ * un volcado anual de 160 MB tardaría horas y la conexión se corta antes (`terminated`). Medido
+ * el 5-sep contra el volcado mensual de agosto de 2026: el freno es POR CONEXIÓN y el servidor
+ * acepta `Range` (206) en los ocho volcados anuales. 1 conexión: 2-20 KB/s · 4: 41 · 8: 78 ·
+ * 16: 150 KB/s. Con 16 conexiones el corpus entero (1,05 GB) baja en ~2 horas en vez de días.
+ *
+ * Cómo: un sondeo `Range: bytes=0-0` da el tamaño total y demuestra que el servidor respeta el
+ * rango; si contesta 200 se aborta, porque ensamblar respuestas enteras como si fueran trozos
+ * produciría un fichero corrupto sin ningún aviso. El fichero se crea del tamaño final y cada
+ * trozo se escribe en su offset. Cada trozo exige 206, un `Content-Range` exactamente igual al
+ * pedido y la cuenta exacta de bytes: un trozo corto (la fuente corta conexiones a mitad) se
+ * vuelve a pedir, nunca se da por bueno. Un 429 frena a TODAS las conexiones (la misma lección
+ * que `limitador.ts`) y un 403 aborta sin reintentar: la IP de la PC es la única desde la que se
+ * puede leer la fuente. Al final se comprueba el tamaño del fichero contra el total declarado.
+ */
+export interface OpcionesRangos {
+  conexiones?: number;        // conexiones simultáneas (por defecto 8)
+  trozoBytes?: number;        // tamaño de cada trozo (por defecto 1 MB: a 6 KB/s por conexión son ~3 min)
+  intentosPorTrozo?: number;  // intentos por trozo (por defecto 6)
+  esperaBaseMs?: number;      // espera entre intentos, multiplicada por el número de intento
+  timeoutTrozoMs?: number;    // tope por trozo (por defecto 10 min): una conexión estancada se corta y se vuelve a pedir
+  cabeceras?: Record<string, string>;
+  registrar?: (m: string) => void;
+}
+
+export async function descargarPorRangos(
+  url: string, destino: string, o: OpcionesRangos = {},
+): Promise<{ bytes: number; trozos: number }> {
+  const conexiones = Math.max(1, Math.floor(o.conexiones ?? 8));
+  const trozoBytes = Math.max(1024, Math.floor(o.trozoBytes ?? 1024 * 1024));
+  const intentos = Math.max(1, o.intentosPorTrozo ?? 6);
+  const esperaBaseMs = o.esperaBaseMs ?? 5000;
+  const timeoutMs = o.timeoutTrozoMs ?? 600000;
+  const cabeceras = { 'User-Agent': 'OICP-sync', ...(o.cabeceras || {}) };
+  const registrar = o.registrar || (() => {});
+  const fsp = await import('fs/promises');
+  const { createWriteStream } = await import('fs');
+  const { pipeline: pipelineAsync } = await import('stream/promises');
+  const dormir = (ms: number) => new Promise(r => setTimeout(r, Math.max(0, ms)));
+  const descartar = async (res: Response) => { try { await res.body?.cancel(); } catch { /* ya cerrado */ } };
+
+  // Política común de CADA petición, sondeo incluido: un 429 frena a TODAS las conexiones (misma
+  // lección que limitador.ts) y un 403 es definitivo, porque la IP de la PC es la única que puede
+  // leer al SERCOP y no se le insiste ni una vez.
+  let frenoHasta = 0;
+  let fallo: Error | null = null;
+  const definitivo = (m: string) => Object.assign(new Error(m), { definitivo: true });
+  const pedir = async (rango: string, que: string): Promise<Response> => {
+    await dormir(frenoHasta - Date.now());
+    const res = await fetch(url, { headers: { ...cabeceras, Range: rango }, signal: AbortSignal.timeout(timeoutMs) });
+    if (res.status === 429) {
+      const ra = Number(res.headers.get('retry-after'));
+      const seg = Number.isFinite(ra) && ra >= 0 ? ra : 30;
+      frenoHasta = Math.max(frenoHasta, Date.now() + seg * 1000);
+      registrar(`  429 de la fuente: todas las conexiones esperan ${seg} s`);
+      await descartar(res);
+      throw new Error('HTTP 429');
+    }
+    if (res.status === 403) {
+      await descartar(res);
+      throw definitivo(`${que}: HTTP 403 (la fuente bloqueó la descarga; no se reintenta)`);
+    }
+    return res;
+  };
+  const conReintentos = async <T>(que: string, fn: () => Promise<T>): Promise<T> => {
+    for (let intento = 1; ; intento++) {
+      try { return await fn(); }
+      catch (e: any) {
+        if (e?.definitivo) { fallo = fallo || e; throw e; }
+        if (fallo) throw fallo;
+        if (intento >= intentos) throw new Error(`${que}: ${e.message}`);
+        await dormir(esperaBaseMs * intento);
+      }
+    }
+  };
+
+  // 1. Sondeo: tamaño total y prueba de que el servidor respeta el rango. Va con la MISMA política de
+  //    reintentos que los trozos: un 429 o un corte transitorio aquí no puede tumbar el volcado entero
+  //    ni disfrazarse de «no acepta rangos». Lo definitivo es un 200: el servidor ignoró el Range.
+  const total = await conReintentos('sondeo', async () => {
+    const res = await pedir('bytes=0-0', 'sondeo');
+    const cr = res.headers.get('content-range') || '';
+    await descartar(res);
+    if (res.status === 200) throw definitivo('el servidor no acepta rangos (contestó 200 al pedir bytes=0-0)');
+    const n = Number(/\/(\d+)\s*$/.exec(cr)?.[1]);
+    if (res.status !== 206 || !Number.isFinite(n) || n <= 0) throw new Error(`HTTP ${res.status}, Content-Range «${cr || 'ausente'}»`);
+    return n;
+  });
+
+  // 2. Fichero del tamaño final; cada trozo escribe en su sitio.
+  await fsp.writeFile(destino, '');
+  await fsp.truncate(destino, total);
+
+  // 3. Cola de trozos servida por N obreros.
+  const trozos: Array<[number, number]> = [];
+  for (let a = 0; a < total; a += trozoBytes) trozos.push([a, Math.min(a + trozoBytes, total) - 1]);
+  let siguiente = 0, hechos = 0, bytesHechos = 0, ultimoAviso = 0;
+  const t0 = Date.now();
+
+  const bajarTrozo = (a: number, b: number) => conReintentos(`trozo ${a}-${b}`, async () => {
+    const esperado = b - a + 1;
+    const res = await pedir(`bytes=${a}-${b}`, `trozo ${a}-${b}`);
+    if (res.status !== 206) { await descartar(res); throw new Error(`HTTP ${res.status} en vez de 206`); }
+    const cr = res.headers.get('content-range') || '';
+    if (!cr.startsWith(`bytes ${a}-${b}/`)) { await descartar(res); throw new Error(`Content-Range inesperado «${cr}»`); }
+    if (!res.body) throw new Error('sin cuerpo');
+    let n = 0;
+    const contador = new Transform({ transform(c: Buffer, _enc, cb) { n += c.length; cb(null, c); } });
+    await pipelineAsync(Readable.fromWeb(res.body as any), contador, createWriteStream(destino, { flags: 'r+', start: a }));
+    if (n !== esperado) throw new Error(`trozo incompleto: ${n} de ${esperado} bytes`);
+  });
+
+  const obrero = async () => {
+    while (!fallo) {
+      const i = siguiente++;
+      if (i >= trozos.length) return;
+      const [a, b] = trozos[i];
+      try { await bajarTrozo(a, b); }
+      catch (e: any) { fallo = fallo || e; return; }
+      hechos++; bytesHechos += b - a + 1;
+      const ahora = Date.now();
+      if (ahora - ultimoAviso >= 30000 || hechos === trozos.length) {
+        ultimoAviso = ahora;
+        const seg = Math.max(1, (ahora - t0) / 1000);
+        registrar(`    ${(bytesHechos / 1048576).toFixed(1)} de ${(total / 1048576).toFixed(1)} MB (${Math.round(100 * bytesHechos / total)}%) · ${(bytesHechos / 1024 / seg).toFixed(0)} KB/s con ${conexiones} conexiones`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(conexiones, trozos.length) }, obrero));
+  if (fallo) throw fallo;
+
+  const tam = (await fsp.stat(destino)).size;
+  if (tam !== total) throw new Error(`ensamblado incompleto: ${tam} de ${total} bytes`);
+  return { bytes: total, trozos: trozos.length };
+}
+
+/**
  * Descarga el volcado A DISCO y devuelve la ruta.
  *
  * Leer directamente de la red hacia el parseador parece más elegante y en la práctica es frágil:
@@ -238,34 +377,46 @@ export async function abrirVolcado(year: number, month = 0): Promise<Readable> {
  * descarga y nada más; además el fichero queda para reprocesar sin volver a pedirlo.
  *
  * Se descarta lo descargado a medias: un ZIP truncado inflaría basura silenciosamente.
+ *
+ * Con `conexiones` > 1 la descarga va por rangos en paralelo (ver `descargarPorRangos`); con 1,
+ * por el camino de siempre de un solo flujo.
  */
 export async function descargarVolcado(
   year: number, destino: string, month = 0, intentos = 4,
-  registrar: (m: string) => void = () => {},
+  registrar: (m: string) => void = () => {}, conexiones = 1,
 ): Promise<{ ruta: string; bytes: number }> {
   const { createWriteStream, statSync, unlinkSync, existsSync } = await import('fs');
   const { pipeline } = await import('stream/promises');
   for (let intento = 1; intento <= intentos; intento++) {
     try {
       const t0 = Date.now();
-      const res = await fetch(urlVolcado(year, month),
-        { headers: { 'User-Agent': 'OICP-sync' }, signal: AbortSignal.timeout(1800000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      if (!res.body) throw new Error('sin cuerpo');
-      const declarado = Number(res.headers.get('content-length')) || 0;
-      await pipeline(Readable.fromWeb(res.body as any), createWriteStream(destino));
-      const bytes = statSync(destino).size;
-      // Un ZIP cortado sigue empezando por la firma correcta: sin esta comprobación, un volcado
-      // a medias se procesaría como si estuviera completo y dejaría procesos sin reparar.
-      if (declarado && bytes !== declarado) {
-        throw new Error(`incompleto: ${bytes} de ${declarado} bytes`);
+      let bytes: number;
+      if (conexiones > 1) {
+        // Por rangos (descargarPorRangos): comprueba por sí misma el 206, el Content-Range y la
+        // cuenta de bytes de cada trozo, y el tamaño final del fichero.
+        bytes = (await descargarPorRangos(urlVolcado(year, month), destino, { conexiones, registrar })).bytes;
+      } else {
+        const res = await fetch(urlVolcado(year, month),
+          { headers: { 'User-Agent': 'OICP-sync' }, signal: AbortSignal.timeout(1800000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.body) throw new Error('sin cuerpo');
+        const declarado = Number(res.headers.get('content-length')) || 0;
+        await pipeline(Readable.fromWeb(res.body as any), createWriteStream(destino));
+        bytes = statSync(destino).size;
+        // Un ZIP cortado sigue empezando por la firma correcta: sin esta comprobación, un volcado
+        // a medias se procesaría como si estuviera completo y dejaría procesos sin reparar.
+        if (declarado && bytes !== declarado) {
+          throw new Error(`incompleto: ${bytes} de ${declarado} bytes`);
+        }
       }
       if (bytes < 1024) throw new Error(`demasiado pequeño (${bytes} bytes)`);
       const seg = (Date.now() - t0) / 1000;
-      registrar(`  ${year}: ${(bytes / 1048576).toFixed(1)} MB en ${seg.toFixed(1)}s = ${(bytes / 1048576 / seg).toFixed(2)} MB/s`);
+      registrar(`  ${year}: ${(bytes / 1048576).toFixed(1)} MB en ${seg.toFixed(1)}s = ${(bytes / 1048576 / seg).toFixed(2)} MB/s${conexiones > 1 ? ` (${conexiones} conexiones)` : ''}`);
       return { ruta: destino, bytes };
     } catch (e: any) {
       try { if (existsSync(destino)) unlinkSync(destino); } catch { /* mejor esfuerzo */ }
+      // Un 403 es un bloqueo: reintentar el año entero sería insistirle a la fuente.
+      if (/HTTP 403/.test(String(e.message))) throw new Error(`volcado ${year}: ${e.message}`);
       if (intento === intentos) throw new Error(`volcado ${year}: ${e.message}`);
       const espera = 15 * intento;
       registrar(`  ${year}: intento ${intento} falló (${e.message}); reintento en ${espera}s`);

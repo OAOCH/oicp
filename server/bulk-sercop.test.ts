@@ -14,7 +14,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'zlib';
 import { Readable } from 'stream';
-import { objetosDeArray, releasesDelVolcado, urlVolcado } from './bulk-sercop.js';
+import http from 'http';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { descargarPorRangos, objetosDeArray, releasesDelVolcado, urlVolcado } from './bulk-sercop.js';
 
 /** Arma un ZIP de una entrada deflate, como el que devuelve el SERCOP. */
 function zipDeTexto(nombre: string, texto: string): Buffer {
@@ -161,4 +165,213 @@ test('la URL del volcado se arma con los parámetros que la fuente entiende', ()
   assert.equal(urlVolcado(2024),
     'https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/download?type=json&year=2024&month=0&method=all');
   assert.match(urlVolcado(2026, 7), /year=2026&month=7/);
+});
+
+// ── Descarga por RANGOS ──────────────────────────────────────────────────────────────────────
+// Desde el 3-sep-2026 la fuente entrega cada conexión a 1-20 KB/s (el 12-ago iba a ~600 KB/s),
+// pero el freno es POR CONEXIÓN y el servidor acepta `Range`: medido el 5-sep, 1 conexión da
+// 2-20 KB/s, 4 dan 41, 8 dan 78 y 16 dan 150 KB/s. Estas pruebas levantan un servidor local que
+// sirve rangos y comprueban que el fichero ensamblado es idéntico byte a byte, que un trozo que
+// falla o llega corto se vuelve a pedir, y que si el servidor ignora el rango NO se ensambla basura.
+type ModoServidor = {
+  ignorarRange?: boolean;
+  fallar?: Map<string, number>;   // rango → veces que responde 500
+  cortar?: Map<string, number>;   // rango → veces que entrega la MITAD del trozo con cierre limpio
+  con429?: Map<string, number>;   // rango → veces que responde 429
+  con403?: Map<string, number>;   // rango → veces que responde 403 (bloqueo)
+  corrido?: Set<string>;          // rangos que se sirven con 206 pero con OTRO Content-Range
+  retryAfter?: string;            // cabecera Retry-After de los 429 (por defecto '0')
+};
+
+function servidorDeRangos(contenido: Buffer, modo: ModoServidor = {}) {
+  const peticiones: string[] = [];
+  const tiempos: number[] = [];   // Date.now() de cada petición, en el mismo orden que `peticiones`
+  const srv = http.createServer((req, res) => {
+    const r = String(req.headers.range || '');
+    peticiones.push(r); tiempos.push(Date.now());
+    if (modo.ignorarRange || !r) { res.writeHead(200, { 'Content-Length': contenido.length }); res.end(contenido); return; }
+    const m = /bytes=(\d+)-(\d+)/.exec(r);
+    if (!m) { res.writeHead(400); res.end(); return; }
+    const a = Number(m[1]), b = Math.min(Number(m[2]), contenido.length - 1);
+    const f = modo.fallar?.get(r) ?? 0;
+    if (f > 0) { modo.fallar!.set(r, f - 1); res.writeHead(500); res.end('se cayó'); return; }
+    const q = modo.con429?.get(r) ?? 0;
+    if (q > 0) { modo.con429!.set(r, q - 1); res.writeHead(429, { 'Retry-After': modo.retryAfter ?? '0' }); res.end('despacio'); return; }
+    const p = modo.con403?.get(r) ?? 0;
+    if (p > 0) { modo.con403!.set(r, p - 1); res.writeHead(403); res.end('bloqueado'); return; }
+    if (modo.corrido?.has(r)) {
+      // 206 «válido» pero de OTRO tramo: un proxy o CDN que atiende el Range a su manera.
+      res.writeHead(206, { 'Content-Range': `bytes ${a + 100}-${b + 100}/${contenido.length}`, 'Content-Length': b - a + 1 });
+      res.end(contenido.subarray(a, b + 1)); return;
+    }
+    const c = modo.cortar?.get(r) ?? 0;
+    if (c > 0) {
+      // Respuesta HTTP impecable (Content-Length coherente, cierre limpio) pero con la MITAD de los
+      // bytes pedidos: el transporte no protesta, así que solo la cuenta de bytes de la app lo ve.
+      modo.cortar!.set(r, c - 1);
+      const mitad = Math.floor((b - a + 1) / 2);
+      res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${contenido.length}`, 'Content-Length': mitad });
+      res.end(contenido.subarray(a, a + mitad)); return;
+    }
+    res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${contenido.length}`, 'Content-Length': b - a + 1 });
+    res.end(contenido.subarray(a, b + 1));
+  });
+  return new Promise<{ url: string; peticiones: string[]; tiempos: number[]; cerrar: () => Promise<void> }>(listo => {
+    srv.listen(0, '127.0.0.1', () => {
+      const puerto = (srv.address() as any).port;
+      listo({ url: `http://127.0.0.1:${puerto}/volcado.zip`, peticiones, tiempos, cerrar: () => new Promise(r => srv.close(() => r())) });
+    });
+  });
+}
+
+/** Contenido determinista que no se repite por trozos: un trozo mal colocado se nota al comparar. */
+function contenidoDe(n: number): Buffer {
+  const b = Buffer.alloc(n);
+  for (let i = 0; i < n; i++) b[i] = (i * 7 + (i >> 8) * 13 + (i >> 16) * 17) & 0xff;
+  return b;
+}
+
+const TROZO = 64 * 1024;
+const RAPIDO = { trozoBytes: TROZO, esperaBaseMs: 5, conexiones: 4 };
+const rango = (i: number, total: number) => `bytes=${i * TROZO}-${Math.min((i + 1) * TROZO, total) - 1}`;
+
+async function conFicheroTemporal(fn: (ruta: string) => Promise<void>) {
+  const dir = mkdtempSync(join(tmpdir(), 'oicp-rangos-'));
+  try { await fn(join(dir, 'volcado.zip')); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('la descarga por rangos con varias conexiones reproduce el fichero byte a byte', async () => {
+  const contenido = contenidoDe(TROZO * 10 + 1234);   // el último trozo es más corto a propósito
+  const srv = await servidorDeRangos(contenido);
+  try {
+    await conFicheroTemporal(async ruta => {
+      const r = await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.equal(r.bytes, contenido.length);
+      assert.equal(r.trozos, 11);
+      assert.ok(readFileSync(ruta).equals(contenido), 'el fichero ensamblado difiere del original');
+    });
+    // el sondeo del tamaño más UN pedido por trozo, ninguno repetido
+    assert.equal(srv.peticiones.filter(p => p !== 'bytes=0-0').length, 11);
+  } finally { await srv.cerrar(); }
+});
+
+test('un trozo que FALLA se vuelve a pedir y el fichero sale entero', async () => {
+  const contenido = contenidoDe(TROZO * 6);
+  const roto = rango(3, contenido.length);
+  const srv = await servidorDeRangos(contenido, { fallar: new Map([[roto, 2]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.ok(readFileSync(ruta).equals(contenido));
+    });
+    assert.equal(srv.peticiones.filter(p => p === roto).length, 3, 'debió pedir el trozo roto tres veces');
+  } finally { await srv.cerrar(); }
+});
+
+test('un trozo que llega CORTO no se da por bueno: se vuelve a pedir', async () => {
+  // El servidor de pruebas responde un 206 impecable con la MITAD de los bytes y Content-Length
+  // coherente: el transporte no ve nada raro y solo la cuenta de bytes de la app lo detecta (un corte
+  // sucio con `terminated` lo atajaría undici solo, y esta prueba no probaría nada nuestro). Sin esa
+  // cuenta el hueco quedaría relleno de ceros y el ZIP, corrupto.
+  const contenido = contenidoDe(TROZO * 5);
+  const corto = rango(1, contenido.length);
+  const srv = await servidorDeRangos(contenido, { cortar: new Map([[corto, 1]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.ok(readFileSync(ruta).equals(contenido), 'el trozo cortado quedó a medias en el fichero');
+    });
+    assert.equal(srv.peticiones.filter(p => p === corto).length, 2);
+  } finally { await srv.cerrar(); }
+});
+
+test('si el servidor IGNORA el rango se rechaza en vez de ensamblar basura', async () => {
+  const contenido = contenidoDe(TROZO * 3);
+  const srv = await servidorDeRangos(contenido, { ignorarRange: true });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, RAPIDO), /rangos/);
+    });
+  } finally { await srv.cerrar(); }
+});
+
+test('un 429 frena a TODAS las conexiones y luego se reintenta; el fichero sale entero', async () => {
+  // Retry-After de 1 s en UN trozo: ninguna otra conexión debe abrir una petición nueva durante ese
+  // segundo (el freno es compartido, como en limitador.ts), y el trozo frenado se vuelve a pedir.
+  const contenido = contenidoDe(TROZO * 8);
+  const frenado = rango(2, contenido.length);
+  const srv = await servidorDeRangos(contenido, { con429: new Map([[frenado, 1]]), retryAfter: '1' });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await descargarPorRangos(srv.url, ruta, { ...RAPIDO, conexiones: 2 });
+      assert.ok(readFileSync(ruta).equals(contenido));
+    });
+    assert.equal(srv.peticiones.filter(p => p === frenado).length, 2);
+    const t429 = srv.tiempos[srv.peticiones.indexOf(frenado)];
+    // Las peticiones posteriores al 429 (100 ms de margen para la que ya estaba en vuelo) tuvieron
+    // que esperar el segundo entero, vinieran de la conexión frenada o de la otra.
+    const despues = srv.tiempos.filter(t => t > t429 + 100);
+    assert.ok(despues.length >= 2, 'la prueba necesita peticiones posteriores al 429 para medir el freno');
+    for (const t of despues) assert.ok(t >= t429 + 950, `una conexión pidió a los ${t - t429} ms del 429: el freno no es compartido`);
+  } finally { await srv.cerrar(); }
+});
+
+test('un 429 en el SONDEO se reintenta en vez de declarar que el servidor no acepta rangos', async () => {
+  const contenido = contenidoDe(TROZO * 3);
+  const srv = await servidorDeRangos(contenido, { con429: new Map([['bytes=0-0', 1]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.ok(readFileSync(ruta).equals(contenido));
+    });
+    assert.equal(srv.peticiones.filter(p => p === 'bytes=0-0').length, 2, 'el sondeo debió repetirse tras el 429');
+  } finally { await srv.cerrar(); }
+});
+
+test('un 403 en el SONDEO aborta sin reintentar', async () => {
+  const contenido = contenidoDe(TROZO * 3);
+  const srv = await servidorDeRangos(contenido, { con403: new Map([['bytes=0-0', 1]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, RAPIDO), /HTTP 403/);
+    });
+    assert.equal(srv.peticiones.length, 1, 'tras el 403 del sondeo no debe haber ni una petición más');
+  } finally { await srv.cerrar(); }
+});
+
+test('un 206 con OTRO Content-Range se rechaza: nunca se escribe un trozo en el sitio equivocado', async () => {
+  const contenido = contenidoDe(TROZO * 3);
+  const corrido = rango(1, contenido.length);
+  const srv = await servidorDeRangos(contenido, { corrido: new Set([corrido]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, { ...RAPIDO, intentosPorTrozo: 2 }), /Content-Range inesperado/);
+    });
+  } finally { await srv.cerrar(); }
+});
+
+test('un 403 (bloqueo) NO se reintenta: se aborta de inmediato para no insistirle a la fuente', async () => {
+  // La IP de la PC es la única desde la que este proyecto puede leer al SERCOP. Si la fuente
+  // bloquea, insistir seis veces por trozo y luego con el año siguiente es lo peor que se puede
+  // hacer: el primer 403 corta la descarga entera.
+  const contenido = contenidoDe(TROZO * 4);
+  const bloqueado = rango(1, contenido.length);
+  const srv = await servidorDeRangos(contenido, { con403: new Map([[bloqueado, 1]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, RAPIDO), /HTTP 403/);
+    });
+    assert.equal(srv.peticiones.filter(p => p === bloqueado).length, 1, 'un 403 no debe reintentarse');
+  } finally { await srv.cerrar(); }
+});
+
+test('un trozo que falla TODAS las veces tumba la descarga con un error claro', async () => {
+  const contenido = contenidoDe(TROZO * 3);
+  const roto = rango(1, contenido.length);
+  const srv = await servidorDeRangos(contenido, { fallar: new Map([[roto, 99]]) });
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, { ...RAPIDO, intentosPorTrozo: 3 }), /trozo 65536-131071/);
+    });
+  } finally { await srv.cerrar(); }
 });

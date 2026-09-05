@@ -307,9 +307,9 @@ async function reparar(budgetMin: number, soloCriterio?: string, concurrencia = 
 // parties con rol tenderer, auctions[].stages[].bids) pero nunca se guardaron. Se cargan desde
 // los volcados anuales con el MISMO mapeo que el resto (participacionesDeRelease, regla 11),
 // por lotes idempotentes, y al final se reconstruye el agregado a_participantes.
-async function cargarParticipaciones(desdeAnio: number, hastaAnio: number) {
+async function cargarParticipaciones(desdeAnio: number, hastaAnio: number, conexiones = 1) {
   const t0 = Date.now();
-  log(`OFERENTES: años ${desdeAnio} a ${hastaAnio}`);
+  log(`OFERENTES: años ${desdeAnio} a ${hastaAnio}${conexiones > 1 ? ` (${conexiones} conexiones por volcado)` : ''}`);
   let buffer: any[] = [];
   let enviadas = 0, vistos = 0, conOferentes = 0;
   const empujar = async () => {
@@ -324,8 +324,13 @@ async function cargarParticipaciones(desdeAnio: number, hastaAnio: number) {
     const tAnio = Date.now();
     let delAnio = 0, delAnioConOf = 0, filasAnio = 0;
     const ruta = resolve(ROOT, `.volcado-${anio}.zip`);
-    try { await descargarVolcado(anio, ruta, 0, 4, log); }
-    catch (e: any) { log(`  ${anio}: no se pudo descargar (${e.message}); se salta`); continue; }
+    try { await descargarVolcado(anio, ruta, 0, 4, log, conexiones); }
+    catch (e: any) {
+      log(`  ${anio}: no se pudo descargar (${e.message}); se salta`);
+      // Un 403 es un bloqueo de la fuente: seguir con el año siguiente sería insistirle.
+      if (/HTTP 403/.test(e.message)) { log('la fuente bloqueó la descarga: se detiene la carga entera'); break; }
+      continue;
+    }
     for await (const rel of releasesDelVolcado(createReadStream(ruta))) {
       delAnio++; vistos++;
       try {
@@ -359,9 +364,9 @@ async function cargarParticipaciones(desdeAnio: number, hastaAnio: number) {
 //
 // Esta vía NO sustituye a `--reparar`: aquella sigue sirviendo para reparar unos pocos procesos
 // sueltos sin bajarse un año entero, y para los que el volcado no traiga.
-async function repararMasivo(desdeAnio: number, hastaAnio: number) {
+async function repararMasivo(desdeAnio: number, hastaAnio: number, conexiones = 1) {
   const t0 = Date.now();
-  log(`RELLENADO MASIVO: años ${desdeAnio} a ${hastaAnio}`);
+  log(`RELLENADO MASIVO: años ${desdeAnio} a ${hastaAnio}${conexiones > 1 ? ` (${conexiones} conexiones por volcado)` : ''}`);
   const antes = await prod('/api/admin/avance-reparacion', { fresco: true }, 2).catch(() => null);
   if (antes) log(`  estado inicial: ${JSON.stringify(antes)}`);
 
@@ -404,8 +409,13 @@ async function repararMasivo(desdeAnio: number, hastaAnio: number) {
     // A disco primero: la primera corrida real murió con `TypeError: terminated` a mitad del
     // volcado de 2019, y con el flujo encadenado se pierde todo lo transferido.
     const ruta = resolve(ROOT, `.volcado-${anio}.zip`);
-    try { await descargarVolcado(anio, ruta, 0, 4, log); }
-    catch (e: any) { log(`  ${anio}: no se pudo descargar (${e.message}); se salta`); continue; }
+    try { await descargarVolcado(anio, ruta, 0, 4, log, conexiones); }
+    catch (e: any) {
+      log(`  ${anio}: no se pudo descargar (${e.message}); se salta`);
+      // Un 403 es un bloqueo de la fuente: seguir con el año siguiente sería insistirle.
+      if (/HTTP 403/.test(e.message)) { log('la fuente bloqueó la descarga: se detiene el rellenado entero'); break; }
+      continue;
+    }
 
     for await (const rel of releasesDelVolcado(createReadStream(ruta))) {
       delAnio++; vistos++;
@@ -585,6 +595,10 @@ async function main() {
   const year = Number(argOf('--year')) || new Date().getFullYear();
   const budgetMin = Number(argOf('--budget-min')) || 240;
   const oneTerm = argOf('--term');
+  // --conexiones N: los volcados se bajan por rangos en paralelo (ver descargarPorRangos en
+  // bulk-sercop.ts). Medido el 5-sep-2026: la fuente frena POR CONEXIÓN (1-20 KB/s cada una) y
+  // 16 conexiones dan ~150 KB/s. Tope de 32 para no castigar a la fuente.
+  const conexiones = Math.max(1, Math.min(32, Number(argOf('--conexiones')) || 1));
   const terms = oneTerm ? [oneTerm] : TERMS;
 
   if (!TOKEN) { console.error('Falta el token: crea el archivo .sync-token o exporta OICP_SYNC_TOKEN'); process.exit(1); }
@@ -594,13 +608,13 @@ async function main() {
   // Rellenado MASIVO: los volcados por año del SERCOP. Es ~160 veces más rápido que pedir
   // proceso por proceso y baja la carga sobre la fuente de 174.547 peticiones a 8.
   if (args.includes('--reparar-masivo')) {
-    await repararMasivo(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
+    await repararMasivo(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear(), conexiones);
     process.exit(0);
   }
 
   // Oferentes (incluidos los que perdieron) y pujas, desde los volcados anuales.
   if (args.includes('--participaciones')) {
-    await cargarParticipaciones(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear());
+    await cargarParticipaciones(Number(argOf('--desde-anio')) || 2019, Number(argOf('--hasta-anio')) || new Date().getFullYear(), conexiones);
     process.exit(0);
   }
 
