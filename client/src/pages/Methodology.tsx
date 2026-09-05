@@ -175,7 +175,7 @@ export default function Methodology() {
         </p>
         <p className="text-xs text-gray-500 mb-4">
           <strong>Los pares se replantearon el 11 de agosto de 2026, midiendo.</strong> Hasta esa
-          fecha la lista declaraba el par IC-01 + IC-02, que tiene <strong>cero</strong>
+          fecha la lista declaraba el par IC-01 + IC-02, que tiene <strong>cero</strong>{' '}
           co-ocurrencias en los ocho años y no puede tenerlas: IC-01 exige un método competitivo e
           IC-02 exige contratación directa, así que son excluyentes por construcción y el descuento
           publicado nunca se aplicaba. En cambio faltaba el par que sí importa:{' '}
