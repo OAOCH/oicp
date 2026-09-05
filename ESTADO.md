@@ -1,4 +1,50 @@
-# ESTADO — actualizado 2026-08-13
+# ESTADO — actualizado 2026-09-05
+
+## 2026-09-05 — auditoría de fondo: metodología vs motor, campos de la fuente, utilidad y cifras
+
+Cuatro frentes con modelos baratos (Sonnet) y verificación propia. Resultado en producción
+(commits `111805e` y `fa96ccc`), boletas 2025 y 2026 APROBADAS después del recálculo.
+
+**Corregido (sustancia):**
+1. **TR-01 medía «no adjudicado aún», no falta de información.** Exigía proveedor también a los
+   procesos en convocatoria: 34 835/34 835 en `status=tender` y 18 624 en `active` llevaban la
+   bandera (+8 puntos) solo por no tener proveedor todavía. Ahora el proveedor se exige desde la
+   adjudicación (award/contract/complete); comprador, valor y método siempre. Tras la re-evaluación
+   global (59 581 procesos, hecha por el cierre del barrido del SOCE con el código nuevo): 3 en
+   `active` y 12 952 en `tender`, todos por falta de VALOR (sin presupuesto publicado), que sí es
+   información faltante. Trampa que casi se cuela: los SELECT del reflag global (`updater.ts`) y
+   de la boleta (`verificar-anio.ts`) NO traían `status`; sin añadirlo, la regla no habría aplicado
+   en el recálculo y la boleta habría gritado discrepancias falsas.
+2. **La página y el MCP decían dos cosas opuestas sobre los días hábiles** (que IT-01 «todavía no
+   cumple el COA Art. 158» sin distinguir régimen). Reescrito en las tres superficies: dos
+   cómputos, el término legal del Art. 96 (régimen A, desde el día hábil siguiente) y el intervalo
+   referencial (incluye el día inicial, no es término). Además: IT-02 `description_es` con la
+   exclusión de ínfima como las otras superficies; la co-ocurrencia IC-02+TR-03 fechada; y un
+   «ceroco-ocurrencias» renderizado por un salto de línea tras `</strong>` (visto en pantalla).
+
+**Verificado que está bien:** pesos, correlaciones, umbrales por fecha, exclusión de catálogo,
+IP-01, IP-02, IT-02, TR-02, TR-03 coinciden con el código en las tres superficies; las cifras
+escritas están fechadas como registro histórico.
+
+**Lo que la fuente trae y NO usamos todavía (siguiente fase de datos, junto a los oferentes):**
+`contracts[].status` (terminated/cancelled), `contracts[].period` (inicio/fin/duración),
+`parties[].address` (provincia y cantón, en ~100% de los registros), `tender.awardCriteria`,
+`tender.enquiries[]` (preguntas y respuestas), `planning.budget.id` (partida). Y `final_amount`
+depende de `contracts[].implementation.finalValue`, que el SERCOP no suele publicar: declararlo.
+
+**Utilidad (lo que un periodista pregunta y hoy no sale):** exportar a CSV, novedades desde la
+última visita, filtro por régimen/sector y por provincia, comparar dos entidades, página web de
+oferentes (hoy solo por MCP), proveedores nuevos con banderas.
+
+**Oferentes (2-sep):** código en producción (tabla `participaciones`, `a_participantes`,
+`oicp_oferentes`, control en boleta), pero la carga de los 8 años NO se pudo hacer: el SERCOP
+entrega los volcados a 0-16 KB/s desde el 3-sep (el 12-ago iba a ~600 KB/s). Un vigilante en la
+PC mide cada 15 min y lanza solo cuando haya ≥150 KB/s; abortó/abortará si no mejora. Reintentar
+en otra franja. Dos lecciones operativas: un Monitor `tail -F` sobre un log escrito con
+PowerShell lo bloquea y mata al script (usar sondeo con `cat`); a un modelo barato se le da una
+tarea acotada y verificable, no una espera de horas.
+
+---
 
 ## 2026-08-13 (tarde) — concentración por unidad declarada + consolidado por RUC (decisión 1+2, no 3)
 

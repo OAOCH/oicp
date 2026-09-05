@@ -146,6 +146,21 @@ Quito: `EC-RUC-1768097950001-2525` (951 procesos, $122 M, 131 críticos y altos)
 Pruebas: la del perfil con dos unidades del mismo RUC (sumar bien, contar bien), la del buyer_id
 sin formato RUC (null, no basura), y regla 10 verificada leyendo la página renderizada.
 
+## 6. Siguiente fase de datos (DECIDIDO por Oscar el 2-sep: «toda la información debe estar disponible»)
+
+1. **Cargar los oferentes** de 2019-2026 (`npx tsx server/local-sync.ts --participaciones
+   --desde-anio 2019 --hasta-anio 2026`, desde la PC). El código ya está en producción; la carga
+   quedó bloqueada porque el SERCOP entrega los volcados a 0-16 KB/s. Medir la velocidad antes
+   (`vigilante-carga-oferentes.ps1` en el scratchpad de la sesión, o un curl al volcado mensual
+   2026-08 exigiendo ≥150 KB/s). Después: `/api/admin/participaciones-finalize`, boleta, y probar
+   `oicp_oferentes` sin argumentos (ranking) y con un RUC.
+2. **Guardar lo que la fuente trae y no usamos** (ver ESTADO.md 5-sep): estado y período del
+   contrato, provincia/cantón de comprador y proveedor, criterio de adjudicación. Requiere columnas
+   nuevas + relectura por volcados (misma vía) + exponer en oicp_sql y filtros. Regla 10 si algo
+   toca banderas; trampa 0b si nace un agregado.
+3. **Utilidad**: exportar CSV, novedades desde la última visita, filtros por régimen/sector y
+   provincia, página web de oferentes.
+
 ## 5. Ampliar el volumen de Railway
 
 Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espacio.
