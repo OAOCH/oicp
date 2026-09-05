@@ -13,8 +13,8 @@ data/*.db-shm
 .sync-repair-cursor.json
 rellenado.log
 
-# Volcados masivos del SERCOP (temporales, ~150 MB por anio)
-.volcado-*.zip
+# Volcados masivos del SERCOP (temporales, ~150 MB por anio) y sus ficheros de partes
+.volcado-*
 
 # Cursor del indice del SOCE (estado local)
 .soce-cursor.json

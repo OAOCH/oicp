@@ -245,12 +245,18 @@ export async function abrirVolcado(year: number, month = 0): Promise<Readable> {
  * vuelve a pedir, nunca se da por bueno. Un 429 frena a TODAS las conexiones (la misma lección
  * que `limitador.ts`) y un 403 aborta sin reintentar: la IP de la PC es la única desde la que se
  * puede leer la fuente. Al final se comprueba el tamaño del fichero contra el total declarado.
+ *
+ * REANUDABLE. Los trozos verificados se apuntan en `<destino>.partes.json` (url, total, tamaño de
+ * trozo y Last-Modified del remoto); si una descarga muere, la siguiente llamada sobre el mismo
+ * destino solo pide lo que falta. Pasó de verdad el 5-sep-2026: un trozo de 2019 falló seis veces
+ * seguidas con `terminated` al 93% y se tiraron 111 MB y 45 minutos. Si el remoto cambió de
+ * versión, se empieza de cero: mezclar trozos de dos versiones daría un ZIP corrupto sin aviso.
  */
 export interface OpcionesRangos {
   conexiones?: number;        // conexiones simultáneas (por defecto 8)
   trozoBytes?: number;        // tamaño de cada trozo (por defecto 1 MB: a 6 KB/s por conexión son ~3 min)
-  intentosPorTrozo?: number;  // intentos por trozo (por defecto 6)
-  esperaBaseMs?: number;      // espera entre intentos, multiplicada por el número de intento
+  intentosPorTrozo?: number;  // intentos por trozo (por defecto 10: las ráfagas de `terminated` duran minutos)
+  esperaBaseMs?: number;      // espera entre intentos, multiplicada por el número de intento (tope 60 s)
   timeoutTrozoMs?: number;    // tope por trozo (por defecto 10 min): una conexión estancada se corta y se vuelve a pedir
   cabeceras?: Record<string, string>;
   registrar?: (m: string) => void;
@@ -261,7 +267,7 @@ export async function descargarPorRangos(
 ): Promise<{ bytes: number; trozos: number }> {
   const conexiones = Math.max(1, Math.floor(o.conexiones ?? 8));
   const trozoBytes = Math.max(1024, Math.floor(o.trozoBytes ?? 1024 * 1024));
-  const intentos = Math.max(1, o.intentosPorTrozo ?? 6);
+  const intentos = Math.max(1, o.intentosPorTrozo ?? 10);
   const esperaBaseMs = o.esperaBaseMs ?? 5000;
   const timeoutMs = o.timeoutTrozoMs ?? 600000;
   const cabeceras = { 'User-Agent': 'OICP-sync', ...(o.cabeceras || {}) };
@@ -302,7 +308,7 @@ export async function descargarPorRangos(
         if (e?.definitivo) { fallo = fallo || e; throw e; }
         if (fallo) throw fallo;
         if (intento >= intentos) throw new Error(`${que}: ${e.message}`);
-        await dormir(esperaBaseMs * intento);
+        await dormir(Math.min(60000, esperaBaseMs * intento));
       }
     }
   };
@@ -310,24 +316,43 @@ export async function descargarPorRangos(
   // 1. Sondeo: tamaño total y prueba de que el servidor respeta el rango. Va con la MISMA política de
   //    reintentos que los trozos: un 429 o un corte transitorio aquí no puede tumbar el volcado entero
   //    ni disfrazarse de «no acepta rangos». Lo definitivo es un 200: el servidor ignoró el Range.
-  const total = await conReintentos('sondeo', async () => {
+  const { total, version } = await conReintentos('sondeo', async () => {
     const res = await pedir('bytes=0-0', 'sondeo');
     const cr = res.headers.get('content-range') || '';
+    const version = res.headers.get('last-modified') || res.headers.get('etag') || '';
     await descartar(res);
     if (res.status === 200) throw definitivo('el servidor no acepta rangos (contestó 200 al pedir bytes=0-0)');
     const n = Number(/\/(\d+)\s*$/.exec(cr)?.[1]);
     if (res.status !== 206 || !Number.isFinite(n) || n <= 0) throw new Error(`HTTP ${res.status}, Content-Range «${cr || 'ausente'}»`);
-    return n;
+    return { total: n, version };
   });
 
-  // 2. Fichero del tamaño final; cada trozo escribe en su sitio.
-  await fsp.writeFile(destino, '');
-  await fsp.truncate(destino, total);
-
-  // 3. Cola de trozos servida por N obreros.
+  // 2. Cola de trozos, y lo que ya estaba hecho de una llamada anterior sobre el mismo destino.
   const trozos: Array<[number, number]> = [];
   for (let a = 0; a < total; a += trozoBytes) trozos.push([a, Math.min(a + trozoBytes, total) - 1]);
-  let siguiente = 0, hechos = 0, bytesHechos = 0, ultimoAviso = 0;
+  const partes = `${destino}.partes.json`;
+  const listos = new Set<number>();
+  try {
+    const p = JSON.parse(await fsp.readFile(partes, 'utf8'));
+    const enDisco = (await fsp.stat(destino)).size;
+    if (p && p.url === url && p.total === total && p.trozoBytes === trozoBytes && p.version === version
+        && enDisco === total && Array.isArray(p.hechos)) {
+      for (const i of p.hechos) if (Number.isInteger(i) && i >= 0 && i < trozos.length) listos.add(i);
+    }
+  } catch { /* sin partes previas, o ilegibles: se empieza de cero */ }
+  if (listos.size) registrar(`    se reanuda: ${listos.size} de ${trozos.length} trozos ya estaban en disco`);
+  else { await fsp.writeFile(destino, ''); await fsp.truncate(destino, total); }
+  // Las partes se escriben en serie (dos obreros que terminan a la vez no pueden pisarse el tmp)
+  // y por renombrado, para que un corte a mitad de escritura no deje un JSON a medias.
+  let guardando: Promise<void> = Promise.resolve();
+  const guardarPartes = () => (guardando = guardando.then(async () => {
+    await fsp.writeFile(`${partes}.tmp`, JSON.stringify({ url, total, trozoBytes, version, hechos: [...listos].sort((x, y) => x - y) }));
+    await fsp.rename(`${partes}.tmp`, partes);
+  }).catch(() => { /* no poder apuntar el avance no es motivo para abortar la descarga */ }));
+
+  // 3. Los N obreros sirven la cola saltando lo que ya está.
+  let siguiente = 0, hechos = listos.size, bytesHechos = 0, bytesPrevios = 0, ultimoAviso = 0;
+  for (const i of listos) bytesPrevios += trozos[i][1] - trozos[i][0] + 1;
   const t0 = Date.now();
 
   const bajarTrozo = (a: number, b: number) => conReintentos(`trozo ${a}-${b}`, async () => {
@@ -347,23 +372,29 @@ export async function descargarPorRangos(
     while (!fallo) {
       const i = siguiente++;
       if (i >= trozos.length) return;
+      if (listos.has(i)) continue;
       const [a, b] = trozos[i];
       try { await bajarTrozo(a, b); }
       catch (e: any) { fallo = fallo || e; return; }
+      listos.add(i); guardarPartes();
       hechos++; bytesHechos += b - a + 1;
       const ahora = Date.now();
       if (ahora - ultimoAviso >= 30000 || hechos === trozos.length) {
         ultimoAviso = ahora;
         const seg = Math.max(1, (ahora - t0) / 1000);
-        registrar(`    ${(bytesHechos / 1048576).toFixed(1)} de ${(total / 1048576).toFixed(1)} MB (${Math.round(100 * bytesHechos / total)}%) · ${(bytesHechos / 1024 / seg).toFixed(0)} KB/s con ${conexiones} conexiones`);
+        const enDisco = bytesPrevios + bytesHechos;
+        registrar(`    ${(enDisco / 1048576).toFixed(1)} de ${(total / 1048576).toFixed(1)} MB (${Math.round(100 * enDisco / total)}%) · ${(bytesHechos / 1024 / seg).toFixed(0)} KB/s con ${conexiones} conexiones`);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(conexiones, trozos.length) }, obrero));
+  await guardando;
   if (fallo) throw fallo;
 
   const tam = (await fsp.stat(destino)).size;
   if (tam !== total) throw new Error(`ensamblado incompleto: ${tam} de ${total} bytes`);
+  await fsp.rm(partes, { force: true });
+  await fsp.rm(`${partes}.tmp`, { force: true });
   return { bytes: total, trozos: trozos.length };
 }
 
@@ -414,7 +445,9 @@ export async function descargarVolcado(
       registrar(`  ${year}: ${(bytes / 1048576).toFixed(1)} MB en ${seg.toFixed(1)}s = ${(bytes / 1048576 / seg).toFixed(2)} MB/s${conexiones > 1 ? ` (${conexiones} conexiones)` : ''}`);
       return { ruta: destino, bytes };
     } catch (e: any) {
-      try { if (existsSync(destino)) unlinkSync(destino); } catch { /* mejor esfuerzo */ }
+      // Con un solo flujo el parcial no sirve para nada; por rangos se CONSERVA junto a su fichero
+      // de partes, y el siguiente intento (o la siguiente corrida) solo pide lo que falta.
+      if (conexiones <= 1) { try { if (existsSync(destino)) unlinkSync(destino); } catch { /* mejor esfuerzo */ } }
       // Un 403 es un bloqueo: reintentar el año entero sería insistirle a la fuente.
       if (/HTTP 403/.test(String(e.message))) throw new Error(`volcado ${year}: ${e.message}`);
       if (intento === intentos) throw new Error(`volcado ${year}: ${e.message}`);

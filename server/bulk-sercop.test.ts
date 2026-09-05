@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import zlib from 'zlib';
 import { Readable } from 'stream';
 import http from 'http';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { descargarPorRangos, objetosDeArray, releasesDelVolcado, urlVolcado } from './bulk-sercop.js';
@@ -181,6 +181,7 @@ type ModoServidor = {
   con403?: Map<string, number>;   // rango → veces que responde 403 (bloqueo)
   corrido?: Set<string>;          // rangos que se sirven con 206 pero con OTRO Content-Range
   retryAfter?: string;            // cabecera Retry-After de los 429 (por defecto '0')
+  lastModified?: string;          // versión del fichero remoto que anuncia el servidor
 };
 
 function servidorDeRangos(contenido: Buffer, modo: ModoServidor = {}) {
@@ -213,7 +214,7 @@ function servidorDeRangos(contenido: Buffer, modo: ModoServidor = {}) {
       res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${contenido.length}`, 'Content-Length': mitad });
       res.end(contenido.subarray(a, a + mitad)); return;
     }
-    res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${contenido.length}`, 'Content-Length': b - a + 1 });
+    res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${contenido.length}`, 'Content-Length': b - a + 1, 'Last-Modified': modo.lastModified ?? 'Sat, 05 Sep 2026 00:00:00 GMT' });
     res.end(contenido.subarray(a, b + 1));
   });
   return new Promise<{ url: string; peticiones: string[]; tiempos: number[]; cerrar: () => Promise<void> }>(listo => {
@@ -362,6 +363,52 @@ test('un 403 (bloqueo) NO se reintenta: se aborta de inmediato para no insistirl
       await assert.rejects(descargarPorRangos(srv.url, ruta, RAPIDO), /HTTP 403/);
     });
     assert.equal(srv.peticiones.filter(p => p === bloqueado).length, 1, 'un 403 no debe reintentarse');
+  } finally { await srv.cerrar(); }
+});
+
+test('una descarga interrumpida se REANUDA: solo se vuelven a pedir los trozos que faltaban', async () => {
+  // Pasó de verdad el 5-sep-2026: un trozo de 2019 falló seis veces seguidas con `terminated` al
+  // 93% y el año entero (111 MB, 45 minutos) se tiró y empezó de cero. Los trozos verificados se
+  // apuntan en un fichero de partes y la siguiente llamada solo pide lo que falta.
+  const contenido = contenidoDe(TROZO * 8);
+  const roto = rango(3, contenido.length);
+  const modo: ModoServidor = { fallar: new Map([[roto, 99]]) };
+  const srv = await servidorDeRangos(contenido, modo);
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, { ...RAPIDO, intentosPorTrozo: 2 }), /trozo 196608-262143/);
+      const partes = JSON.parse(readFileSync(`${ruta}.partes.json`, 'utf8'));
+      assert.ok(partes.hechos.length >= 1 && partes.hechos.length < 8, `partes guardadas: ${partes.hechos.length}`);
+      assert.ok(!partes.hechos.includes(3), 'el trozo que falló no puede figurar como hecho');
+      const antes = srv.peticiones.length;
+      modo.fallar!.clear();
+      const r = await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.equal(r.bytes, contenido.length);
+      assert.ok(readFileSync(ruta).equals(contenido), 'el fichero reanudado difiere del original');
+      const segunda = srv.peticiones.slice(antes).filter(p => p !== 'bytes=0-0');
+      assert.equal(segunda.length, 8 - partes.hechos.length, 'la reanudación pidió trozos que ya estaban en disco');
+      assert.ok(!existsSync(`${ruta}.partes.json`), 'al terminar bien no debe quedar el fichero de partes');
+    });
+  } finally { await srv.cerrar(); }
+});
+
+test('si el fichero remoto CAMBIÓ (otro Last-Modified) no se reanuda: se baja entero otra vez', async () => {
+  // El SERCOP regenera los volcados (2025 y 2026 cambiaron el 4-sep). Mezclar trozos de dos
+  // versiones daría un ZIP corrupto sin ningún aviso.
+  const contenido = contenidoDe(TROZO * 6);
+  const roto = rango(2, contenido.length);
+  const modo: ModoServidor = { fallar: new Map([[roto, 99]]), lastModified: 'Fri, 04 Sep 2026 20:12:12 GMT' };
+  const srv = await servidorDeRangos(contenido, modo);
+  try {
+    await conFicheroTemporal(async ruta => {
+      await assert.rejects(descargarPorRangos(srv.url, ruta, { ...RAPIDO, intentosPorTrozo: 2 }));
+      modo.fallar!.clear();
+      modo.lastModified = 'Sat, 05 Sep 2026 09:00:00 GMT';
+      const antes = srv.peticiones.length;
+      await descargarPorRangos(srv.url, ruta, RAPIDO);
+      assert.ok(readFileSync(ruta).equals(contenido));
+      assert.equal(srv.peticiones.slice(antes).filter(p => p !== 'bytes=0-0').length, 6, 'con otra versión del fichero hay que pedir TODOS los trozos');
+    });
   } finally { await srv.cerrar(); }
 });
 
