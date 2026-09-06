@@ -57,12 +57,16 @@ Y para el presupuesto, la verificación sigue siendo:
 # Arranque de la sesión (en este orden, sin saltarte nada)
 
 1. `ESTADO.md` (la sección del 5-sep va primero) y este archivo entero.
-2. Salud: `/api/version` (commit `d2e8e5a` o posterior, corte de datos, `processes` ==
+2. Salud: `/api/version` (commit `7590e0e` o posterior, corte de datos, `processes` ==
    `presupuesto.total`) y `/api/health`. Si difieren, lee la memoria «sync a medias».
-3. Estado de la carga de oferentes: `participaciones-vigilante.log` (última línea: velocidad
-   medida o ABORTADO/FIN) y `participaciones.log`. Si la carga corrió: verifica con
-   `oicp_oferentes` (ranking y un RUC) y una boleta. Si no: mide la velocidad del SERCOP con un
-   curl al volcado mensual 2026-08 y decide si lanzar (`--participaciones`, ver punto 6).
+3. Oferentes: la carga 2019-2026 TERMINÓ el 5-sep a las 20:32 (código 0; 1 448 765
+   participaciones, 66 867 oferentes; ver ESTADO.md). Comprueba que sigue así: `oicp_sql` sobre
+   `a_participantes` (66 867 filas) y `oicp_oferentes` sin argumentos. Las boletas de 2025 y 2026
+   dan FALLA SOLO en el control `participantes` (3 y 10 739 participaciones cuyo proceso no está en
+   la base): es el hueco de la base en 2025-2026, no un defecto de la carga; ver LO QUE FALTA 6.1.
+   Si alguna vez hay que recargar un año: `npx tsx server/local-sync.ts --participaciones
+   --desde-anio AAAA --hasta-anio AAAA --conexiones 16 >> participaciones.log 2>&1` (idempotente,
+   reanudable por `.volcado-AAAA.zip.partes.json`). NUNCA con una sola conexión (trampa 4).
 4. Tareas de la PC: `schtasks /query /tn "OICP Sync SERCOP"`, `"OICP Rellenado presupuestos"`,
    `"OICP Indice SOCE Art96"` (Last Run, Last Result; -1073741510 = matada por apagado).
 5. Recién entonces, el trabajo del día. Dime en pocas líneas qué encontraste y el plan.
@@ -161,12 +165,14 @@ sin formato RUC (null, no basura), y regla 10 verificada leyendo la página rend
 
 ## 6. Siguiente fase de datos (DECIDIDO por Oscar el 2-sep: «toda la información debe estar disponible»)
 
-1. **Cargar los oferentes** de 2019-2026 (`npx tsx server/local-sync.ts --participaciones
-   --desde-anio 2019 --hasta-anio 2026`, desde la PC). El código ya está en producción; la carga
-   quedó bloqueada porque el SERCOP entrega los volcados a 0-16 KB/s. Medir la velocidad antes
-   (`vigilante-carga-oferentes.ps1` en el scratchpad de la sesión, o un curl al volcado mensual
-   2026-08 exigiendo ≥150 KB/s). Después: `/api/admin/participaciones-finalize`, boleta, y probar
-   `oicp_oferentes` sin argumentos (ranking) y con un RUC.
+1. **~~Cargar los oferentes~~ HECHO el 5-sep** (ver ESTADO.md). Lo que dejó al descubierto y va
+   PRIMERO, con el OK de Oscar porque duplica 2026 en todo lo publicado: **la base no tiene 16 081
+   procesos de 2025 ni 45 410 de 2026** que sí están en los volcados (2019-2024 coinciden exactos).
+   Rellenarlos con un modo `--ingestar-faltantes --desde-anio 2025 --hasta-anio 2026 --conexiones 16`
+   en `local-sync.ts`: recorrer el volcado con `releaseToProc` (regla 11) y empujar en lotes a
+   `/api/admin/ingest`, que inserta los ocid nuevos y salta los existentes (trampa 1); después
+   finalize (banderas y agregados), boletas 2025 y 2026 (deben pasar a 14/14) y `oicp_info`.
+   Mientras no se haga, la boleta de esos dos años dirá FALLA en `participantes`, y con razón.
 2. **Guardar lo que la fuente trae y no usamos** (ver ESTADO.md 5-sep): estado y período del
    contrato, provincia/cantón de comprador y proveedor, criterio de adjudicación. Requiere columnas
    nuevas + relectura por volcados (misma vía) + exponer en oicp_sql y filtros. Regla 10 si algo
@@ -212,6 +218,11 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
    entrega el año entero en un ZIP, y `/PLATAFORMA/get-totals` dice cuántos releases debería traer,
    que es la comprobación de completitud. Medido: **todo el corpus en ~28 minutos y 8 peticiones**,
    contra ~54 horas y 174 547 peticiones yendo uno por uno. Esa ruta **no devolvió ni un 429**.
+   **Desde el 3-sep-2026 entrega 1-20 KB/s POR CONEXIÓN** (el 12-ago iba a ~600) y acepta `Range`:
+   usa `--conexiones 16` (rangos en paralelo, ~150 KB/s, `descargarPorRangos` en
+   `bulk-sercop.ts`). La integridad de un fichero ensamblado se prueba con el CRC32 que declara el
+   ZIP contra el contenido inflado (`crc-zip.cjs` en el scratchpad), NO con el conteo de releases
+   contra `get-totals`: la fuente ya difería en 1, 22 y 37 con descargas de un solo flujo.
    Lo que NO sirve es `/api/records`, que ignora el filtro por año y fija `per_page` en 15
    (184 930 peticiones, ~95 GB): ya está comprobado, no lo repitas.
    Leer esos ficheros tiene **cuatro trampas, todas con prueba en `bulk-sercop.test.ts`**: no se
@@ -241,6 +252,12 @@ Cuesta dinero y **lo decide Oscar**. El respaldo sigue sin poder correr por espa
    `verificar-lote.mjs`. Es lo que impide que una cadena vuelva a colarse como monto: en JavaScript
    una cadena es *truthy*, así que sin eso TR-01 dejaría de marcar el valor como faltante y nadie
    se daría cuenta.
+11. **Vigilantes en la PC**: `Start-Process` desde la herramienta muere con la llamada. Lo que
+   sobrevive es WMI: `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` con
+   `cmd.exe /c powershell -NoProfile -ExecutionPolicy Bypass -File "<ps1>" >> <err> 2>&1`, con un
+   `.err` PROPIO (redirigir a un `.err` que otro cmd vivo tiene abierto mata el lanzamiento sin
+   dejar rastro) y verificando por la primera línea que el script escribe en su log, no por el PID.
+   El filtro de procesos debe excluir `$PID`: la propia llamada contiene el texto que buscas.
 10. **Lexis**: el buscador es de palabras, no de códigos. La pestaña **Art** tiene campo de número de
    artículo y la pestaña **Afectación** trae el historial de reformas. Lexis **no indexa las
    resoluciones del SERCOP** ni renderiza los anexos con tablas: esas van del PDF oficial del

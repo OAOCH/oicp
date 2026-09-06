@@ -1,5 +1,84 @@
 # ESTADO — actualizado 2026-09-05
 
+## 2026-09-05 (tarde y noche) — los volcados se bajan por rangos en paralelo; OFERENTES CARGADOS 2019-2026; la base tiene un hueco en 2025-2026
+
+**Diagnóstico medido, no supuesto.** El vigilante de la noche midió 48 veces entre las 21:00 del
+4-sep y las 11:28: 0-46 KB/s por conexión, nunca los 150 exigidos; abortó a las 11:42. La PC baja a
+41 MB/s desde un host neutro, así que el cuello es del SERCOP; y el freno es POR CONEXIÓN, no por
+franja horaria: 1 conexión 2-20 KB/s · 4 → 41 · 8 → 78-93 · 16 → 150 KB/s, con `Range` aceptado
+(206) en los ocho volcados anuales (90-164 MB; 1,05 GB en total). Las conexiones sueltas mueren
+además con `terminated` (una de un solo flujo murió a los 585 KB). «Reintentar en otra franja» no
+podía funcionar: el vigilante v3 de la tarde siguió midiendo 0-7 KB/s por conexión y 57-93 con ocho.
+
+**Hecho (commits `d3a3cb6`, `029944b` y `7590e0e`, cada uno verificado en `/api/version`).**
+`descargarPorRangos()` en `server/bulk-sercop.ts` y el flag `--conexiones N` (tope 32) en
+`local-sync.ts` para `--participaciones` y `--reparar-masivo`; con 1 conexión el camino de siempre
+queda intacto. Política común por petición, sondeo incluido: un 429 frena a TODAS las conexiones
+(lección de `limitador.ts`) y un 403 aborta sin reintentar ni por trozo ni por año, porque la IP de
+la PC es la única que lee la fuente. 10 pruebas nuevas con un servidor local de rangos, verificadas
+en ROJO y por MUTACIÓN (quitar una guarda tumba exactamente su prueba: cuenta de bytes, freno
+compartido, Content-Range corrido, 403). Revisión adversarial con Sonnet (3 lentes + un escéptico
+por hallazgo): 4 hallazgos confirmados y corregidos ANTES del commit (el sondeo no reintentaba y
+disfrazaba un 429 de «no acepta rangos»; `repararMasivo` no cortaba ante un 403; dos pruebas las
+aprobaba el transporte y no la guarda). Verificado contra la fuente real: volcado mensual 2026-08
+con 8 conexiones en 13 trozos, tamaño exacto (3 358 921 bytes), CRC32 declarado por el ZIP igual al
+del contenido inflado, y prefijo de 585 767 bytes idéntico al de una descarga de un solo flujo. El
+lector leyó 5 420 releases frente a 5 457 declarados: misma clase de diferencia que las de 1 y 22 de
+agosto con descargas de un solo flujo, o sea el contador de la fuente, no la descarga.
+
+**Dos defectos que solo salieron en la carga real, corregidos sobre la marcha (commits `029944b` y
+`7590e0e`, pruebas en rojo primero):** (1) a las 13:47, con 2019 al 93 %, un trozo falló seis veces
+seguidas con `terminated` y el descargador tiró 111 MB y 45 minutos; ahora los trozos verificados se
+apuntan en `<destino>.partes.json` (url, total, trozo y Last-Modified) y la siguiente llamada solo pide
+lo que falta, con diez intentos por trozo y espera creciente hasta 60 s; en 2021, 2023 y 2024 el último
+trozo tardó 13 minutos en ráfagas de cortes y ningún año se perdió. (2) A las 15:55, con 2022
+descargado, `MCO-GADC-1752UE-2022-2616` (menor cuantía de obras: cientos de invitados) llevó el búfer
+por encima de las 2 000 filas que acepta `ingest-participaciones`; el 400 se reintentaba en vano, el
+búfer nunca se vaciaba y el año se perdía en silencio; ahora el tope vive en `server/lotes.ts` (el
+endpoint lo importa) y el cliente parte SIEMPRE el búfer con `lotesDe` en lotes de 1 500. Además el
+DNS de compraspublicas.gob.ec dejó de responder de 16:16 a ~16:30 (la red de la PC estaba bien): el
+sondeo del año reintentó y siguió solo.
+
+**Carga de oferentes HECHA (13:54 → 20:32, 16 conexiones, salida en `participaciones.log`).** Los ocho
+volcados cuadran contra la fuente: 2019 275 055 / 2020 160 676 / 2021 167 058 / 2022 212 324 /
+2023 217 913 / 2024 219 185 (declarados 219 186) / 2025 189 291 / 2026 92 055 releases. Procesos con
+oferentes publicados: 279 734; participaciones enviadas: 1 448 765, que es EXACTAMENTE lo que
+`participaciones-finalize` reportó en el agregado (`{"participantes":66867,"participaciones":1448765}`).
+Los conteos por año en producción (`oicp_sql` sobre `participaciones`) coinciden fila a fila con lo
+enviado (2019: 139 889 filas, 38 642 procesos, 38 584 con ganador). `oicp_oferentes` sin argumentos
+ya da el ranking (Solís Guevara Silvia Jeannette: 4 447 participaciones, 238 ganadas, 4 209 perdidas,
+pierde 72 veces frente a Mendoza Párraga; Cuenca Yépez, Britpharma y Representaciones Molina Herrera
+pierden sobre todo frente a Laboratorio Vida) y con un RUC da el perfil con sus derrotas recientes.
+
+**Boletas 2025 y 2026: 13 de 14 controles APROBADOS; el 14.º (`participantes`) FALLA y tiene razón.**
+2025: «3 participaciones apuntan a procesos que no existen»; 2026: «10 739». No es un defecto de los
+oferentes: es que la base NO tiene esos procesos. Medido con `a_risk_year` contra los volcados: 2019 a
+2024 coinciden EXACTOS año por año, pero **2025 tiene 173 210 procesos frente a 189 291 del volcado
+(faltan 16 081) y 2026 tiene 46 645 frente a 92 055 (faltan 45 410)**. Es el hueco silencioso del
+barrido por términos que ya anotaba la auditoría del 10-ago (`local-sync.ts`, tope de 300 páginas por
+término sin cursor): 2019-2024 se completaron con los volcados en agosto; 2025 y 2026 nunca. La boleta
+seguirá diciendo FALLA en esos dos años hasta que se rellenen. OJO: las boletas del lanzador salieron
+«Bad Request» porque PowerShell rompe las comillas del JSON al llamar a `curl.exe`; correrlas desde
+Bash con `-d '{"year":2025}'` funciona (81 s y 14 s).
+
+**SIGUIENTE PASO (decisión de Oscar, porque duplica 2026 en todo lo publicado):** rellenar los
+procesos que faltan de 2025 y 2026 desde los volcados anuales con el descargador nuevo (`--conexiones
+16`) y el endpoint `/api/admin/ingest`, que INSERTA los ocid nuevos y salta los existentes (trampa 1):
+un modo `--ingestar-faltantes --desde-anio 2025 --hasta-anio 2026` en `local-sync.ts` que recorra el
+volcado con `releaseToProc` (regla 11) y empuje en lotes; después finalize (banderas y agregados),
+boletas 2025 y 2026 (que deben pasar a 14/14) y `oicp_info`. Son ~61 500 procesos: los conteos,
+rankings y coberturas de 2025-2026 cambian de forma visible.
+
+**Lecciones operativas del día:** (1) `Start-Process` desde la herramienta muere con la llamada;
+los vigilantes se lanzan con WMI (`Invoke-CimMethod Win32_Process Create`) y
+`cmd /c powershell -File ... >> <err> 2>&1` con un `.err` PROPIO, porque redirigir a un `.err` que
+otro cmd vivo tiene abierto mata el lanzamiento en silencio; y el filtro de procesos debe excluir
+`$PID`, o encuentra a la propia llamada. (2) Un revisor «de solo lectura» con herramientas editó el
+archivo real y luego hizo `git checkout --`, que borró el diff sin commit (lo restauró de su copia):
+antes de una revisión adversarial sobre cambios sin commit, confirmar en rama o darles una copia, y
+verificar el diff al volver. (3) Los comandos Bash largos con código en heredoc mueren en el parseo
+del envoltorio: el contenido va con Write y las ediciones CRLF por script.
+
 ## 2026-09-05 — auditoría de fondo: metodología vs motor, campos de la fuente, utilidad y cifras
 
 Cuatro frentes con modelos baratos (Sonnet) y verificación propia. Resultado en producción
